@@ -34,7 +34,6 @@ const openai = new OpenAI({
 });
 
 // Configuração do Google Sheets
-import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -170,6 +169,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 FinPlanner rodando na porta ${PORT}`);
 });
+
 
 
 
