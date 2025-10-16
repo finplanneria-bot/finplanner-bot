@@ -34,15 +34,28 @@ const openai = new OpenAI({
 });
 
 // Configuração do Google Sheets
+import { GoogleSpreadsheet } from "google-spreadsheet";
+import { JWT } from "google-auth-library";
+
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 const PRIVATE_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_DOC_ID;
 
+// Autenticação correta do Google
 const serviceAccountAuth = new JWT({
   email: SERVICE_ACCOUNT_EMAIL,
   key: PRIVATE_KEY,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
+
+// Inicialização da planilha (função separada)
+async function getSheet() {
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
+  await doc.loadInfo(); // autentica e carrega a planilha
+  const sheet = doc.sheetsByIndex[0]; // primeira aba
+  return sheet;
+}
+
 
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
@@ -157,5 +170,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 FinPlanner rodando na porta ${PORT}`);
 });
+
 
 
