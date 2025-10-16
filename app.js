@@ -12,53 +12,51 @@ import { JWT } from "google-auth-library";
 import OpenAI from "openai";
 import cron from "node-cron";
 
-// Carrega variáveis de ambiente
+// Carrega variáveis de ambiente (.env ou Render)
 dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
-// Configurações da API do WhatsApp Cloud
+// ============================
+// Variáveis de ambiente
+// ============================
 const WA_TOKEN = process.env.WA_TOKEN;
 const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
-const VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN;
-if (!WA_TOKEN || !WA_PHONE_NUMBER_ID) {
-  console.error("❌ ERRO: WA_TOKEN ou WA_PHONE_NUMBER_ID não foram carregados corretamente.");
-} else {
-  console.log("✅ Token e Phone ID carregados com sucesso.");
-}
+const VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || "finplanner_verify";
+const PORT = process.env.PORT || 3000;
 
-// Configurações do OpenAI
+// ============================
+// Inicialização do OpenAI
+// ============================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Configuração do Google Sheets
-import { JWT } from "google-auth-library";
-
+// ============================
+// Inicialização do Google Sheets
+// ============================
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 const PRIVATE_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_DOC_ID;
 
-// Autenticação correta do Google
 const serviceAccountAuth = new JWT({
   email: SERVICE_ACCOUNT_EMAIL,
   key: PRIVATE_KEY,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// Inicialização da planilha (função separada)
+// Função auxiliar para acessar a planilha
 async function getSheet() {
   const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
-  await doc.loadInfo(); // autentica e carrega a planilha
+  await doc.loadInfo();
   const sheet = doc.sheetsByIndex[0]; // primeira aba
   return sheet;
 }
 
-
-const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
-
-// Função para enviar mensagem pelo WhatsApp
+// ============================
+// Função para enviar mensagens no WhatsApp
+// ============================
 async function sendMessage(to, text) {
   try {
     const response = await axios.post(
@@ -83,93 +81,86 @@ async function sendMessage(to, text) {
   }
 }
 
-
-// Webhook de verificação (Meta)
+// ============================
+// Webhook de verificação (usado pelo Meta)
+// ============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verificado com sucesso!");
+  if (mode && token === VERIFY_TOKEN) {
+    console.log("✅ Webhook verificado com sucesso!");
     res.status(200).send(challenge);
   } else {
-    res.sendStatus(403);
+    res.status(403).send("Erro na verificação do webhook");
   }
 });
 
-// Recebe mensagens do WhatsApp
+// ============================
+// Webhook de recebimento de mensagens
+// ============================
 app.post("/webhook", async (req, res) => {
   try {
-    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!message) return res.sendStatus(200);
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const message = changes?.value?.messages?.[0];
 
-    const from = message.from;
-    const text = message.text?.body || "";
+    if (message && message.type === "text") {
+      const from = message.from;
+      const userText = message.text.body;
 
-    console.log(`Mensagem recebida de ${from}: ${text}`);
+      console.log(`📩 Mensagem recebida de ${from}: ${userText}`);
 
-    // Processa a mensagem com GPT
-    const gptResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "Você é uma assistente financeira chamada FinPlanner IA. Classifique a mensagem do usuário em: gasto, ganho, conta_a_pagar, conta_a_receber, ou outro. Se for gasto ou conta, identifique valores e datas.",
-        },
-        { role: "user", content: text },
-      ],
-    });
+      // 🔹 Salvar a mensagem no Google Sheets
+      try {
+        const sheet = await getSheet();
+        await sheet.addRow({ Numero: from, Mensagem: userText });
+        console.log("📊 Mensagem salva no Google Sheets!");
+      } catch (error) {
+        console.error("Erro ao salvar no Google Sheets:", error.message);
+      }
 
-    const reply = gptResponse.choices[0].message.content;
+      // 🔹 Gerar resposta com IA (OpenAI)
+      let aiResponse = "Desculpe, não consegui entender sua solicitação.";
 
-    await sendMessage(from, reply);
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "Você é a FinPlanner IA, assistente financeira inteligente. Responda de forma clara e útil." },
+            { role: "user", content: userText },
+          ],
+        });
 
-    // Conecta e registra no Google Sheets
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle["movimentos"];
-    if (sheet) {
-      await sheet.addRow({
-        data: new Date().toLocaleString("pt-BR"),
-        descricao: text,
-        resposta: reply,
-      });
+        aiResponse = completion.choices[0].message.content;
+      } catch (error) {
+        console.error("Erro ao gerar resposta da IA:", error.message);
+      }
+
+      // 🔹 Enviar resposta automática
+      await sendMessage(from, aiResponse);
     }
+
+    res.sendStatus(200);
   } catch (error) {
     console.error("Erro ao processar mensagem:", error.message);
-  }
-  res.sendStatus(200);
-});
-
-// Agendador diário (lembretes de contas)
-cron.schedule("0 9 * * *", async () => {
-  console.log("Verificando contas a pagar...");
-  try {
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle["contas_pagar"];
-    const rows = await sheet.getRows();
-
-    const hoje = new Date().toISOString().slice(0, 10);
-    for (const row of rows) {
-      if (row.vencimento === hoje && row.status !== "pago") {
-        await sendMessage(
-          row.chat_id,
-          `🔔 Lembrete: sua conta *${row.descricao}* vence hoje.\nValor: R$ ${row.valor}\nCopie o código de barras: ${row.codigo_barras}`
-        );
-      }
-    }
-  } catch (err) {
-    console.error("Erro ao verificar contas:", err.message);
+    res.sendStatus(500);
   }
 });
 
-// Inicializa servidor
-const PORT = process.env.PORT || 3000;
+// ============================
+// Rota de teste manual
+// ============================
+app.get("/send", async (req, res) => {
+  await sendMessage("557998149934", "🚀 FinPlanner conectado com sucesso!");
+  res.send("Mensagem de teste enviada!");
+});
+
+// ============================
+// Inicialização do servidor
+// ============================
 app.listen(PORT, () => {
+  console.log(`✅ Token e Phone ID carregados com sucesso.`);
   console.log(`🚀 FinPlanner rodando na porta ${PORT}`);
 });
-
-
-
-
