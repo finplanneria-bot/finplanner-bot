@@ -22,6 +22,11 @@ app.use(bodyParser.json());
 const WA_TOKEN = process.env.WA_TOKEN;
 const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN;
+if (!WA_TOKEN || !WA_PHONE_NUMBER_ID) {
+  console.error("❌ ERRO: WA_TOKEN ou WA_PHONE_NUMBER_ID não foram carregados corretamente.");
+} else {
+  console.log("✅ Token e Phone ID carregados com sucesso.");
+}
 
 // Configurações do OpenAI
 const openai = new OpenAI({
@@ -144,3 +149,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 FinPlanner rodando na porta ${PORT}`);
 });
+
