@@ -48,21 +48,29 @@ const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
 // Função para enviar mensagem pelo WhatsApp
 async function sendMessage(to, text) {
-  await axios.post(
-    `https://graph.facebook.com/v17.0/${WA_PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WA_TOKEN}`,
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v17.0/${WA_PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: text },
       },
-    }
-  );
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${WA_TOKEN}`,
+        },
+      }
+    );
+
+    console.log("✅ Mensagem enviada com sucesso:", response.data);
+  } catch (error) {
+    console.error("❌ Erro ao enviar mensagem:", error.response?.data || error.message);
+  }
 }
+
 
 // Webhook de verificação (Meta)
 app.get("/webhook", (req, res) => {
@@ -149,4 +157,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 FinPlanner rodando na porta ${PORT}`);
 });
+
 
