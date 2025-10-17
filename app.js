@@ -40,30 +40,40 @@ const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ----------------------------
-// Config - Google Sheets (com autenticação robusta)
+// Config - Google Sheets (modo compatível universal)
 // ----------------------------
+import { GoogleSpreadsheet } from "google-spreadsheet";
+import { JWT } from "google-auth-library";
+
 const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 
-// Corrige automaticamente as quebras de linha do Render ou .env
+// Corrige chaves com \n literais
 let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
 if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
   GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
 }
 
-// Autenticação JWT
-const jwt = new JWT({
-  email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  key: GOOGLE_SERVICE_ACCOUNT_KEY,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
+// === Modo 1: para google-spreadsheet v4 ===
+let doc;
+try {
+  const jwt = new JWT({
+    email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    key: GOOGLE_SERVICE_ACCOUNT_KEY,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
 
-const doc = new GoogleSpreadsheet(SHEETS_ID);
+  doc = new GoogleSpreadsheet(SHEETS_ID, jwt);
+} catch (e) {
+  console.warn("Tentando fallback v3:", e.message);
+  // === Modo 2: para google-spreadsheet v3 ===
+  doc = new GoogleSpreadsheet(SHEETS_ID);
+}
 
-// Função de autenticação segura
+// Autenticação segura para ambos
 async function ensureAuth() {
   try {
-    if (!doc.authMode) {
+    if (doc && typeof doc.useServiceAccountAuth === "function") {
       await doc.useServiceAccountAuth({
         client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
         private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
@@ -71,8 +81,10 @@ async function ensureAuth() {
     }
   } catch (e) {
     console.error("Erro ao autenticar Google Sheets:", e.message);
+    throw e;
   }
 }
+
 
 // ----------------------------
 // Utilitários básicos
@@ -341,3 +353,4 @@ app.post("/webhook", async (req, res) => {
 // ----------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`FinPlanner IA rodando na porta ${PORT}`));
+
