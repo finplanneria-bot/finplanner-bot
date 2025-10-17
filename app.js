@@ -1,8 +1,8 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-18)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-18.2)
 // ============================
-// Correção total: Google Sheets v3.3.0 (“No key or keyFile set” resolvido)
-// Inclui: botões interativos, reconhecimento natural e mensagens visuais
+// Correção definitiva: Google Sheets (erro “No key or keyFile set” resolvido)
+// Inclui: botões interativos, reconhecimento natural, e mensagens visuais
 
 // ----------------------------
 // Importação de bibliotecas
@@ -39,27 +39,34 @@ const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ----------------------------
-// Config - Google Sheets (compatível com v3.3.0)
+// Config - Google Sheets (à prova de erro de chave)
 // ----------------------------
 const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 
-// Corrige quebras de linha na chave privada
+// Normaliza qualquer formato da chave (Render, local, aspas ou \n)
 let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
-if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
-}
+GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY
+  .replace(/\\n/g, "\n") // transforma "\n" literal em quebra real
+  .replace(/"-----BEGIN PRIVATE KEY-----/, "-----BEGIN PRIVATE KEY-----")
+  .replace(/-----END PRIVATE KEY-----"$/, "-----END PRIVATE KEY-----")
+  .trim();
 
 // Inicializa planilha (sem JWT)
 const doc = new GoogleSpreadsheet(SHEETS_ID);
 
-// Autenticação segura
+// Autenticação compatível com v3.3.0
 async function ensureAuth() {
   try {
+    if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_SERVICE_ACCOUNT_KEY) {
+      throw new Error("Variáveis de autenticação ausentes");
+    }
+
     await doc.useServiceAccountAuth({
-      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
+      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL.trim(),
+      private_key: GOOGLE_SERVICE_ACCOUNT_KEY.trim(),
     });
+
     await doc.loadInfo();
     console.log("✅ Autenticado com sucesso no Google Sheets!");
   } catch (e) {
@@ -192,7 +199,7 @@ async function sendConfirmButton(to, rowId) {
 }
 
 // ----------------------------
-// Google Sheets
+// Google Sheets - escrita e leitura
 // ----------------------------
 async function ensureSheet() {
   await ensureAuth();
