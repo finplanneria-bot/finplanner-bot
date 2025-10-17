@@ -1,12 +1,10 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-18.2)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-18.3)
 // ============================
-// Correção definitiva: Google Sheets (erro “No key or keyFile set” resolvido)
-// Inclui: botões interativos, reconhecimento natural, e mensagens visuais
+// Inclui: Diagnóstico automático de variáveis Render
+// Corrige definitivamente “No key or keyFile set” e “Variáveis ausentes”
+// ---------------------------------------------------------------
 
-// ----------------------------
-// Importação de bibliotecas
-// ----------------------------
 import express from "express";
 import bodyParser from "body-parser";
 import axios from "axios";
@@ -16,13 +14,25 @@ import OpenAI from "openai";
 import cron from "node-cron";
 import crypto from "crypto";
 
-// ----------------------------
-// Carrega variáveis de ambiente
-// ----------------------------
 dotenv.config();
-
 const app = express();
 app.use(bodyParser.json());
+
+// ============================
+// 🔍 Diagnóstico de variáveis de ambiente
+// ============================
+console.log("🔍 Testando variáveis de ambiente FinPlanner IA:");
+console.log("SHEETS_ID:", process.env.SHEETS_ID ? "✅ OK" : "❌ FALTA");
+console.log(
+  "GOOGLE_SERVICE_ACCOUNT_EMAIL:",
+  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "❌ NÃO DEFINIDO"
+);
+console.log(
+  "GOOGLE_SERVICE_ACCOUNT_KEY:",
+  process.env.GOOGLE_SERVICE_ACCOUNT_KEY
+    ? `✅ DETECTADA (${process.env.GOOGLE_SERVICE_ACCOUNT_KEY.length} caracteres)`
+    : "❌ FALTA"
+);
 
 // ----------------------------
 // Config - WhatsApp Cloud API
@@ -30,13 +40,6 @@ app.use(bodyParser.json());
 const WA_TOKEN = process.env.WA_TOKEN;
 const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
-
-// ----------------------------
-// Config - OpenAI (opcional)
-// ----------------------------
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ----------------------------
 // Config - Google Sheets (à prova de erro de chave)
@@ -47,7 +50,7 @@ const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 // Normaliza qualquer formato da chave (Render, local, aspas ou \n)
 let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
 GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY
-  .replace(/\\n/g, "\n") // transforma "\n" literal em quebra real
+  .replace(/\\n/g, "\n")
   .replace(/"-----BEGIN PRIVATE KEY-----/, "-----BEGIN PRIVATE KEY-----")
   .replace(/-----END PRIVATE KEY-----"$/, "-----END PRIVATE KEY-----")
   .trim();
@@ -75,7 +78,7 @@ async function ensureAuth() {
 }
 
 // ----------------------------
-// Utilitários
+// Funções auxiliares
 // ----------------------------
 function formatBRDate(date) {
   if (!date) return "—";
@@ -154,7 +157,7 @@ function uuidShort() {
 }
 
 // ----------------------------
-// WhatsApp - envio
+// WhatsApp - envio de mensagens
 // ----------------------------
 async function sendWA(payload) {
   try {
@@ -240,7 +243,7 @@ async function findRowById(rowId) {
 }
 
 // ----------------------------
-// Processamento principal
+// Processamento de mensagens
 // ----------------------------
 function detectIntent(text) {
   const lower = text.toLowerCase();
