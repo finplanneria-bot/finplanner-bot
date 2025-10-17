@@ -1,5 +1,5 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-17.4)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-17.5)
 // ============================
 // Correção: autenticação Google Sheets (sem erro “No key or keyFile set”)
 // Inclui: reconhecimento natural de frases, botões interativos Pix/Boleto/Confirmar, mensagens visuais.
@@ -40,11 +40,8 @@ const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ----------------------------
-// Config - Google Sheets (modo compatível universal)
+// Config - Google Sheets (modo seguro e universal)
 // ----------------------------
-import { GoogleSpreadsheet } from "google-spreadsheet";
-import { JWT } from "google-auth-library";
-
 const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 
@@ -54,7 +51,7 @@ if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
   GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
 }
 
-// === Modo 1: para google-spreadsheet v4 ===
+// Cria autenticação segura (modo compatível universal)
 let doc;
 try {
   const jwt = new JWT({
@@ -63,14 +60,15 @@ try {
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
+  // google-spreadsheet v4
   doc = new GoogleSpreadsheet(SHEETS_ID, jwt);
 } catch (e) {
   console.warn("Tentando fallback v3:", e.message);
-  // === Modo 2: para google-spreadsheet v3 ===
+  // google-spreadsheet v3
   doc = new GoogleSpreadsheet(SHEETS_ID);
 }
 
-// Autenticação segura para ambos
+// Autenticação segura para ambos os modos
 async function ensureAuth() {
   try {
     if (doc && typeof doc.useServiceAccountAuth === "function") {
@@ -79,15 +77,15 @@ async function ensureAuth() {
         private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
       });
     }
+    await doc.loadInfo();
+    console.log("✅ Autenticado com sucesso no Google Sheets!");
   } catch (e) {
-    console.error("Erro ao autenticar Google Sheets:", e.message);
-    throw e;
+    console.error("❌ Erro ao autenticar Google Sheets:", e.message);
   }
 }
 
-
 // ----------------------------
-// Utilitários básicos
+// Utilitários
 // ----------------------------
 function formatBRDate(date) {
   if (!date) return "—";
@@ -353,4 +351,3 @@ app.post("/webhook", async (req, res) => {
 // ----------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`FinPlanner IA rodando na porta ${PORT}`));
-
