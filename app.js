@@ -8,7 +8,6 @@ import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
-import { JWT } from "google-auth-library";
 import OpenAI from "openai";
 import cron from "node-cron";
 
@@ -26,32 +25,38 @@ const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || "finplanner_verify";
 const PORT = process.env.PORT || 3000;
 
-// ============================
-// Inicialização do OpenAI
-// ============================
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// ============================
-// Inicialização do Google Sheets
-// ============================
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 const PRIVATE_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_DOC_ID;
 
-const serviceAccountAuth = new JWT({
-  email: SERVICE_ACCOUNT_EMAIL,
-  key: PRIVATE_KEY,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+// ============================
+// Inicialização do OpenAI
+// ============================
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
 });
 
-// Função auxiliar para acessar a planilha
+// ============================
+// Função auxiliar para acessar a planilha (versão correta)
+// ============================
 async function getSheet() {
-  const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
-  await doc.loadInfo();
-  const sheet = doc.sheetsByIndex[0]; // primeira aba
-  return sheet;
+  try {
+    const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+
+    // Autenticação da conta de serviço
+    await doc.useServiceAccountAuth({
+      client_email: SERVICE_ACCOUNT_EMAIL,
+      private_key: PRIVATE_KEY,
+    });
+
+    await doc.loadInfo();
+    const sheet = doc.sheetsByIndex[0]; // primeira aba da planilha
+    return sheet;
+  } catch (error) {
+    console.error("❌ Erro ao conectar ao Google Sheets:", error.message);
+    throw error;
+  }
 }
 
 // ============================
@@ -74,7 +79,6 @@ async function sendMessage(to, text) {
         },
       }
     );
-
     console.log("✅ Mensagem enviada com sucesso:", response.data);
   } catch (error) {
     console.error("❌ Erro ao enviar mensagem:", error.response?.data || error.message);
@@ -118,7 +122,7 @@ app.post("/webhook", async (req, res) => {
         await sheet.addRow({ Numero: from, Mensagem: userText });
         console.log("📊 Mensagem salva no Google Sheets!");
       } catch (error) {
-        console.error("Erro ao salvar no Google Sheets:", error.message);
+        console.error("❌ Erro ao salvar no Google Sheets:", error.message);
       }
 
       // 🔹 Gerar resposta com IA (OpenAI)
@@ -128,14 +132,14 @@ app.post("/webhook", async (req, res) => {
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
-            { role: "system", content: "Você é a FinPlanner IA, assistente financeira inteligente. Responda de forma clara e útil." },
+            { role: "system", content: "Você é a FinPlanner IA, uma assistente financeira inteligente e simpática." },
             { role: "user", content: userText },
           ],
         });
 
         aiResponse = completion.choices[0].message.content;
       } catch (error) {
-        console.error("Erro ao gerar resposta da IA:", error.message);
+        console.error("❌ Erro ao gerar resposta da IA:", error.message);
       }
 
       // 🔹 Enviar resposta automática
@@ -144,7 +148,7 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error("Erro ao processar mensagem:", error.message);
+    console.error("❌ Erro ao processar mensagem:", error.message);
     res.sendStatus(500);
   }
 });
