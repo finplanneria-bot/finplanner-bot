@@ -1,8 +1,8 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-17.5)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-18)
 // ============================
-// Correção: autenticação Google Sheets (sem erro “No key or keyFile set”)
-// Inclui: reconhecimento natural de frases, botões interativos Pix/Boleto/Confirmar, mensagens visuais.
+// Correção total: Google Sheets v3.3.0 (“No key or keyFile set” resolvido)
+// Inclui: botões interativos, reconhecimento natural e mensagens visuais
 
 // ----------------------------
 // Importação de bibliotecas
@@ -12,7 +12,6 @@ import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
-import { JWT } from "google-auth-library";
 import OpenAI from "openai";
 import cron from "node-cron";
 import crypto from "crypto";
@@ -33,50 +32,34 @@ const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
 
 // ----------------------------
-// Config - OpenAI (intenção opcional)
+// Config - OpenAI (opcional)
 // ----------------------------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ----------------------------
-// Config - Google Sheets (modo seguro e universal)
+// Config - Google Sheets (compatível com v3.3.0)
 // ----------------------------
 const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 
-// Corrige chaves com \n literais
+// Corrige quebras de linha na chave privada
 let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
 if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
   GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
 }
 
-// Cria autenticação segura (modo compatível universal)
-let doc;
-try {
-  const jwt = new JWT({
-    email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    key: GOOGLE_SERVICE_ACCOUNT_KEY,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
+// Inicializa planilha (sem JWT)
+const doc = new GoogleSpreadsheet(SHEETS_ID);
 
-  // google-spreadsheet v4
-  doc = new GoogleSpreadsheet(SHEETS_ID, jwt);
-} catch (e) {
-  console.warn("Tentando fallback v3:", e.message);
-  // google-spreadsheet v3
-  doc = new GoogleSpreadsheet(SHEETS_ID);
-}
-
-// Autenticação segura para ambos os modos
+// Autenticação segura
 async function ensureAuth() {
   try {
-    if (doc && typeof doc.useServiceAccountAuth === "function") {
-      await doc.useServiceAccountAuth({
-        client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
-      });
-    }
+    await doc.useServiceAccountAuth({
+      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
+    });
     await doc.loadInfo();
     console.log("✅ Autenticado com sucesso no Google Sheets!");
   } catch (e) {
