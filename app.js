@@ -1,12 +1,11 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-18)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-18.2)
 // ============================
-// Modo OpenAI Ativado — entendimento natural de frases como:
-// “Pagar internet 80 reais amanhã”
-// “Receber 200 do Flávio na sexta”
-// “Energia 157,68 vence hoje”
-//
-// Inclui: botões interativos Pix/Boleto/Confirmar e mensagens visuais
+// ✅ Entende frases naturais com OpenAI GPT-4.1-mini
+// ✅ Cria automaticamente a aba “finplanner” no Google Sheets
+// ✅ Corrige cabeçalhos ausentes automaticamente
+// ✅ Inclui botões interativos Pix/Boleto/Confirmar
+// ✅ Mostra logs detalhados no Render
 // ============================
 
 import express from "express";
@@ -28,6 +27,8 @@ console.log("🔍 Testando variáveis de ambiente FinPlanner IA:");
 console.log("SHEETS_ID:", process.env.SHEETS_ID ? "✅ OK" : "❌ FALTA");
 console.log("GOOGLE_SERVICE_ACCOUNT_EMAIL:", process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "❌ AUSENTE");
 console.log("GOOGLE_SERVICE_ACCOUNT_KEY:", process.env.GOOGLE_SERVICE_ACCOUNT_KEY ? "✅ DETECTADA" : "❌ FALTA");
+console.log("OPENAI_API_KEY:", process.env.OPENAI_API_KEY ? "✅ DETECTADA" : "❌ FALTA");
+console.log("USE_OPENAI:", process.env.USE_OPENAI);
 
 const app = express();
 app.use(bodyParser.json());
@@ -198,47 +199,58 @@ async function sendConfirmButton(to, rowId) {
 }
 
 // ----------------------------
-// Google Sheets
+// Google Sheets - criação e verificação automática
 // ----------------------------
 async function ensureSheet() {
   await ensureAuth();
+  await doc.loadInfo();
+
   let sheet = doc.sheetsByTitle["finplanner"];
+  const headersNecessarios = [
+    "row_id",
+    "timestamp",
+    "user",
+    "tipo",
+    "conta",
+    "valor",
+    "vencimento_iso",
+    "vencimento_br",
+    "tipo_pagamento",
+    "codigo_pagamento",
+    "status",
+  ];
+
+  // Criar planilha se não existir
   if (!sheet) {
-    sheet = await doc.addSheet({
-      title: "finplanner",
-      headerValues: ["row_id", "timestamp", "user", "tipo", "conta", "valor", "vencimento_iso", "vencimento_br", "tipo_pagamento", "codigo_pagamento", "status"],
-    });
+    console.log("📄 Criando nova aba 'finplanner' no Google Sheets...");
+    sheet = await doc.addSheet({ title: "finplanner", headerValues: headersNecessarios });
+    console.log("✅ Aba criada com sucesso!");
+    return sheet;
   }
+
+  // Corrigir cabeçalhos se faltarem
+  await sheet.loadHeaderRow();
+  const headersAtuais = sheet.headerValues || [];
+  let alterado = false;
+  for (const h of headersNecessarios) {
+    if (!headersAtuais.includes(h)) {
+      headersAtuais.push(h);
+      alterado = true;
+      console.log(`➕ Adicionando coluna ausente: ${h}`);
+    }
+  }
+  if (alterado) {
+    await sheet.setHeaderRow(headersAtuais);
+    console.log("✅ Cabeçalhos atualizados com sucesso!");
+  } else {
+    console.log("📄 Cabeçalhos já existentes e completos.");
+  }
+
   return sheet;
 }
 
-async function addBillRow({ user, conta, valor, vencimento, tipo_pagamento, codigo_pagamento, natureza }) {
-  const sheet = await ensureSheet();
-  const id = uuidShort();
-  await sheet.addRow({
-    row_id: id,
-    timestamp: new Date().toISOString(),
-    user,
-    tipo: natureza,
-    conta,
-    valor,
-    vencimento_iso: toISODate(vencimento),
-    vencimento_br: formatBRDate(vencimento),
-    tipo_pagamento,
-    codigo_pagamento,
-    status: "pendente",
-  });
-  return id;
-}
-
-async function findRowById(rowId) {
-  const sheet = await ensureSheet();
-  const rows = await sheet.getRows();
-  return rows.find(r => r.get("row_id") === rowId) || null;
-}
-
 // ----------------------------
-// Interpretação de intenção (IA)
+// Interpretação de intenção (IA com logs)
 // ----------------------------
 async function detectIntent(text) {
   const lower = text.toLowerCase();
@@ -250,30 +262,33 @@ async function detectIntent(text) {
 
   if (USE_OPENAI && openai) {
     try {
+      console.log("🤖 Enviando para OpenAI:", text);
       const prompt = `
 Analise a frase abaixo e classifique a intenção financeira principal do usuário.
-Escolha uma das categorias: 
-- "nova_conta"
-- "novo_recebimento"
-- "confirmar_pagamento"
-- "boas_vindas"
-- "desconhecido"
-
+Escolha UMA das opções:
+- nova_conta (pagar, despesa, saída de dinheiro)
+- novo_recebimento (receber, entrada, venda)
+- confirmar_pagamento (já pagou)
+- boas_vindas (saudação)
+- desconhecido (não se encaixa)
 Frase: "${text}"
-Responda apenas com o rótulo.`;
-
-      const r = await openai.responses.create({
+Responda apenas com o rótulo.
+`;
+      const response = await openai.responses.create({
         model: "gpt-4.1-mini",
         input: prompt,
       });
-
-      const label = (r.output_text || "").trim().toLowerCase();
+      console.log("🔍 Resposta OpenAI bruta:", response.output_text);
+      const label = (response.output_text || "").trim().toLowerCase();
       if (["nova_conta", "novo_recebimento", "confirmar_pagamento", "boas_vindas"].includes(label)) {
+        console.log("✅ Intenção detectada:", label);
         return label;
       }
     } catch (e) {
       console.error("⚠️ Erro ao consultar OpenAI:", e.message);
     }
+  } else {
+    console.warn("⚠️ OpenAI desativado ou chave ausente.");
   }
 
   return "desconhecido";
@@ -305,7 +320,21 @@ async function handleUserText(from, text) {
   if (intent === "nova_conta" || intent === "novo_recebimento") {
     const { conta, valor, vencimento, tipo_pagamento, codigo_pagamento } = extractEntities(text);
     const natureza = intent === "novo_recebimento" ? "conta_receber" : "conta_pagar";
-    const rowId = await addBillRow({ user: from, conta, valor, vencimento, tipo_pagamento, codigo_pagamento, natureza });
+    const sheet = await ensureSheet();
+    const rowId = uuidShort();
+    await sheet.addRow({
+      row_id: rowId,
+      timestamp: new Date().toISOString(),
+      user: from,
+      tipo: natureza,
+      conta,
+      valor,
+      vencimento_iso: toISODate(vencimento),
+      vencimento_br: formatBRDate(vencimento),
+      tipo_pagamento,
+      codigo_pagamento,
+      status: "pendente",
+    });
     await sendText(from, `✅ ${natureza === "conta_pagar" ? "Conta" : "Recebimento"} salvo!\n💡 ${conta}\n💰 ${formatCurrencyBR(valor)}\n📅 ${formatBRDate(vencimento)}`);
     if (tipo_pagamento === "pix") await sendCopyButton(from, "💳 Chave Pix:", codigo_pagamento, "Copiar chave Pix");
     if (tipo_pagamento === "boleto") await sendCopyButton(from, "🧾 Código de barras:", codigo_pagamento, "Copiar código");
@@ -351,7 +380,9 @@ app.post("/webhook", async (req, res) => {
               const id = msg.interactive?.button_reply?.id;
               if (id?.startsWith("CONFIRMAR:")) {
                 const rowId = id.split("CONFIRMAR:")[1];
-                const row = await findRowById(rowId);
+                const sheet = await ensureSheet();
+                const rows = await sheet.getRows();
+                const row = rows.find(r => r.get("row_id") === rowId);
                 if (row) {
                   row.set("status", "pago");
                   await row.save();
