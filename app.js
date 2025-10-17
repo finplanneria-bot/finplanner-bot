@@ -522,7 +522,7 @@ app.post("/webhook", async (req, res) => {
       "💭 Acho que não entendi. Pode explicar de outro jeito?",
     ];
 
-    if (cmd.type === "desconhecido")) {
+    if (cmd.type === "desconhecido") {
       await sendMessage(from, naoEntendi[Math.floor(Math.random() * naoEntendi.length)]);
       await logAction(from, "NAO_ENTENDI", userText);
     } else {
@@ -607,3 +607,4 @@ app.listen(PORT, () => {
   console.log("✅ FinPlanner IA pronta: lembretes de pagar/receber + confirmação por botões.");
   console.log(`🚀 Porta: ${PORT}`);
 });
+
