@@ -1,84 +1,80 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-18.3)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-18)
 // ============================
-// Inclui: Diagnóstico automático de variáveis Render
-// Corrige definitivamente “No key or keyFile set” e “Variáveis ausentes”
-// ---------------------------------------------------------------
+// Modo OpenAI Ativado — entendimento natural de frases como:
+// “Pagar internet 80 reais amanhã”
+// “Receber 200 do Flávio na sexta”
+// “Energia 157,68 vence hoje”
+//
+// Inclui: botões interativos Pix/Boleto/Confirmar e mensagens visuais
+// ============================
 
 import express from "express";
 import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
+import { JWT } from "google-auth-library";
 import OpenAI from "openai";
 import cron from "node-cron";
 import crypto from "crypto";
 
+// ----------------------------
+// Variáveis de ambiente
+// ----------------------------
 dotenv.config();
+
+console.log("🔍 Testando variáveis de ambiente FinPlanner IA:");
+console.log("SHEETS_ID:", process.env.SHEETS_ID ? "✅ OK" : "❌ FALTA");
+console.log("GOOGLE_SERVICE_ACCOUNT_EMAIL:", process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "❌ AUSENTE");
+console.log("GOOGLE_SERVICE_ACCOUNT_KEY:", process.env.GOOGLE_SERVICE_ACCOUNT_KEY ? "✅ DETECTADA" : "❌ FALTA");
+
 const app = express();
 app.use(bodyParser.json());
 
-// ============================
-// 🔍 Diagnóstico de variáveis de ambiente
-// ============================
-console.log("🔍 Testando variáveis de ambiente FinPlanner IA:");
-console.log("SHEETS_ID:", process.env.SHEETS_ID ? "✅ OK" : "❌ FALTA");
-console.log(
-  "GOOGLE_SERVICE_ACCOUNT_EMAIL:",
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "❌ NÃO DEFINIDO"
-);
-console.log(
-  "GOOGLE_SERVICE_ACCOUNT_KEY:",
-  process.env.GOOGLE_SERVICE_ACCOUNT_KEY
-    ? `✅ DETECTADA (${process.env.GOOGLE_SERVICE_ACCOUNT_KEY.length} caracteres)`
-    : "❌ FALTA"
-);
-
 // ----------------------------
-// Config - WhatsApp Cloud API
+// Configurações principais
 // ----------------------------
 const WA_TOKEN = process.env.WA_TOKEN;
 const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
 
-// ----------------------------
-// Config - Google Sheets (à prova de erro de chave)
-// ----------------------------
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+
 const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-
-// Normaliza qualquer formato da chave (Render, local, aspas ou \n)
 let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
-GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY
-  .replace(/\\n/g, "\n")
-  .replace(/"-----BEGIN PRIVATE KEY-----/, "-----BEGIN PRIVATE KEY-----")
-  .replace(/-----END PRIVATE KEY-----"$/, "-----END PRIVATE KEY-----")
-  .trim();
+if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
+}
 
-// Inicializa planilha (sem JWT)
-const doc = new GoogleSpreadsheet(SHEETS_ID);
+const jwt = new JWT({
+  email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  key: GOOGLE_SERVICE_ACCOUNT_KEY,
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+const doc = new GoogleSpreadsheet(SHEETS_ID, jwt);
 
-// Autenticação compatível com v3.3.0
+// ----------------------------
+// Autenticação Google Sheets
+// ----------------------------
 async function ensureAuth() {
+  if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_SERVICE_ACCOUNT_KEY || !SHEETS_ID) {
+    console.error("❌ Erro ao autenticar Google Sheets: Variáveis de autenticação ausentes");
+    throw new Error("Variáveis de autenticação ausentes");
+  }
   try {
-    if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_SERVICE_ACCOUNT_KEY) {
-      throw new Error("Variáveis de autenticação ausentes");
-    }
-
-    await doc.useServiceAccountAuth({
-      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL.trim(),
-      private_key: GOOGLE_SERVICE_ACCOUNT_KEY.trim(),
-    });
-
     await doc.loadInfo();
-    console.log("✅ Autenticado com sucesso no Google Sheets!");
   } catch (e) {
-    console.error("❌ Erro ao autenticar Google Sheets:", e.message);
+    console.error("❌ Falha na autenticação do Google Sheets:", e.message);
+    throw e;
   }
 }
 
 // ----------------------------
-// Funções auxiliares
+// Funções utilitárias
 // ----------------------------
 function formatBRDate(date) {
   if (!date) return "—";
@@ -144,7 +140,7 @@ function parseDueDate(text) {
 }
 
 function guessBillName(text) {
-  const labels = ["energia", "luz", "água", "agua", "internet", "aluguel", "telefone", "cartão", "cartao"];
+  const labels = ["energia", "luz", "água", "internet", "aluguel", "telefone", "cartão", "cartao"];
   const lower = text.toLowerCase();
   for (const l of labels) if (lower.includes(l)) return l.charAt(0).toUpperCase() + l.slice(1);
   const who = text.match(/\b(?:pra|para|ao|a|à)\s+([\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i);
@@ -157,7 +153,7 @@ function uuidShort() {
 }
 
 // ----------------------------
-// WhatsApp - envio de mensagens
+// WhatsApp - envio
 // ----------------------------
 async function sendWA(payload) {
   try {
@@ -202,11 +198,10 @@ async function sendConfirmButton(to, rowId) {
 }
 
 // ----------------------------
-// Google Sheets - escrita e leitura
+// Google Sheets
 // ----------------------------
 async function ensureSheet() {
   await ensureAuth();
-  await doc.loadInfo();
   let sheet = doc.sheetsByTitle["finplanner"];
   if (!sheet) {
     sheet = await doc.addSheet({
@@ -243,17 +238,50 @@ async function findRowById(rowId) {
 }
 
 // ----------------------------
-// Processamento de mensagens
+// Interpretação de intenção (IA)
 // ----------------------------
-function detectIntent(text) {
+async function detectIntent(text) {
   const lower = text.toLowerCase();
+
   if (/\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\b/.test(lower)) return "boas_vindas";
-  if (/\b(pagar|vou pagar|transferir|enviar)\b/.test(lower)) return "nova_conta";
-  if (/\b(receber|recebimento|cobrar)\b/.test(lower)) return "novo_recebimento";
-  if (/\bconfirm(ar)? pagamento|paguei|pago\b/.test(lower)) return "confirmar_pagamento";
+  if (/\b(pagar|pagamento|transferir|enviar|depositar|quitar|liquidar)\b/.test(lower)) return "nova_conta";
+  if (/\b(receber|recebimento|entrada|venda|vender|ganhar|entrar)\b/.test(lower)) return "novo_recebimento";
+  if (/\bconfirm(ar)? pagamento|paguei|pago|liquidei|baixei\b/.test(lower)) return "confirmar_pagamento";
+
+  if (USE_OPENAI && openai) {
+    try {
+      const prompt = `
+Analise a frase abaixo e classifique a intenção financeira principal do usuário.
+Escolha uma das categorias: 
+- "nova_conta"
+- "novo_recebimento"
+- "confirmar_pagamento"
+- "boas_vindas"
+- "desconhecido"
+
+Frase: "${text}"
+Responda apenas com o rótulo.`;
+
+      const r = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        input: prompt,
+      });
+
+      const label = (r.output_text || "").trim().toLowerCase();
+      if (["nova_conta", "novo_recebimento", "confirmar_pagamento", "boas_vindas"].includes(label)) {
+        return label;
+      }
+    } catch (e) {
+      console.error("⚠️ Erro ao consultar OpenAI:", e.message);
+    }
+  }
+
   return "desconhecido";
 }
 
+// ----------------------------
+// Processamento principal
+// ----------------------------
 function extractEntities(text) {
   const conta = guessBillName(text);
   const valor = parseCurrencyBR(text);
@@ -267,7 +295,7 @@ function extractEntities(text) {
 }
 
 async function handleUserText(from, text) {
-  const intent = detectIntent(text);
+  const intent = await detectIntent(text);
 
   if (intent === "boas_vindas") {
     await sendText(from, "👋 *Bem-vindo(a) à FinPlanner IA!*\nEnvie algo como:\n💡 Pagar água 80 reais amanhã\n💸 Receber 150 de João na sexta");
