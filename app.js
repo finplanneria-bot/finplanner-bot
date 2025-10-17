@@ -23,6 +23,7 @@ import crypto from "crypto";
 // ----------------------------
 dotenv.config();
 
+if (!process.env.USE_OPENAI) process.env.USE_OPENAI = "true";
 console.log("🔍 Testando variáveis de ambiente FinPlanner IA:");
 console.log("SHEETS_ID:", process.env.SHEETS_ID ? "✅ OK" : "❌ FALTA");
 console.log("GOOGLE_SERVICE_ACCOUNT_EMAIL:", process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "❌ AUSENTE");
@@ -403,3 +404,4 @@ app.post("/webhook", async (req, res) => {
 // ----------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`FinPlanner IA rodando na porta ${PORT}`));
+
