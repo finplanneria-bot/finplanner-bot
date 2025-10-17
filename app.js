@@ -1,5 +1,5 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot
+// FinPlanner IA - WhatsApp Bot (Versão Completa)
 // ============================
 
 // Importação das bibliotecas
@@ -38,40 +38,43 @@ const openai = new OpenAI({
 });
 
 // ============================
-// Função auxiliar para acessar a planilha (versão correta)
+// Google Sheets (autenticação)
 // ============================
-async function getSheet() {
-  try {
-    const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
-
-    // Autenticação da conta de serviço
-    await doc.useServiceAccountAuth({
-      client_email: SERVICE_ACCOUNT_EMAIL,
-      private_key: PRIVATE_KEY,
-    });
-
-    await doc.loadInfo();
-    const sheet = doc.sheetsByIndex[0]; // primeira aba da planilha
-    return sheet;
-  } catch (error) {
-    console.error("❌ Erro ao conectar ao Google Sheets:", error.message);
-    throw error;
-  }
+async function getSheet(sheetName) {
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+  await doc.useServiceAccountAuth({
+    client_email: SERVICE_ACCOUNT_EMAIL,
+    private_key: PRIVATE_KEY,
+  });
+  await doc.loadInfo();
+  const sheet = doc.sheetsByTitle[sheetName] || doc.sheetsByIndex[0];
+  return sheet;
 }
 
 // ============================
-// Função para enviar mensagens no WhatsApp
+// Enviar mensagens via WhatsApp Cloud
 // ============================
-async function sendMessage(to, text) {
+async function sendMessage(to, text, buttons = null) {
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text },
+  };
+
+  if (buttons) {
+    payload.type = "interactive";
+    payload.interactive = {
+      type: "button",
+      body: { text },
+      action: { buttons },
+    };
+  }
+
   try {
     const response = await axios.post(
       `https://graph.facebook.com/v17.0/${WA_PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: text },
-      },
+      payload,
       {
         headers: {
           "Content-Type": "application/json",
@@ -86,7 +89,7 @@ async function sendMessage(to, text) {
 }
 
 // ============================
-// Webhook de verificação (usado pelo Meta)
+// Webhook de verificação (Meta)
 // ============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -102,7 +105,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================
-// Webhook de recebimento de mensagens
+// Processar mensagens recebidas
 // ============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -112,37 +115,55 @@ app.post("/webhook", async (req, res) => {
 
     if (message && message.type === "text") {
       const from = message.from;
-      const userText = message.text.body;
-
+      const userText = message.text.body.trim();
       console.log(`📩 Mensagem recebida de ${from}: ${userText}`);
 
-      // 🔹 Salvar a mensagem no Google Sheets
+      // ============================
+      // Armazenar mensagem no Sheets (Movimentos)
+      // ============================
       try {
-        const sheet = await getSheet();
-        await sheet.addRow({ Numero: from, Mensagem: userText });
+        const sheet = await getSheet("Movimentos");
+        await sheet.addRow({
+          Data: new Date().toLocaleString("pt-BR"),
+          Numero: from,
+          Mensagem: userText,
+        });
         console.log("📊 Mensagem salva no Google Sheets!");
-      } catch (error) {
-        console.error("❌ Erro ao salvar no Google Sheets:", error.message);
+      } catch (err) {
+        console.error("❌ Erro ao salvar no Google Sheets:", err.message);
       }
 
-      // 🔹 Gerar resposta com IA (OpenAI)
-      let aiResponse = "Desculpe, não consegui entender sua solicitação.";
+      // ============================
+      // Identificar intenção (financeira ou não)
+      // ============================
+      const prompt = `
+Você é a FinPlanner IA, uma assistente financeira. 
+Responda apenas perguntas e mensagens relacionadas a finanças pessoais, ganhos, gastos, contas, relatórios ou limites.
+Se o assunto não for financeiro, diga: 
+"🤖 Desculpe, posso te ajudar apenas com assuntos financeiros (ganhos, gastos, contas, relatórios e limites)."
+
+Mensagem do usuário: "${userText}"
+Responda de forma curta, educada, com até 2 emojis, e começando com letra maiúscula.
+`;
+
+      let aiResponse = "";
 
       try {
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
-            { role: "system", content: "Você é a FinPlanner IA, uma assistente financeira inteligente e simpática." },
-            { role: "user", content: userText },
+            { role: "system", content: "Você é a FinPlanner IA, uma assistente financeira inteligente." },
+            { role: "user", content: prompt },
           ],
         });
 
-        aiResponse = completion.choices[0].message.content;
+        aiResponse = completion.choices[0].message.content.trim();
       } catch (error) {
-        console.error("❌ Erro ao gerar resposta da IA:", error.message);
+        aiResponse = "❌ Desculpe, ocorreu um erro ao processar sua solicitação.";
+        console.error("Erro OpenAI:", error.message);
       }
 
-      // 🔹 Enviar resposta automática
+      // Envia resposta
       await sendMessage(from, aiResponse);
     }
 
@@ -154,17 +175,47 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================
-// Rota de teste manual
+// Rotas de teste e relatórios
 // ============================
+
+// Envia mensagem de teste manual
 app.get("/send", async (req, res) => {
-  await sendMessage("557998149934", "🚀 FinPlanner conectado com sucesso!");
+  await sendMessage("557998149934", "🚀 FinPlanner conectada com sucesso!");
   res.send("Mensagem de teste enviada!");
+});
+
+// Gera relatório simples (exemplo)
+app.get("/relatorio/:numero", async (req, res) => {
+  try {
+    const numero = req.params.numero;
+    const sheet = await getSheet("Movimentos");
+    const rows = await sheet.getRows();
+    const userRows = rows.filter((r) => r.Numero === numero);
+
+    const totalGanhos = userRows
+      .filter((r) => r.Tipo === "Ganho")
+      .reduce((sum, r) => sum + Number(r.Valor || 0), 0);
+    const totalGastos = userRows
+      .filter((r) => r.Tipo === "Gasto")
+      .reduce((sum, r) => sum + Number(r.Valor || 0), 0);
+    const saldo = totalGanhos - totalGastos;
+
+    res.json({
+      usuario: numero,
+      ganhos: totalGanhos,
+      gastos: totalGastos,
+      saldo,
+    });
+  } catch (err) {
+    console.error("Erro ao gerar relatório:", err.message);
+    res.status(500).send("Erro ao gerar relatório");
+  }
 });
 
 // ============================
 // Inicialização do servidor
 // ============================
 app.listen(PORT, () => {
-  console.log(`✅ Token e Phone ID carregados com sucesso.`);
+  console.log("✅ Token e Phone ID carregados com sucesso.");
   console.log(`🚀 FinPlanner rodando na porta ${PORT}`);
 });
