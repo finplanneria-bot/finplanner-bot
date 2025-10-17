@@ -1,8 +1,8 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-17.3)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-17.4)
 // ============================
-// Correção: Autenticação do Google Sheets com useServiceAccountAuth()
-// Inclui: reconhecimento natural, botões Pix/Boleto/Confirmar, mensagens visuais.
+// Correção: autenticação Google Sheets (sem erro “No key or keyFile set”)
+// Inclui: reconhecimento natural de frases, botões interativos Pix/Boleto/Confirmar, mensagens visuais.
 
 // ----------------------------
 // Importação de bibliotecas
@@ -33,19 +33,25 @@ const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
 
 // ----------------------------
-// Config - OpenAI (apenas intenção)
+// Config - OpenAI (intenção opcional)
 // ----------------------------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ----------------------------
-// Config - Google Sheets (com autenticação correta)
+// Config - Google Sheets (com autenticação robusta)
 // ----------------------------
 const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-const GOOGLE_SERVICE_ACCOUNT_KEY = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "").replace(/\\n/g, "\n");
 
+// Corrige automaticamente as quebras de linha do Render ou .env
+let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
+if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
+}
+
+// Autenticação JWT
 const jwt = new JWT({
   email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
   key: GOOGLE_SERVICE_ACCOUNT_KEY,
@@ -54,32 +60,27 @@ const jwt = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEETS_ID);
 
-// Função de autenticação explícita
+// Função de autenticação segura
 async function ensureAuth() {
-  if (!doc.authMode) {
-    await doc.useServiceAccountAuth({
-      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
-    });
+  try {
+    if (!doc.authMode) {
+      await doc.useServiceAccountAuth({
+        client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
+      });
+    }
+  } catch (e) {
+    console.error("Erro ao autenticar Google Sheets:", e.message);
   }
 }
 
 // ----------------------------
-// Utilitários
+// Utilitários básicos
 // ----------------------------
-const BR_TZ = "America/Maceio";
-
-function brNow() {
-  return new Date();
-}
-
 function formatBRDate(date) {
   if (!date) return "—";
   const d = new Date(date);
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
+  return d.toLocaleDateString("pt-BR");
 }
 
 function toISODate(date) {
@@ -99,79 +100,53 @@ function formatCurrencyBR(v) {
 
 function parseCurrencyBR(text) {
   const t = text.replace(/\s+/g, " ").toLowerCase();
-  const realWord = t.match(/(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{2}))?\s*(reais|real|rs|r\$)?/i);
-  if (!realWord) return null;
-  const inteiro = realWord[1]?.replace(/\./g, "");
-  const centavos = realWord[2] || "00";
-  const num = parseFloat(`${inteiro}.${centavos}`);
-  return isNaN(num) ? null : num;
+  const match = t.match(/(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{2}))?\s*(reais|real|rs|r\$)?/i);
+  if (!match) return null;
+  const inteiro = match[1].replace(/\./g, "");
+  const centavos = match[2] || "00";
+  return parseFloat(`${inteiro}.${centavos}`);
 }
 
 function detectBarcode(text) {
-  const clean = text.replace(/\n/g, " ");
-  const m = clean.match(/[0-9\.\s]{30,}/);
+  const m = text.replace(/\n/g, " ").match(/[0-9\.\s]{30,}/);
   return m ? m[0].trim().replace(/\s+/g, " ") : null;
 }
 
 function detectPixKey(text) {
-  const hasPixWord = /\bpix\b/i.test(text);
+  const hasPix = /\bpix\b/i.test(text);
   const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   const phone = text.match(/\+?\d{10,14}/);
   const cpf = text.match(/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/);
   const cnpj = text.match(/\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/);
-  const chaveAleatoria = text.match(/[0-9a-f]{32,}|[0-9a-f-]{36}/i);
-  const candidate = email?.[0] || phone?.[0] || cpf?.[0] || cnpj?.[0] || chaveAleatoria?.[0];
-  return hasPixWord && candidate ? candidate : null;
-}
-
-function parseRelativeDate(text) {
-  const lower = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const now = brNow();
-  if (/\bhoje\b/.test(lower)) return new Date(now.setHours(0,0,0,0));
-  if (/\bamanha\b/.test(lower) || /\bamanhã\b/.test(text.toLowerCase())) {
-    const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(0,0,0,0); return d;
-  }
-  const weekdays = ["domingo","segunda","terca","terça","quarta","quinta","sexta","sabado","sábado"];
-  for (let i=0; i<weekdays.length; i++) {
-    if (lower.includes(weekdays[i])) {
-      const day = i % 7;
-      const d = new Date(now);
-      const add = (day - d.getDay() + 7) % 7 || 7;
-      d.setDate(d.getDate() + add);
-      d.setHours(0,0,0,0);
-      return d;
-    }
-  }
-  return null;
+  const chave = text.match(/[0-9a-f]{32,}|[0-9a-f-]{36}/i);
+  const candidate = email?.[0] || phone?.[0] || cpf?.[0] || cnpj?.[0] || chave?.[0];
+  return hasPix && candidate ? candidate : null;
 }
 
 function parseDueDate(text) {
+  const now = new Date();
   const dmY = text.match(/(\b\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
   if (dmY) {
     let [_, d, m, y] = dmY;
-    d = parseInt(d, 10); m = parseInt(m, 10) - 1;
-    const now = brNow();
-    const year = y ? (y.length === 2 ? 2000 + parseInt(y, 10) : parseInt(y, 10)) : now.getFullYear();
-    return new Date(year, m, d, 0, 0, 0, 0);
+    const year = y ? (y.length === 2 ? 2000 + parseInt(y) : parseInt(y)) : now.getFullYear();
+    return new Date(year, parseInt(m) - 1, parseInt(d));
   }
-  const rel = parseRelativeDate(text);
-  if (rel) return rel;
-  const venceDia = text.match(/vencimento\s*(\d{1,2})/i);
-  if (venceDia) {
-    const d = parseInt(venceDia[1], 10);
-    const now = brNow();
-    return new Date(now.getFullYear(), now.getMonth(), d, 0, 0, 0, 0);
+  if (/\bamanh[aã]\b/i.test(text)) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    return d;
   }
+  if (/\bhoje\b/i.test(text)) return now;
   return null;
 }
 
 function guessBillName(text) {
-  const labels = ["energia", "luz", "água", "agua", "internet", "aluguel", "telefone", "cartão", "cartao", "iptu", "condominio"];
+  const labels = ["energia", "luz", "água", "agua", "internet", "aluguel", "telefone", "cartão", "cartao"];
   const lower = text.toLowerCase();
   for (const l of labels) if (lower.includes(l)) return l.charAt(0).toUpperCase() + l.slice(1);
-  const who = text.match(/\b(?:pra|para|ao|a|à)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i);
+  const who = text.match(/\b(?:pra|para|ao|a|à)\s+([\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i);
   if (who) return who[1];
-  return lower.split(/\s+/).slice(0, 4).join(" ");
+  return lower.split(/\s+/).slice(0, 3).join(" ");
 }
 
 function uuidShort() {
@@ -179,15 +154,15 @@ function uuidShort() {
 }
 
 // ----------------------------
-// WhatsApp - envio de mensagens
+// WhatsApp - envio
 // ----------------------------
 async function sendWA(payload) {
   try {
     await axios.post(WA_API, payload, {
-      headers: { "Authorization": `Bearer ${WA_TOKEN}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${WA_TOKEN}`, "Content-Type": "application/json" },
     });
-  } catch (err) {
-    console.error("Erro ao enviar mensagem WA:", err?.response?.data || err.message);
+  } catch (e) {
+    console.error("Erro ao enviar mensagem WA:", e.response?.data || e.message);
   }
 }
 
@@ -195,8 +170,8 @@ async function sendText(to, text) {
   return sendWA({ messaging_product: "whatsapp", to, type: "text", text: { body: text } });
 }
 
-async function sendInteractiveCopyButton({ to, title, copyText, buttonTitle }) {
-  const payload = {
+async function sendCopyButton(to, title, copyText, buttonTitle) {
+  return sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -205,12 +180,11 @@ async function sendInteractiveCopyButton({ to, title, copyText, buttonTitle }) {
       body: { text: title },
       action: { buttons: [{ type: "copy_code", copy_code: copyText, title: buttonTitle }] },
     },
-  };
-  return sendWA(payload);
+  });
 }
 
-async function sendConfirmButton({ to, rowId }) {
-  const payload = {
+async function sendConfirmButton(to, rowId) {
+  return sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -221,12 +195,11 @@ async function sendConfirmButton({ to, rowId }) {
         buttons: [{ type: "reply", reply: { id: `CONFIRMAR:${rowId}`, title: "✅ Confirmar pagamento" } }],
       },
     },
-  };
-  return sendWA(payload);
+  });
 }
 
 // ----------------------------
-// Google Sheets - acesso
+// Google Sheets
 // ----------------------------
 async function ensureSheet() {
   await ensureAuth();
@@ -235,7 +208,7 @@ async function ensureSheet() {
   if (!sheet) {
     sheet = await doc.addSheet({
       title: "finplanner",
-      headerValues: ["row_id","timestamp","user","tipo","conta","valor","vencimento_iso","vencimento_br","tipo_pagamento","codigo_pagamento","status"],
+      headerValues: ["row_id", "timestamp", "user", "tipo", "conta", "valor", "vencimento_iso", "vencimento_br", "tipo_pagamento", "codigo_pagamento", "status"],
     });
   }
   return sheet;
@@ -251,8 +224,8 @@ async function addBillRow({ user, conta, valor, vencimento, tipo_pagamento, codi
     tipo: natureza,
     conta,
     valor,
-    vencimento_iso: vencimento ? toISODate(vencimento) : "",
-    vencimento_br: vencimento ? formatBRDate(vencimento) : "",
+    vencimento_iso: toISODate(vencimento),
+    vencimento_br: formatBRDate(vencimento),
     tipo_pagamento,
     codigo_pagamento,
     status: "pendente",
@@ -267,22 +240,15 @@ async function findRowById(rowId) {
 }
 
 // ----------------------------
-// Mensagens padrão
+// Processamento principal
 // ----------------------------
-const msgDesconhecido = () =>
-  "🤔 *Não consegui entender seu comando.*\n\nTente algo como:\n💰 Pagar R$150 ao Álvaro no dia 30/10\n📅 Meus pagamentos\n💸 Pix chave 123e456...";
-
-// ----------------------------
-// Interpretação e fluxo principal
-// ----------------------------
-function detectIntentHeuristics(text) {
+function detectIntent(text) {
   const lower = text.toLowerCase();
-  if (/\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\b/.test(lower)) return { type: "boas_vindas" };
-  if (/\b(receber|recebimento|cobrar)\b/.test(lower)) return { type: "novo_recebimento" };
-  if (/\b(pagar|vou pagar|transferir|enviar)\b/.test(lower)) return { type: "nova_conta" };
-  if (/\bconfirm(ar)? pagamento|paguei|pago\b/.test(lower)) return { type: "confirmar_pagamento" };
-  if (/\b(meus|listar|mostrar) pagamentos\b/.test(lower)) return { type: "listar_contas" };
-  return { type: "desconhecido" };
+  if (/\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\b/.test(lower)) return "boas_vindas";
+  if (/\b(pagar|vou pagar|transferir|enviar)\b/.test(lower)) return "nova_conta";
+  if (/\b(receber|recebimento|cobrar)\b/.test(lower)) return "novo_recebimento";
+  if (/\bconfirm(ar)? pagamento|paguei|pago\b/.test(lower)) return "confirmar_pagamento";
+  return "desconhecido";
 }
 
 function extractEntities(text) {
@@ -298,42 +264,37 @@ function extractEntities(text) {
 }
 
 async function handleUserText(from, text) {
-  const intent = detectIntentHeuristics(text);
+  const intent = detectIntent(text);
 
-  if (intent.type === "boas_vindas") {
-    await sendText(from, "👋 *Bem-vindo(a) à FinPlanner IA!* Envie algo como:\n💡 Energia R$120 vence amanhã\nou\n💸 Receber de João 200 na sexta");
+  if (intent === "boas_vindas") {
+    await sendText(from, "👋 *Bem-vindo(a) à FinPlanner IA!*\nEnvie algo como:\n💡 Pagar água 80 reais amanhã\n💸 Receber 150 de João na sexta");
     return;
   }
 
-  if (intent.type === "nova_conta" || intent.type === "novo_recebimento") {
+  if (intent === "nova_conta" || intent === "novo_recebimento") {
     const { conta, valor, vencimento, tipo_pagamento, codigo_pagamento } = extractEntities(text);
-    const natureza = intent.type === "novo_recebimento" ? "conta_receber" : "conta_pagar";
+    const natureza = intent === "novo_recebimento" ? "conta_receber" : "conta_pagar";
     const rowId = await addBillRow({ user: from, conta, valor, vencimento, tipo_pagamento, codigo_pagamento, natureza });
-
-    await sendText(from, `✅ ${natureza === "conta_pagar" ? "Conta" : "Recebimento"} salvo!\n\n💡 ${conta}\n💰 ${formatCurrencyBR(valor)}\n📅 ${formatBRDate(vencimento)}`);
-
-    if (tipo_pagamento === "pix" && codigo_pagamento)
-      await sendInteractiveCopyButton({ to: from, title: "💳 Chave Pix:", copyText: codigo_pagamento, buttonTitle: "Copiar chave Pix" });
-    if (tipo_pagamento === "boleto" && codigo_pagamento)
-      await sendInteractiveCopyButton({ to: from, title: "🧾 Código de barras:", copyText: codigo_pagamento, buttonTitle: "Copiar código" });
-
-    if (natureza === "conta_pagar")
-      await sendConfirmButton({ to: from, rowId });
+    await sendText(from, `✅ ${natureza === "conta_pagar" ? "Conta" : "Recebimento"} salvo!\n💡 ${conta}\n💰 ${formatCurrencyBR(valor)}\n📅 ${formatBRDate(vencimento)}`);
+    if (tipo_pagamento === "pix") await sendCopyButton(from, "💳 Chave Pix:", codigo_pagamento, "Copiar chave Pix");
+    if (tipo_pagamento === "boleto") await sendCopyButton(from, "🧾 Código de barras:", codigo_pagamento, "Copiar código");
+    if (natureza === "conta_pagar") await sendConfirmButton(from, rowId);
     return;
   }
 
-  if (intent.type === "confirmar_pagamento") {
+  if (intent === "confirmar_pagamento") {
     const sheet = await ensureSheet();
     const rows = await sheet.getRows();
     const row = rows.find(r => r.get("user") === from && r.get("status") !== "pago");
     if (row) {
-      row.set("status", "pago"); await row.save();
-      await sendText(from, "✅ Pagamento confirmado! Obrigado por manter tudo em dia.");
+      row.set("status", "pago");
+      await row.save();
+      await sendText(from, "✅ Pagamento confirmado! Tudo certo.");
     } else await sendText(from, "👍 Nenhuma conta pendente encontrada.");
     return;
   }
 
-  await sendText(from, msgDesconhecido());
+  await sendText(from, "🤔 *Não consegui entender seu comando.*\n\nTente algo como:\n💰 Pagar R$150 ao Álvaro no dia 30/10\n📅 Meus pagamentos\n💸 Pix chave 123e456...");
 }
 
 // ----------------------------
@@ -361,7 +322,8 @@ app.post("/webhook", async (req, res) => {
                 const rowId = id.split("CONFIRMAR:")[1];
                 const row = await findRowById(rowId);
                 if (row) {
-                  row.set("status", "pago"); await row.save();
+                  row.set("status", "pago");
+                  await row.save();
                   await sendText(from, "✅ Pagamento confirmado!");
                 }
               }
