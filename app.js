@@ -1,610 +1,565 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (v3 com recebimento + confirmação)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-17)
 // ============================
+// Mantém: WhatsApp Cloud API + Google Sheets + OpenAI (apenas intenção)
+// Novidades: mensagens visuais, armazenamento automático de conta a pagar,
+//             botões interativos "Copiar chave Pix" e "Copiar código de barras",
+//             lembretes com botão correspondente.
 
+// ----------------------------
+// Importação de bibliotecas
+// ----------------------------
 import express from "express";
 import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
+import { JWT } from "google-auth-library";
 import OpenAI from "openai";
 import cron from "node-cron";
 
+// ----------------------------
+// Carrega variáveis de ambiente
+// ----------------------------
 dotenv.config();
+
 const app = express();
 app.use(bodyParser.json());
 
-// ============================
-// Variáveis de ambiente
-// ============================
-const WA_TOKEN = process.env.WA_TOKEN;
-const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
-const VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || "finplanner_verify";
-const PORT = process.env.PORT || 3000;
+// ----------------------------
+// Config - WhatsApp Cloud API
+// ----------------------------
+const WA_TOKEN = process.env.WA_TOKEN; // Token do WhatsApp Cloud
+const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID; // Phone Number ID
+const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-const PRIVATE_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
-const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_DOC_ID;
+// ----------------------------
+// Config - OpenAI (apenas intenção)
+// ----------------------------
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const USE_OPENAI = (process.env.USE_OPENAI || "false").toLowerCase() === "true";
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-// ============================
-// OpenAI (apenas para extrair intenção/campos; nunca para conversar)
-// ============================
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+// ----------------------------
+// Config - Google Sheets
+// ----------------------------
+const SHEETS_ID = process.env.SHEETS_ID; // ID da planilha
+const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+const GOOGLE_SERVICE_ACCOUNT_KEY = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "").replace(/\\n/g, "\n");
 
-// ============================
+const jwt = new JWT({
+  email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  key: GOOGLE_SERVICE_ACCOUNT_KEY,
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+
+const doc = new GoogleSpreadsheet(SHEETS_ID, jwt);
+let sheet; // será inicializado em ensureSheet()
+
+// ----------------------------
 // Utilitários
-// ============================
-const TZ = "America/Maceio";
+// ----------------------------
+const BR_TZ = "America/Maceio";
 
-const firstUp = (s) => (!s ? "" : s.toString().trim().replace(/^./, (c) => c.toUpperCase()));
-const normalizePhone = (n) => (n || "").replace(/\D/g, "");
-const nowTZ = () => new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
-const addDaysUTC = (date, days) => {
+function brNow() {
+  return new Date(); // ambiente de hospedagem pode não respeitar TZ; ajustamos ao formatar
+}
+
+function formatBRDate(date) {
   const d = new Date(date);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d;
-};
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
 
-const toISODate = (dt) => (dt ? dt.toISOString().slice(0, 10) : "");
-const toBRDate = (dt) =>
-  dt ? `${String(dt.getUTCDate()).padStart(2, "0")}/${String(dt.getUTCMonth() + 1).padStart(2, "0")}/${dt.getUTCFullYear()}` : "";
+function toISODate(date) {
+  // Zera horas para facilitar comparações de "vencimento em dia"
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
 
-const parseBRDate = (s) => {
-  if (!s) return null;
-  const m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})(?:[\/\-\.](\d{2,4}))?$/);
+function parseCurrencyBR(text) {
+  // Captura padrões como: R$ 1.234,56 ou 123,45
+  const m = text.match(/(?:R\$\s*)?([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]+)(?:,([0-9]{2}))?/);
   if (!m) return null;
-  let [_, dd, mm, yyyy] = m;
-  const base = nowTZ();
-  const year = yyyy ? (yyyy.length === 2 ? Number("20" + yyyy) : Number(yyyy)) : base.getFullYear();
-  const dt = new Date(Date.UTC(year, Number(mm) - 1, Number(dd)));
-  return isNaN(dt) ? null : dt;
-};
-
-const BRL = (n) =>
-  "R$ " +
-  (Number(n || 0))
-    .toFixed(2)
-    .replace(".", ",")
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-
-const guessCategory = (desc = "") => {
-  const d = (desc || "").toLowerCase();
-  if (/(luz|energia|eletric|conta de luz)/.test(d)) return "Contas Domésticas";
-  if (/(água|agua|gás|gas)/.test(d)) return "Contas Domésticas";
-  if (/(mercado|supermerc|carrefour|assai|atacad|compras)/.test(d)) return "Alimentação";
-  if (/(restaurante|lanche|pizza|ifood|bar)/.test(d)) return "Alimentação";
-  if (/(gasolina|combust|uber|99|transporte)/.test(d)) return "Transporte";
-  if (/(internet|claro|vivo|tim|oi|netflix|spotify|prime)/.test(d)) return "Serviços";
-  if (/(emprést|emprest|juros|banco|taxa)/.test(d)) return "Financeiro";
-  if (/(salári|salario|venda|serviço|servico|pix recebido|receb)/.test(d)) return "Renda";
-  return "Outros";
-};
-
-const parseMoney = (s) => {
-  if (typeof s !== "string") return NaN;
-  const t = s.replace(/\s/g, "").replace(/[R$\u00A0]/g, "");
-  if (/,/.test(t) && /\./.test(t)) return Number(t.replace(/\./g, "").replace(",", "."));
-  if (/,/.test(t)) return Number(t.replace(",", "."));
-  return Number(t);
-};
-
-// ============================
-// Google Sheets helpers
-// ============================
-async function getDoc() {
-  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
-  await doc.useServiceAccountAuth({ client_email: SERVICE_ACCOUNT_EMAIL, private_key: PRIVATE_KEY });
-  await doc.loadInfo();
-  return doc;
+  const inteiro = m[1].replace(/\./g, "");
+  const centavos = m[2] || "00";
+  return parseFloat(`${inteiro}.${centavos}`);
 }
 
-async function getOrCreateSheet(title, headerValues) {
-  const doc = await getDoc();
-  await doc.loadInfo();
-  let sheet = doc.sheetsByTitle[title];
-  if (!sheet) {
-    sheet = await doc.addSheet({ title, headerValues });
-    console.log(`✅ Aba criada: ${title}`);
-  } else {
-    await sheet.loadHeaderRow();
-    if ((!sheet.headerValues || sheet.headerValues.length === 0) && headerValues?.length) {
-      await sheet.setHeaderRow(headerValues);
-      console.log(`🛠️ Cabeçalhos ajustados na aba: ${title}`);
-    } else {
-      console.log(`📄 Aba já existente: ${title}`);
-    }
-  }
-  return sheet;
-}
-
-async function ensureAllSheets() {
-  await getOrCreateSheet("Usuarios", ["Numero", "Nome", "CriadoEm"]);
-  await getOrCreateSheet("Movimentos", ["Data", "Numero", "Nome", "Tipo", "Descricao", "Valor", "Categoria", "Origem", "IdMsg"]);
-  await getOrCreateSheet("Contas_Pagar", ["DataCad", "Numero", "Nome", "Descricao", "Valor", "VencimentoISO", "VencimentoBR", "Categoria", "Status", "Chave"]);
-  await getOrCreateSheet("Contas_Receber", ["DataCad", "Numero", "Nome", "Descricao", "Valor", "VencimentoISO", "VencimentoBR", "Categoria", "Status"]);
-  await getOrCreateSheet("Limites", ["Numero", "Categoria", "Limite", "MesRef", "Usado", "UltimoAviso", "AtualizadoEm"]);
-  await getOrCreateSheet("Logs", ["Data", "Numero", "Acao", "Detalhes"]);
-}
-
-async function saveUserIfNeeded(numero, nomePossivel) {
-  const sheet = await getOrCreateSheet("Usuarios", ["Numero", "Nome", "CriadoEm"]);
-  const rows = await sheet.getRows();
-  const r = rows.find((x) => normalizePhone(x.Numero) === normalizePhone(numero));
-  if (!r) {
-    await sheet.addRow({ Numero: numero, Nome: nomePossivel || "", CriadoEm: new Date().toISOString() });
-  } else if (nomePossivel && !r.Nome) {
-    r.Nome = nomePossivel;
-    await r.save();
+function formatCurrencyBR(v) {
+  try {
+    return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  } catch {
+    return `R$ ${Number(v).toFixed(2)}`;
   }
 }
-async function getUserName(numero) {
-  const sheet = await getOrCreateSheet("Usuarios", ["Numero", "Nome", "CriadoEm"]);
-  const rows = await sheet.getRows();
-  return rows.find((x) => normalizePhone(x.Numero) === normalizePhone(numero))?.Nome || "";
+
+function detectBarcode(text) {
+  // Muito permissivo: pega sequências longas de dígitos e pontos/espaços
+  const clean = text.replace(/\n/g, " ");
+  const m = clean.match(/[0-9\.\s]{30,}/);
+  return m ? m[0].trim().replace(/\s+/g, " ") : null;
 }
 
-async function logAction(numero, acao, detalhes) {
-  const sheet = await getOrCreateSheet("Logs", ["Data", "Numero", "Acao", "Detalhes"]);
-  await sheet.addRow({ Data: new Date().toISOString(), Numero: numero, Acao: acao, Detalhes: detalhes || "" });
+function detectPixKey(text) {
+  // Heurística: e-mail, telefone com DDI/DDD, CPF/CNPJ, chaves aleatórias (GUID-like), palavras "pix" próximas
+  const hasPixWord = /\bpix\b/i.test(text);
+  const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const phone = text.match(/\+?\d{10,14}/);
+  const cpf = text.match(/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/);
+  const cnpj = text.match(/\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/);
+  const chaveAleatoria = text.match(/[0-9a-f]{32,}|[0-9a-f-]{36}/i);
+
+  const candidate = email?.[0] || phone?.[0] || cpf?.[0] || cnpj?.[0] || chaveAleatoria?.[0];
+  return hasPixWord && candidate ? candidate : null;
 }
 
-// gravações
-async function addMovimento({ numero, nome, tipo, desc, valor, categoria, origem, idMsg }) {
-  const sheet = await getOrCreateSheet("Movimentos", []);
-  await sheet.addRow({
-    Data: new Date().toISOString(),
-    Numero: numero,
-    Nome: nome || "",
-    Tipo: firstUp(tipo),
-    Descricao: firstUp(desc || ""),
-    Valor: Number(valor || 0),
-    Categoria: firstUp(categoria || guessCategory(desc || "")),
-    Origem: origem || "texto",
-    IdMsg: idMsg || "",
-  });
-}
-
-async function addContaPagar({ numero, nome, desc, valor, vencISO, vencBR, categoria, chave }) {
-  const sheet = await getOrCreateSheet("Contas_Pagar", []);
-  await sheet.addRow({
-    DataCad: new Date().toISOString(),
-    Numero: numero,
-    Nome: nome || "",
-    Descricao: firstUp(desc),
-    Valor: Number(valor || 0),
-    VencimentoISO: vencISO || "",
-    VencimentoBR: vencBR || "",
-    Categoria: firstUp(categoria || guessCategory(desc || "")),
-    Status: "pendente",
-    Chave: (chave || "").trim(),
-  });
-}
-
-async function addContaReceber({ numero, nome, desc, valor, vencISO, vencBR, categoria }) {
-  const sheet = await getOrCreateSheet("Contas_Receber", []);
-  await sheet.addRow({
-    DataCad: new Date().toISOString(),
-    Numero: numero,
-    Nome: nome || "",
-    Descricao: firstUp(desc),
-    Valor: Number(valor || 0),
-    VencimentoISO: vencISO || "",
-    VencimentoBR: vencBR || "",
-    Categoria: firstUp(categoria || guessCategory(desc || "")),
-    Status: "pendente",
-  });
-}
-
-async function getLastRecord(numero, tipo) {
-  if (tipo === "receber") {
-    const s = await getOrCreateSheet("Contas_Receber", []);
-    const rows = await s.getRows();
-    const list = rows.filter((r) => normalizePhone(r.Numero) === normalizePhone(numero)).reverse();
-    return list[0] || null;
+function parseDueDate(text) {
+  // Captura dd/mm ou dd/mm/yyyy e também palavras "vence dia", "vencimento"
+  const dmY = text.match(/(\b\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  if (dmY) {
+    let [_, d, m, y] = dmY;
+    d = parseInt(d, 10);
+    m = parseInt(m, 10) - 1;
+    const now = brNow();
+    let year = y ? (y.length === 2 ? 2000 + parseInt(y, 10) : parseInt(y, 10)) : now.getFullYear();
+    const dt = new Date(year, m, d, 0, 0, 0, 0);
+    return dt;
   }
-  if (tipo === "ganho" || tipo === "gasto") {
-    const s = await getOrCreateSheet("Movimentos", []);
-    const rows = await s.getRows();
-    const list = rows
-      .filter((r) => normalizePhone(r.Numero) === normalizePhone(numero) && r.Tipo?.toLowerCase() === tipo)
-      .reverse();
-    return list[0] || null;
+  // procura "vence dia 20" e assume mês atual
+  const venceDia = text.match(/vence(?:r|\b|\s|\w)*\bdia\b\s*(\d{1,2})/i) || text.match(/vencimento\s*(\d{1,2})/i);
+  if (venceDia) {
+    const d = parseInt(venceDia[1], 10);
+    const now = brNow();
+    return new Date(now.getFullYear(), now.getMonth(), d, 0, 0, 0, 0);
   }
   return null;
 }
 
-// ============================
-// WhatsApp - envio (texto / botões)
-// ============================
-async function sendMessage(to, text, buttons = null) {
-  const msg = firstUp(text);
-  let payload = {
+function guessBillName(text) {
+  // Tenta extrair uma "label" simples: energia, água, internet, aluguel etc.
+  const labels = ["energia", "luz", "água", "internet", "aluguel", "telefone", "cartão", "iptu", "condomínio", "conta", "fatura"];
+  const lower = text.toLowerCase();
+  for (const l of labels) {
+    if (lower.includes(l)) return l.charAt(0).toUpperCase() + l.slice(1);
+  }
+  // fallback: primeiras 4 palavras
+  return lower.split(/\s+/).slice(0, 4).join(" ") || "Conta";
+}
+
+// ----------------------------
+// WhatsApp - envio de mensagens
+// ----------------------------
+async function sendWA(payload) {
+  try {
+    const { data } = await axios.post(WA_API, payload, {
+      headers: {
+        "Authorization": `Bearer ${WA_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+    return data;
+  } catch (err) {
+    console.error("Erro ao enviar mensagem WA:", err?.response?.data || err.message);
+    return null;
+  }
+}
+
+export async function sendText(to, text) {
+  return sendWA({
     messaging_product: "whatsapp",
     to,
     type: "text",
-    text: { body: msg },
-  };
+    text: { body: text },
+  });
+}
 
-  if (buttons && Array.isArray(buttons) && buttons.length) {
-    payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: msg },
-        action: {
-          buttons: buttons.map((b, i) => ({
-            type: "reply",
-            reply: { id: b.id || `btn_${i + 1}`, title: b.title },
-          })),
-        },
+export async function sendInteractiveCopyButton({ to, title = "Copiar", copyText = "", buttonTitle = "Copiar" }) {
+  // Usa mensagens interativas com botão do tipo copy_code
+  // Referência: Cloud API - interactive copy_code
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: title },
+      action: {
+        buttons: [
+          {
+            type: "copy_code",
+            copy_code: copyText,
+            title: buttonTitle,
+          },
+        ],
       },
-    };
-  }
+    },
+  };
+  return sendWA(payload);
+}
 
-  try {
-    await axios.post(`https://graph.facebook.com/v17.0/${WA_PHONE_NUMBER_ID}/messages`, payload, {
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${WA_TOKEN}` },
-    });
-  } catch (error) {
-    console.error("❌ Erro ao enviar mensagem:", error.response?.data || error.message);
+// ----------------------------
+// Google Sheets - inicialização e escrita
+// ----------------------------
+async function ensureSheet() {
+  await doc.loadInfo();
+  sheet = doc.sheetsByTitle["finplanner"];
+  if (!sheet) {
+    sheet = await doc.addSheet({ title: "finplanner", headerValues: [
+      "timestamp", "user", "tipo", "conta", "valor", "vencimento_iso", "vencimento_br",
+      "tipo_pagamento", "codigo_pagamento", "status"
+    ]});
+  } else {
+    await sheet.loadHeaderRow();
+    const headers = sheet.headerValues || [];
+    const need = ["timestamp","user","tipo","conta","valor","vencimento_iso","vencimento_br","tipo_pagamento","codigo_pagamento","status"];
+    // adiciona colunas que faltarem
+    let changed = false;
+    for (const h of need) {
+      if (!headers.includes(h)) { headers.push(h); changed = true; }
+    }
+    if (changed) await sheet.setHeaderRow(headers);
   }
 }
 
-// ============================
-// Interpretação inteligente (OpenAI → JSON)
-// ============================
-async function interpretStructured(texto) {
-  try {
-    const system = `Você é a FinPlanner IA. Extraia intenção e campos de mensagens financeiras.
-Responda APENAS com JSON válido.
-Campos:
-- type: "gasto" | "ganho" | "conta_pagar" | "conta_receber" | "relatorio" | "limite" | "saudacao" | "status" | "desconhecido"
-- description: string
-- amount: número
-- date_br: dd/mm/aaaa (quando houver)
-- pix_or_barcode: string (quando houver)
-- category: string
-- period: "1m"|"3m"|"1a"|"personalizado"
-- period_start: dd/mm/aaaa
-- period_end: dd/mm/aaaa
-- limit_value: número
-Se a mensagem perguntar "Registrou meu recebimento?" => type="status". Aceite erros de digitação.`;
-    const resp = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: `Mensagem: "${texto}"` },
-      ],
-      temperature: 0.2,
-    });
-    return JSON.parse(resp.choices[0].message.content.trim());
-  } catch (e) {
-    const t = (texto || "").toLowerCase();
-    if (/(^|\s)(oi|ol[aá]|opa|bom dia|boa tarde|boa noite)(\s|$)/.test(t)) return { type: "saudacao" };
-    if (/registrou.*receb/i.test(t)) return { type: "status" };
-    if (/ganho/.test(t)) return { type: "ganho" };
-    if (/gasto/.test(t)) return { type: "gasto" };
-    if (/a\s*pagar/.test(t)) return { type: "conta_pagar" };
-    if (/a\s*receber/.test(t)) return { type: "conta_receber" };
-    if (/relat[óo]rio/.test(t)) return { type: "relatorio", period: "1m" };
-    if (/limite/.test(t)) return { type: "limite" };
-    return { type: "desconhecido" };
-  }
+async function addBillRow({ user, conta, valor, vencimento, tipo_pagamento, codigo_pagamento }) {
+  await ensureSheet();
+  const row = {
+    timestamp: new Date().toISOString(),
+    user,
+    tipo: "conta_pagar",
+    conta,
+    valor: valor ?? "",
+    vencimento_iso: vencimento ? toISODate(vencimento) : "",
+    vencimento_br: vencimento ? formatBRDate(vencimento) : "",
+    tipo_pagamento: tipo_pagamento || "",
+    codigo_pagamento: codigo_pagamento || "",
+    status: "pendente",
+  };
+  await sheet.addRow(row);
+  return row;
 }
 
-// ============================
-// Webhook Meta (verificação)
-// ============================
+async function listDueToday() {
+  await ensureSheet();
+  const rows = await sheet.getRows();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return rows.filter(r => r.get("tipo") === "conta_pagar" && r.get("status") !== "pago" && r.get("vencimento_iso") && (new Date(r.get("vencimento_iso")).getTime() === today.getTime()));
+}
+
+// ----------------------------
+// Interpretação de intenção (sem texto livre)
+// ----------------------------
+async function detectIntent(text) {
+  const lower = text.toLowerCase();
+
+  // Heurísticas rápidas primeiro
+  const isGreeting = /\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\b/.test(lower);
+  if (isGreeting) return { type: "boas_vindas" };
+
+  const hasKeywordsConta = /(nova|adicionar|add|registrar|lançar|incluir).*\b(conta|despesa|fatura)\b|\bconta a pagar\b|\bvenc(e|imento)\b/.test(lower);
+  const hasMoney = /r\$|\d+[\.,]\d{2}\b/.test(lower);
+  const hasDue = /\bvence|vencimento|dia\b/.test(lower) || /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/.test(lower);
+  if (hasKeywordsConta || (hasMoney && hasDue)) return { type: "nova_conta" };
+
+  if (/\b(meus|listar|mostrar) (pagamentos|contas|a pagar)\b/.test(lower)) return { type: "listar_contas" };
+  if (/\brelat(orio|ório)\b/.test(lower)) return { type: "relatorio" };
+  if (/\bconfirm(ar)? pagamento|paguei|pago\b/.test(lower)) return { type: "confirmar_pagamento" };
+
+  // OpenAI (opcional) apenas para classificar rótulo
+  if (USE_OPENAI && openai) {
+    try {
+      const prompt = `Classifique a intenção da mensagem do usuário em UMA de: boas_vindas, nova_conta, listar_contas, relatorio, confirmar_pagamento, desconhecido.\nMensagem: "${text}"\nResposta apenas com o rótulo.`;
+      const r = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        input: prompt,
+      });
+      const label = (r.output_text || "").trim().toLowerCase();
+      return { type: ["boas_vindas","nova_conta","listar_contas","relatorio","confirmar_pagamento"].includes(label) ? label : "desconhecido" };
+    } catch (e) {
+      console.error("OpenAI intent error:", e.message);
+    }
+  }
+
+  return { type: "desconhecido" };
+}
+
+// ----------------------------
+// Respostas padronizadas (sem texto livre)
+// ----------------------------
+function msgBoasVindas() {
+  return (
+    "👋 *Bem-vindo(a) à FinPlanner IA!*\n\n" +
+    "Eu organizo seus *pagamentos e recebimentos* de forma simples.\n\n" +
+    "Você pode me enviar, por exemplo:\n" +
+    "• `Energia R$ 250 vence 20/10 chave pix email@dominio.com`\n" +
+    "• `Internet 99,90 vence 05/11 boleto 34191.79001 01043...`\n\n" +
+    "Eu salvo automaticamente e te aviso no dia do vencimento."
+  );
+}
+
+function msgContaSalva({ conta, valor, vencimento, tipoPagamento }) {
+  const valorFmt = valor != null ? formatCurrencyBR(valor) : "—";
+  const dataFmt = vencimento ? formatBRDate(vencimento) : "—";
+  const tipo = tipoPagamento === "pix" ? "💳 Pagamento via Pix" : (tipoPagamento === "boleto" ? "🧾 Pagamento via Boleto" : "");
+  return (
+    "🧾 *Conta salva com sucesso!*\n\n" +
+    `💡 Conta: ${conta}\n` +
+    `💰 Valor: ${valorFmt}\n` +
+    `📅 Vencimento: ${dataFmt}\n` +
+    (tipo ? `${tipo}\n\n` : "\n") +
+    "🔔 Te lembrarei no dia do vencimento!"
+  );
+}
+
+function msgDesconhecido() {
+  return (
+    "🤔 *Não entendi seu comando.*\n\n" +
+    "Tente algo como:\n" +
+    "• `Aluguel R$ 1.200 vence 10/11 pix +5583988887777`\n" +
+    "• `Meus pagamentos` (para listar o que está por vencer)"
+  );
+}
+
+function msgLembrete({ conta, valor, vencimento }) {
+  const valorFmt = valor != null ? formatCurrencyBR(valor) : "—";
+  const dataFmt = vencimento ? formatBRDate(vencimento) : "—";
+  return (
+    "⚠️ *Lembrete de pagamento!*\n\n" +
+    `💡 Conta: ${conta}\n` +
+    `💰 Valor: ${valorFmt}\n` +
+    `📅 Vence hoje (${dataFmt})\n\n` +
+    "Se preferir, toque no botão abaixo para copiar e pagar."
+  );
+}
+
+function msgListaCabecalho() {
+  return "📋 *Seus próximos pagamentos:*";
+}
+
+function msgLinhaLista({ conta, valor, vencimento }) {
+  const valorFmt = valor != null ? formatCurrencyBR(valor) : "—";
+  const dataFmt = vencimento ? formatBRDate(vencimento) : "—";
+  return `• ${dataFmt} — ${conta} (${valorFmt})`;
+}
+
+// ----------------------------
+// Processamento de mensagem do usuário
+// ----------------------------
+async function handleUserText(from, text) {
+  const intent = await detectIntent(text);
+
+  if (intent.type === "boas_vindas") {
+    await sendText(from, msgBoasVindas());
+    return;
+  }
+
+  if (intent.type === "nova_conta") {
+    // Extrai dados
+    const conta = guessBillName(text);
+    const valor = parseCurrencyBR(text);
+    const vencimento = parseDueDate(text);
+    const pix = detectPixKey(text);
+    const boleto = pix ? null : detectBarcode(text); // se detectou Pix, prioriza Pix
+
+    let tipo_pagamento = "";
+    let codigo_pagamento = "";
+
+    if (pix) { tipo_pagamento = "pix"; codigo_pagamento = pix; }
+    else if (boleto) { tipo_pagamento = "boleto"; codigo_pagamento = boleto; }
+
+    await addBillRow({
+      user: from,
+      conta,
+      valor,
+      vencimento,
+      tipo_pagamento,
+      codigo_pagamento,
+    });
+
+    // Mensagem de confirmação bonita
+    await sendText(from, msgContaSalva({ conta, valor, vencimento, tipoPagamento: tipo_pagamento }));
+
+    // Envia botão interativo se houver método
+    if (tipo_pagamento === "pix") {
+      await sendInteractiveCopyButton({
+        to: from,
+        title: "💳 Chave Pix disponível:",
+        copyText: codigo_pagamento,
+        buttonTitle: "Copiar chave Pix",
+      });
+    } else if (tipo_pagamento === "boleto") {
+      await sendInteractiveCopyButton({
+        to: from,
+        title: "🧾 Código de barras do boleto:",
+        copyText: codigo_pagamento,
+        buttonTitle: "Copiar código de barras",
+      });
+    }
+
+    return;
+  }
+
+  if (intent.type === "listar_contas") {
+    await ensureSheet();
+    const rows = await sheet.getRows();
+    const today = new Date(); today.setHours(0,0,0,0);
+
+    const próximos = rows
+      .filter(r => r.get("tipo") === "conta_pagar" && r.get("user") === from && r.get("status") !== "pago")
+      .map(r => ({
+        conta: r.get("conta"),
+        valor: parseFloat(r.get("valor") || "0"),
+        vencimento: r.get("vencimento_iso") ? new Date(r.get("vencimento_iso")) : null,
+      }))
+      .sort((a,b) => (a.vencimento?.getTime()||0) - (b.vencimento?.getTime()||0))
+      .slice(0, 10);
+
+    if (!próximos.length) {
+      await sendText(from, "✅ Você não tem contas pendentes registradas.");
+      return;
+    }
+
+    let msg = msgListaCabecalho() + "\n\n";
+    for (const item of próximos) {
+      msg += msgLinhaLista(item) + "\n";
+    }
+    await sendText(from, msg.trim());
+    return;
+  }
+
+  if (intent.type === "relatorio") {
+    await ensureSheet();
+    const rows = await sheet.getRows();
+    const totalPendente = rows
+      .filter(r => r.get("tipo") === "conta_pagar" && r.get("status") !== "pago")
+      .reduce((acc, r) => acc + parseFloat(r.get("valor") || "0"), 0);
+
+    const msg = (
+      "📊 *Resumo rápido*\n\n" +
+      `Pendente total: ${formatCurrencyBR(totalPendente)}\n` +
+      "Use `Meus pagamentos` para ver as próximas datas."
+    );
+    await sendText(from, msg);
+    return;
+  }
+
+  if (intent.type === "confirmar_pagamento") {
+    await ensureSheet();
+    const rows = await sheet.getRows();
+    // Estratégia simples: marca a última conta do usuário com vencimento mais próximo como paga
+    const pendentes = rows
+      .filter(r => r.get("tipo") === "conta_pagar" && r.get("user") === from && r.get("status") !== "pago")
+      .sort((a,b) => new Date(a.get("vencimento_iso")||0) - new Date(b.get("vencimento_iso")||0));
+
+    if (!pendentes.length) {
+      await sendText(from, "👍 Não encontrei contas pendentes para confirmar.");
+      return;
+    }
+
+    pendentes[0].set("status", "pago");
+    await pendentes[0].save();
+
+    await sendText(from, "✅ Pagamento confirmado! Obrigado por manter tudo em dia.");
+    return;
+  }
+
+  // fallback
+  await sendText(from, msgDesconhecido());
+}
+
+// ----------------------------
+// Webhook - verificação (GET)
+// ----------------------------
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado com sucesso!");
-    res.status(200).send(challenge);
-  } else res.status(403).send("Erro na verificação do webhook");
+  const verifyToken = process.env.WEBHOOK_VERIFY_TOKEN || "verify_token";
+  const mode = req.query["hub.mode"]; 
+  const token = req.query["hub.verify_token"]; 
+  const challenge = req.query["hub.challenge"]; 
+
+  if (mode && token && mode === "subscribe" && token === verifyToken) {
+    console.log("Webhook verificado");
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
 });
 
-// ============================
-// Webhook principal (mensagens e botões)
-// ============================
+// ----------------------------
+// Webhook - recepção (POST)
+// ----------------------------
 app.post("/webhook", async (req, res) => {
   try {
-    await ensureAllSheets();
+    const body = req.body;
+    if (body.object && body.entry) {
+      for (const entry of body.entry) {
+        const changes = entry.changes || [];
+        for (const change of changes) {
+          const messages = change.value?.messages || [];
+          for (const msg of messages) {
+            const from = msg.from; // número do cliente
 
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
-    const from = message?.from;
+            if (msg.type === "text") {
+              const text = msg.text?.body || "";
+              await handleUserText(from, text);
+            }
 
-    // 1) Clique em botões (interactive)
-    if (message?.type === "interactive" && message?.interactive?.button_reply) {
-      const btn = message.interactive.button_reply;
-      const id = btn.id || "";
-      // padrões: rcv_confirm:{row}, rcv_pending:{row}, pay_confirm:{row}
-      if (id.startsWith("rcv_confirm:")) {
-        const rowNum = Number(id.split(":")[1]);
-        const s = await getOrCreateSheet("Contas_Receber", []);
-        const rows = await s.getRows();
-        const row = rows.find((r) => Number(r._rowNumber) === rowNum);
-        if (row) {
-          row.Status = "recebido";
-          await row.save();
-          await sendMessage(from, `✅ Recebimento confirmado: “${row.Descricao}” — ${BRL(row.Valor)}.`);
-          await logAction(from, "RECEBIMENTO_CONFIRMADO", `${row.Descricao} ${row.Valor}`);
-        } else {
-          await sendMessage(from, "❌ Não encontrei o registro para confirmar.");
+            // Opcional: tratar botões clicados, etc.
+          }
         }
-      } else if (id.startsWith("rcv_pending:")) {
-        await sendMessage(from, "⏳ Ok! Vou te lembrar novamente no dia do recebimento.");
-      } else if (id.startsWith("pay_confirm:")) {
-        const rowNum = Number(id.split(":")[1]);
-        const s = await getOrCreateSheet("Contas_Pagar", []);
-        const rows = await s.getRows();
-        const row = rows.find((r) => Number(r._rowNumber) === rowNum);
-        if (row) {
-          row.Status = "pago";
-          await row.save();
-          await sendMessage(from, `✅ Pagamento confirmado: “${row.Descricao}” — ${BRL(row.Valor)}.`);
-          await logAction(from, "PAGAMENTO_CONFIRMADO", `${row.Descricao} ${row.Valor}`);
-        } else {
-          await sendMessage(from, "❌ Não encontrei a conta para confirmar.");
-        }
-      } else {
-        await sendMessage(from, "ℹ️ Ação recebida.");
       }
-
-      return res.sendStatus(200);
     }
-
-    // 2) Mensagens de texto
-    const userText = message?.text?.body?.trim();
-    if (!from || !userText) return res.sendStatus(200);
-
-    await saveUserIfNeeded(from, "");
-    const nome = await getUserName(from);
-
-    const cmd = await interpretStructured(userText);
-
-    // Saudações
-    if (cmd.type === "saudacao") {
-      const boas = [
-        "👋 Olá! Sou a FinPlanner IA, sua assistente financeira. Como posso te ajudar hoje?",
-        "💰 Olá! Posso registrar gastos, ganhos e contas, ou gerar relatórios.",
-        "📈 Olá! Pronta para organizar suas finanças. O que deseja fazer?",
-      ];
-      await sendMessage(from, boas[Math.floor(Math.random() * boas.length)]);
-      await logAction(from, "SAUDACAO", userText);
-      return res.sendStatus(200);
-    }
-
-    // Status: “Registrou meu recebimento?”
-    if (cmd.type === "status") {
-      const last = (await getLastRecord(from, "ganho")) || (await getLastRecord(from, "receber"));
-      if (last) {
-        const valor = last.Valor ? BRL(last.Valor) : "valor não informado";
-        const desc = last.Descricao || "Recebimento";
-        const quando = last.VencimentoBR || "";
-        await sendMessage(from, `✅ Sim! ${firstUp(desc)} ${quando ? `para ${quando} ` : ""}está registrado: ${valor}.`);
-      } else {
-        await sendMessage(from, "ℹ️ Ainda não encontrei um recebimento recente registrado.");
-      }
-      await logAction(from, "STATUS", userText);
-      return res.sendStatus(200);
-    }
-
-    // Gasto
-    if (cmd.type === "gasto") {
-      const valor = cmd.amount || (userText.match(/[\d\.\,]+/) ? parseMoney(userText.match(/[\d\.\,]+/)[0]) : 0);
-      const desc = cmd.description || userText;
-      const categoria = cmd.category || guessCategory(desc);
-      await addMovimento({ numero: from, nome, tipo: "gasto", desc, valor, categoria, origem: "texto" });
-      await sendMessage(from, `💸 Gasto registrado! Valor: ${BRL(valor)} — Categoria: ${categoria}.`);
-      await logAction(from, "GASTO", `${desc} ${valor}`);
-      return res.sendStatus(200);
-    }
-
-    // Ganho
-    if (cmd.type === "ganho") {
-      const valor = cmd.amount || (userText.match(/[\d\.\,]+/) ? parseMoney(userText.match(/[\d\.\,]+/)[0]) : 0);
-      const desc = cmd.description || userText;
-      const categoria = cmd.category || "Renda";
-      await addMovimento({ numero: from, nome, tipo: "ganho", desc, valor, categoria, origem: "texto" });
-      await sendMessage(from, `💰 Ganho registrado! Valor: ${BRL(valor)} — Categoria: ${categoria}.`);
-      await logAction(from, "GANHO", `${desc} ${valor}`);
-      return res.sendStatus(200);
-    }
-
-    // Conta a pagar
-    if (cmd.type === "conta_pagar") {
-      const valor = cmd.amount || (userText.match(/[\d\.\,]+/) ? parseMoney(userText.match(/[\d\.\,]+/)[0]) : 0);
-      const desc = cmd.description || userText;
-      let dt = cmd.date_br ? parseBRDate(cmd.date_br) : null;
-
-      if (!dt) {
-        const m = userText.match(/(\d{1,2})\s+de?\s*(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)/i);
-        const meses = { janeiro:0, fevereiro:1, "março":2, "marco":2, abril:3, maio:4, junho:5, julho:6, agosto:7, setembro:8, outubro:9, novembro:10, dezembro:11 };
-        if (m) dt = new Date(Date.UTC(nowTZ().getFullYear(), meses[m[2].toLowerCase()], Number(m[1])));
-      }
-      const vencISO = toISODate(dt);
-      const vencBR = toBRDate(dt);
-      const categoria = cmd.category || guessCategory(desc);
-      const chave = cmd.pix_or_barcode || "";
-
-      await addContaPagar({ numero: from, nome, desc, valor, vencISO, vencBR, categoria, chave });
-      await sendMessage(
-        from,
-        `🧾 Conta “${firstUp(desc)}” adicionada. Vence em ${vencBR || "data informada"} — ${BRL(valor)} — Categoria: ${categoria}. Deseja incluir o código de barras ou chave Pix?`
-      );
-      await logAction(from, "A_PAGAR", `${desc} ${valor} ${vencBR}`);
-      return res.sendStatus(200);
-    }
-
-    // Conta a receber
-    if (cmd.type === "conta_receber") {
-      const valor = cmd.amount || (userText.match(/[\d\.\,]+/) ? parseMoney(userText.match(/[\d\.\,]+/)[0]) : 0);
-      const desc = cmd.description || userText;
-      let dt = cmd.date_br ? parseBRDate(cmd.date_br) : null;
-      const vencISO = toISODate(dt);
-      const vencBR = toBRDate(dt);
-      const categoria = cmd.category || "Renda";
-
-      await addContaReceber({ numero: from, nome, desc, valor, vencISO, vencBR, categoria });
-      await sendMessage(
-        from,
-        `💵 Recebimento “${firstUp(desc)}” adicionado. Vence em ${vencBR || "data informada"} — ${BRL(valor)} — Categoria: ${categoria}. Te aviso no dia.`
-      );
-      await logAction(from, "A_RECEBER", `${desc} ${valor} ${vencBR}`);
-      return res.sendStatus(200);
-    }
-
-    // Relatório
-    if (cmd.type === "relatorio") {
-      const sheet = await getOrCreateSheet("Movimentos", []);
-      const rows = await sheet.getRows();
-      const meus = rows.filter((r) => normalizePhone(r.Numero) === normalizePhone(from));
-
-      let dtIni, dtFim;
-      const now = nowTZ();
-      dtFim = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59));
-
-      const p = cmd.period;
-      if (p === "1m") {
-        dtIni = new Date(dtFim);
-        dtIni.setMonth(dtIni.getMonth() - 1);
-      } else if (p === "3m") {
-        dtIni = new Date(dtFim);
-        dtIni.setMonth(dtIni.getMonth() - 3);
-      } else if (p === "1a") {
-        dtIni = new Date(dtFim);
-        dtIni.setFullYear(dtIni.getFullYear() - 1);
-      } else if (p === "personalizado" && cmd.period_start && cmd.period_end) {
-        const i = parseBRDate(cmd.period_start);
-        const f = parseBRDate(cmd.period_end);
-        if (!i || !f) {
-          await sendMessage(from, "❌ Período inválido. Informe como: 01/01/2025 a 31/01/2025.");
-          return res.sendStatus(200);
-        }
-        dtIni = new Date(Date.UTC(i.getUTCFullYear(), i.getUTCMonth(), i.getUTCDate(), 0, 0, 0));
-        dtFim = new Date(Date.UTC(f.getUTCFullYear(), f.getUTCMonth(), f.getUTCDate(), 23, 59, 59));
-      } else {
-        dtIni = new Date(dtFim);
-        dtIni.setMonth(dtIni.getMonth() - 1);
-      }
-
-      const iniISO = dtIni.toISOString();
-      const fimISO = dtFim.toISOString();
-
-      const ganhos = meus.filter((r) => r.Tipo === "Ganho" && r.Data >= iniISO && r.Data <= fimISO).reduce((s, r) => s + Number(r.Valor || 0), 0);
-      const gastos = meus.filter((r) => r.Tipo === "Gasto" && r.Data >= iniISO && r.Data <= fimISO).reduce((s, r) => s + Number(r.Valor || 0), 0);
-      const saldo = ganhos - gastos;
-
-      await sendMessage(
-        from,
-        `📈 Relatório ${iniISO.slice(0, 10)} a ${fimISO.slice(0, 10)}\n💰 Ganhos: ${BRL(ganhos)}\n💸 Gastos: ${BRL(gastos)}\n📈 Saldo: ${BRL(saldo)}`
-      );
-      await logAction(from, "RELATORIO", `${iniISO} ${fimISO}`);
-      return res.sendStatus(200);
-    }
-
-    // Fora do escopo / não entendi
-    const foraContexto = [
-      "💼 Posso te ajudar apenas com finanças: ganhos, gastos, contas, relatórios e limites.",
-      "📊 Sou sua assistente financeira. Ajudo com gastos, ganhos e relatórios.",
-      "⚙️ Posso atuar apenas em assuntos financeiros como lançamentos e contas.",
-    ];
-    const naoEntendi = [
-      "❔ Não entendi bem o que você quis dizer. Pode repetir ou ser mais específico?",
-      "🤔 Não consegui entender o comando. Tente reformular sua mensagem.",
-      "💭 Acho que não entendi. Pode explicar de outro jeito?",
-    ];
-
-    if (cmd.type === "desconhecido") {
-      await sendMessage(from, naoEntendi[Math.floor(Math.random() * naoEntendi.length)]);
-      await logAction(from, "NAO_ENTENDI", userText);
-    } else {
-      await sendMessage(from, foraContexto[Math.floor(Math.random() * foraContexto.length)]);
-      await logAction(from, "FORA_CONTEXTO", userText);
-    }
-
     res.sendStatus(200);
-  } catch (error) {
-    console.error("❌ Erro ao processar mensagem:", error.message);
-    res.sendStatus(500);
+  } catch (e) {
+    console.error("Erro no webhook:", e.message);
+    res.sendStatus(200);
   }
 });
 
-// ============================
-// CRON (08:00 America/Maceio) — lembretes 1 dia antes (pagar e receber)
-// ============================
-cron.schedule(
-  "0 8 * * *",
-  async () => {
-    try {
-      await ensureAllSheets();
+// ----------------------------
+// CRON - lembretes de pagamentos (a cada 30 minutos)
+// ----------------------------
+cron.schedule("*/30 * * * *", async () => {
+  try {
+    const due = await listDueToday();
+    for (const r of due) {
+      const to = r.get("user");
+      const conta = r.get("conta");
+      const valor = parseFloat(r.get("valor") || "0");
+      const vencimento = r.get("vencimento_iso") ? new Date(r.get("vencimento_iso")) : null;
+      const tipo = r.get("tipo_pagamento");
+      const codigo = r.get("codigo_pagamento");
 
-      const usuarios = await (await getOrCreateSheet("Usuarios", [])).getRows();
-      const pagarSheet = await getOrCreateSheet("Contas_Pagar", []);
-      const receberSheet = await getOrCreateSheet("Contas_Receber", []);
+      await sendText(to, msgLembrete({ conta, valor, vencimento }));
 
-      const hoje = nowTZ();
-      const amanhaUTC = addDaysUTC(new Date(Date.UTC(hoje.getFullYear(), hoje.getMonth(), hoje.getDate())), 1);
-      const amanhaISO = toISODate(amanhaUTC);
-
-      // A PAGAR — 1 dia antes
-      const contasPagar = await pagarSheet.getRows();
-      for (const u of usuarios) {
-        const numero = u.Numero;
-        const nome = u.Nome || "";
-        const minhas = contasPagar.filter(
-          (c) => normalizePhone(c.Numero) === normalizePhone(numero) && c.Status === "pendente" && c.VencimentoISO === amanhaISO
-        );
-        for (const c of minhas) {
-          const base = `🔔 Lembrete, ${nome || "tudo bem"}! Sua conta “${c.Descricao}” vence amanhã (${c.VencimentoBR}). Valor: ${BRL(c.Valor)}.`;
-          const extra = c.Chave ? `\n💳 Pix/Código: \`${c.Chave}\` (Copie e pague)` : "";
-          await sendMessage(numero, base + extra, [
-            { id: `pay_confirm:${c._rowNumber}`, title: "Confirmar ✅" },
-            { id: `rcv_pending:${c._rowNumber}`, title: "Ainda não ⏳" }, // reaproveitando id genérico
-          ]);
-          await logAction(numero, "LEMBRETE_PAGAR", `${c.Descricao} ${c.VencimentoBR}`);
-        }
+      if (tipo === "pix" && codigo) {
+        await sendInteractiveCopyButton({
+          to,
+          title: "💳 Chave Pix:",
+          copyText: codigo,
+          buttonTitle: "Copiar chave Pix",
+        });
+      } else if (tipo === "boleto" && codigo) {
+        await sendInteractiveCopyButton({
+          to,
+          title: "🧾 Código de barras:",
+          copyText: codigo,
+          buttonTitle: "Copiar código de barras",
+        });
       }
-
-      // A RECEBER — 1 dia antes
-      const receber = await receberSheet.getRows();
-      for (const u of usuarios) {
-        const numero = u.Numero;
-        const nome = u.Nome || "";
-        const meus = receber.filter(
-          (r) => normalizePhone(r.Numero) === normalizePhone(numero) && r.Status === "pendente" && r.VencimentoISO === amanhaISO
-        );
-        for (const r of meus) {
-          await sendMessage(
-            numero,
-            `💵 Olá ${nome || ""}! Você tem um recebimento de “${r.Descricao}” no valor de ${BRL(r.Valor)}, com vencimento amanhã (${r.VencimentoBR}). Deseja confirmar o recebimento?`,
-            [
-              { id: `rcv_confirm:${r._rowNumber}`, title: "Confirmar ✅" },
-              { id: `rcv_pending:${r._rowNumber}`, title: "Ainda não ⏳" },
-            ]
-          );
-          await logAction(numero, "LEMBRETE_RECEBER", `${r.Descricao} ${r.VencimentoBR}`);
-        }
-      }
-    } catch (e) {
-      console.error("❌ Erro no CRON:", e.message);
     }
-  },
-  { timezone: TZ }
-);
-
-// ============================
-// Start
-// ============================
-app.listen(PORT, () => {
-  console.log("✅ FinPlanner IA pronta: lembretes de pagar/receber + confirmação por botões.");
-  console.log(`🚀 Porta: ${PORT}`);
+  } catch (e) {
+    console.error("Erro no CRON:", e.message);
+  }
 });
 
+// ----------------------------
+// Inicialização do servidor
+// ----------------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`FinPlanner IA rodando na porta ${PORT}`);
+});
