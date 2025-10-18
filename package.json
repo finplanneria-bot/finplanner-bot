@@ -1,33 +1,24 @@
 {
-  "type": "module",
   "name": "finplanner-bot",
   "version": "1.0.0",
-  "description": "FinPlanner IA — assistente financeira inteligente no WhatsApp para controle de contas, pagamentos e recebimentos.",
+  "description": "FinPlanner IA - Assistente financeira no WhatsApp para controle de gastos, ganhos e lembretes automáticos.",
+  "type": "module",
   "main": "app.js",
   "scripts": {
     "start": "node --enable-source-maps app.js"
   },
-  "keywords": [
-    "finanças",
-    "whatsapp",
-    "bot",
-    "google-sheets",
-    "openai",
-    "finplanner",
-    "automação"
-  ],
-  "author": "FinPlanner IA",
-  "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.7",
-    "express": "^4.18.2",
+    "axios": "^1.7.3",
     "body-parser": "^1.20.2",
-    "openai": "^4.29.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "google-spreadsheet": "^3.3.0",
-    "node-cron": "^3.0.2",
-    "dotenv": "^16.4.1"
+    "node-cron": "^3.0.3",
+    "openai": "^4.60.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "author": "FinPlanner IA",
+  "license": "MIT"
 }
