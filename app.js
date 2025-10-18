@@ -1,5 +1,5 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-19.4)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-19.5)
 // ============================
 
 import express from "express";
@@ -101,13 +101,18 @@ function formatCurrencyBR(v, showSign=false){
   return `${sign}R$${abs.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}`;
 }
 
+// ✅ Aceita 17 → R$17,00 | 17,50 → R$17,50 | R$ 120,00
+// 🚫 Não captura "17" se for parte de "17/10" (data)
 function parseCurrencyBR(text){
-  const m=(text||"").match(/(?:r\$\s*)?(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{2}))?/i);
-  if(!m)return null;
-  const inteiro=m[1].replace(/\./g,"");
-  const centavos=m[2]||"00";
-  return parseFloat(`${inteiro}.${centavos}`);
+  if(!text) return null;
+  const clean = text.replace(/\s+/g, " ");
+  // número (com ou sem R$), não seguido imediatamente por "/"
+  const m = clean.match(/\b(?:r\$)?\s*(\d+(?:[.,]\d{2})?)(?!\/)\b/i);
+  if(!m) return null;
+  let val = m[1].replace(/\./g,"").replace(",",".");
+  return parseFloat(val);
 }
+
 function detectBarcode(t){const m=(t||"").match(/[0-9\.\s]{30,}/);return m?m[0].trim().replace(/\s+/g," "):null;}
 function detectPixKey(t){
   const hasPix=/\bpix\b/i.test(t||"");
@@ -116,16 +121,18 @@ function detectPixKey(t){
   const docid=(t||"").match(/[0-9a-f]{32,}|[0-9a-f-]{36}/i);
   return hasPix ? (email?.[0]||phone?.[0]||docid?.[0]) : null;
 }
-function parseDueDate(t){
+
+// ✅ Datas: dd/mm[/aaaa], hoje, amanhã, ontem
+function parseDueDate(text){
   const now=new Date();
-  // dd/mm/yyyy ou dd/mm/yy
-  const dmY=(t||"").match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  const dmY=(text||"").match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
   if(dmY){let[_,d,m,y]=dmY;const Y=y? (y.length===2?2000+parseInt(y):parseInt(y)):now.getFullYear();return new Date(Y,parseInt(m)-1,parseInt(d));}
-  if(/\bontem\b/i.test(t||"")){const d=new Date(now);d.setDate(d.getDate()-1);return d;}
-  if(/\bhoje\b/i.test(t||"")) return now;
-  if(/\bamanh[aã]\b/i.test(t||"")){const d=new Date(now);d.setDate(d.getDate()+1);return d;}
+  if(/\bontem\b/i.test(text||"")){const d=new Date(now);d.setDate(d.getDate()-1);return d;}
+  if(/\bhoje\b/i.test(text||"")) return now;
+  if(/\bamanh[aã]\b/i.test(text||"")){const d=new Date(now);d.setDate(d.getDate()+1);return d;}
   return null;
 }
+
 function guessBillName(t){
   const labels=["energia","luz","água","agua","internet","aluguel","telefone","cartão","cartao","condominio","mercado","iptu","ipva","lanche","gasolina","academia","telegram","beatriz","pix"];
   const lower=(t||"").toLowerCase();
@@ -138,6 +145,7 @@ const capitalize = s => (s||"").replace(/\b\w/g, c => c.toUpperCase());
 // Data-helpers para relatórios
 function brToDate(s){const m=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!m)return null;return new Date(parseInt(m[3]),parseInt(m[2])-1,parseInt(m[1]));}
 function formatMonthYear(d){const meses=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]; const dt=new Date(d); return `${meses[dt.getMonth()]} de ${dt.getFullYear()}`;}
+function monthLabel(d=new Date()){const meses=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]; return meses[d.getMonth()];}
 
 // ----------------------------
 // WhatsApp helpers
@@ -170,23 +178,34 @@ async function sendStatusChoiceButtons(to,rowId){
 // ----------------------------
 async function detectIntent(t){
   const lower=(t||"").toLowerCase();
+
+  // boas-vindas / ajuda
   if(/\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\b/.test(lower)) return "boas_vindas";
   if(/\b(funções|funcoes|ajuda|help)\b/.test(lower)) return "funcoes";
-  if(/\b(meus pagamentos|listar pagamentos|mostrar pagamentos)\b/.test(lower)) return "listar_contas";
-  if(/\b(meus recebimentos|meus ganhos|listar recebimentos|mostrar recebimentos|ganhos)\b/.test(lower)) return "listar_recebimentos";
-  if(/\b(relat[óo]rio|resumo)\b/.test(lower)) return "relatorio";
-  if(/\b(pagar|pagamento|vou pagar|irei pagar|quitar|liquidar|pix\s+para|enviei pix|transferi)\b/.test(lower)) return "nova_conta";
-  if(/\b(receber|entrada|venda|ganhar|ganho|receita|recebi|ganhei|gastei|paguei|efetuei)\b/.test(lower)) return "novo_movimento";
-  if(/\bconfirm(ar)? pagamento|paguei|pago|liquidei|baixei|quitei\b/.test(lower)) return "confirmar_pagamento";
+
+  // listagens
+  if(/\b(meus pagamentos|listar pagamentos|mostrar pagamentos)\b/i.test(lower)) return "listar_contas";
+  if(/\b(meus recebimentos|meus ganhos|listar recebimentos|mostrar recebimentos|ganhos)\b/i.test(lower)) return "listar_recebimentos";
+  if(/\b(meus gastos|lançamentos|extrato|lançamentos de hoje)\b/i.test(lower)) return "listar_gastos_ext";
+
+  // relatórios
+  if(/\b(relat[óo]rio|resumo)\b/i.test(lower)) return "relatorio";
+
+  // novos movimentos
+  if(/\b(pagar|pagamento|vou pagar|irei pagar|quitar|liquidar|pix\s+para|transferir|enviar)\b/i.test(lower)) return "nova_conta";
+  if(/\b(receber|entrada|venda|ganhar|ganho|receita|recebi|ganhei|gastei|paguei|efetuei|enviei|fiz pix)\b/i.test(lower)) return "novo_movimento";
+
+  // confirmar
+  if(/\bconfirm(ar)? pagamento|paguei|pago|liquidei|baixei|quitei\b/i.test(lower)) return "confirmar_pagamento";
 
   if(USE_OPENAI&&openai){
     try{
       const r=await openai.responses.create({
         model:"gpt-4.1-mini",
-        input:`Classifique: boas_vindas, funcoes, listar_contas, listar_recebimentos, relatorio, nova_conta, novo_movimento, confirmar_pagamento, fora_contexto.\nFrase: ${t}`
+        input:`Classifique: boas_vindas, funcoes, listar_contas, listar_recebimentos, listar_gastos_ext, relatorio, nova_conta, novo_movimento, confirmar_pagamento, fora_contexto.\nFrase: ${t}`
       });
       const label=(r.output_text||"").trim().toLowerCase();
-      if(["boas_vindas","funcoes","listar_contas","listar_recebimentos","relatorio","nova_conta","novo_movimento","confirmar_pagamento","fora_contexto"].includes(label))
+      if(["boas_vindas","funcoes","listar_contas","listar_recebimentos","listar_gastos_ext","relatorio","nova_conta","novo_movimento","confirmar_pagamento","fora_contexto"].includes(label))
         return label;
     }catch{}
   }
@@ -194,7 +213,7 @@ async function detectIntent(t){
 }
 
 // ----------------------------
-// Extrações + status inteligente
+// Extrações + status (verbos)
 // ----------------------------
 function extractEntities(text, intent){
   const conta=guessBillName(text);
@@ -209,30 +228,22 @@ function extractEntities(text, intent){
 
   const lower=(text||"").toLowerCase();
 
-  // Regras de status: NÃO usar "hoje/amanhã" para decidir.
-  // Somente verbos/intenções:
-  // - pendente: pagar/vou pagar/irei...
-  // - pago: paguei/efetuei/fiz/recebi/ganhei/gastei/transferi/enviei pix...
-  // - ambíguo: perguntar ao usuário
-  let status = null; // null = perguntar
-  const isFutureVerb = /\b(pagar|vou pagar|irei pagar|quitar|liquidar)\b/i.test(lower);
-  const isPaidVerb   = /\b(paguei|efetuei|fiz|recebi|ganhei|gastei|transferi|enviei pix|pago)\b/i.test(lower);
+  // Status: apenas pelos verbos (não por "hoje/amanhã")
+  let status = null; // null => perguntar
+  const isFutureVerb = /\b(pagar|vou pagar|irei pagar|quitar|liquidar|enviar|transferir)\b/i.test(lower);
+  const isPaidVerb   = /\b(paguei|efetuei|fiz|recebi|ganhei|gastei|transferi|enviei(?:\s+pix)?|pago)\b/i.test(lower);
 
   if (isFutureVerb) status = "pendente";
   else if (isPaidVerb) status = "pago";
   else status = null;
 
-  // Natureza do movimento:
-  // Se intenção veio como "nova_conta" → conta_pagar
-  // Se "novo_movimento", decidir por pistas:
-  //   - “recebi/ganhei/entrada/venda/receita” → conta_receber
-  //   - “gastei/paguei/pix para/transferi” → conta_pagar
+  // Natureza:
   let tipo = "conta_pagar";
   if (intent === "nova_conta") {
     tipo = "conta_pagar";
   } else if (intent === "novo_movimento") {
     if (/\b(recebi|ganhei|receber|entrada|venda|receita)\b/i.test(lower)) tipo = "conta_receber";
-    if (/\b(gastei|paguei|pix\s+para|transferi|efetuei)\b/i.test(lower)) tipo = "conta_pagar";
+    if (/\b(gastei|paguei|pix\s+para|transferi|efetuei|fiz)\b/i.test(lower)) tipo = "conta_pagar";
   }
 
   return { conta, valor, vencimento, tipo_pagamento, codigo_pagamento, status, tipo };
@@ -249,7 +260,7 @@ async function computeUserMonthlyBalance(sheet, user){
 
   const mine = rows.filter(r => typeof r.get==="function" && r.get("user")===user && r.get("status")==="pago");
 
-  // Data efetiva do lançamento: vencimento_iso ou timestamp
+  // Data efetiva: vencimento_iso ou timestamp
   const inMonth = mine.filter(r => {
     const d = r.get("vencimento_iso") ? new Date(r.get("vencimento_iso")) : new Date(r.get("timestamp"));
     return d >= mStart && d <= mEnd;
@@ -266,19 +277,14 @@ async function computeUserMonthlyBalance(sheet, user){
   return receitas - gastos;
 }
 
-function monthLabel(d=new Date()){
-  const meses=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
-  return meses[d.getMonth()];
-}
-
 // ----------------------------
-// Mensagens (sem citar planilha)
+// Mensagens
 // ----------------------------
 const MSG = {
   BOAS_VINDAS:
 `👋 *Olá! Eu sou a FinPlanner IA.*
 
-💡 *Sou sua assistente financeira. Organizo seus pagamentos, ganhos e gastos de forma simples e automática.*
+💡 *Organizo seus pagamentos, ganhos e gastos de forma simples e automática.*
 
 Você pode me enviar mensagens como:
 
@@ -293,11 +299,13 @@ Você pode me enviar mensagens como:
 📋 *Ver movimentações*
 → \`Meus pagamentos\`
 → \`Meus recebimentos\` ou \`Meus ganhos\`
+→ \`Lançamentos de hoje\` ou \`Extrato\`
 
 📊 *Relatórios*
 → \`Relatório do mês\`
 → \`Relatório 3 meses\`
 → \`Relatório 01/08/2025 a 30/09/2025\`
+→ \`Relatório geral\` (últimos 12 meses)
 
 🔔 *Eu te lembro dos vencimentos e organizo tudo automaticamente pra você.*`,
   AJUDA:
@@ -314,13 +322,14 @@ Você pode me enviar mensagens como:
 📅 *Listar*
 → \`Meus pagamentos\`
 → \`Meus recebimentos\` / \`Meus ganhos\`
+→ \`Lançamentos de hoje\` / \`Extrato\`
 
 📊 *Relatórios*
 → \`Relatório do mês\`
 → \`Relatório 3 meses\`
 → \`Relatório 10/2025\`
 → \`Relatório 01/08/2025 a 30/09/2025\`
-→ \`Relatório de ganhos\` / \`Relatório de gastos\`
+→ \`Relatório geral\` (12 meses)
 
 ✅ *Confirmar pagamentos*
 → \`Paguei aluguel\`
@@ -333,7 +342,7 @@ Experimente algo assim:
 
 💰 \`Pagar aluguel R$800,00 05/11/2025\`
 💸 \`Receber R$300,00 de João amanhã\`
-📅 \`Energia R$157,68 vence hoje\`
+📅 \`Lançamentos de hoje\`
 📊 \`Relatório 3 meses\`
 ⚙️ \`Funções\` (para ver tudo o que posso fazer)`,
   CONTA_OK: (conta, valorFmt, dataFmt, status) =>
@@ -368,21 +377,29 @@ ${status==="pago" ? "✅ Status: Pago" : "⏳ Status: Pendente"}`,
 function parseReportQuery(tRaw){
   const t = (tRaw||"").toLowerCase();
 
-  // Tipo de filtro
+  // Filtros
   let filter="all";
   if(/\b(gastos|despesas|pagamentos)\b/i.test(t)) filter="gastos";
   if(/\b(ganhos|receitas|entradas|recebimentos)\b/i.test(t)) filter="ganhos";
+
+  // Geral (12 meses)
+  if(/\b(geral|completo|todos|tudo)\b/i.test(t)){
+    const end = endOfDay(new Date());
+    const start = new Date(end);
+    start.setFullYear(start.getFullYear()-1);
+    return { type:"range", start, end, filter };
+  }
 
   // 3 meses
   if(/\b3\s*mes(es)?\b/i.test(t)){
     const end = endOfDay(new Date());
     const s = new Date(end);
-    s.setMonth(s.getMonth()-2); // inclui mês atual + 2 anteriores (total 3)
+    s.setMonth(s.getMonth()-2); // atual + 2 anteriores
     const start = startOfMonth(s.getFullYear(), s.getMonth());
     return { type:"range", start, end, filter };
   }
 
-  // período dd/mm/yyyy a dd/mm/yyyy
+  // Período dd/mm/yyyy a dd/mm/yyyy
   const reRange=/(\d{1,2}\/\d{1,2}\/\d{4})\s*(?:a|até|ate|-)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i;
   const m=t.match(reRange);
   if(m){
@@ -391,13 +408,13 @@ function parseReportQuery(tRaw){
     return null;
   }
 
-  // "do mês", "mês atual"
+  // do mês / mês atual
   if(/\b(do m[eê]s|m[eê]s atual)\b/i.test(t)){
     const now=new Date(); const start=startOfMonth(now.getFullYear(), now.getMonth()); const end=endOfMonth(now.getFullYear(), now.getMonth());
     return { type:"monthly", start, end, filter };
   }
 
-  // "mm/yyyy"
+  // mm/yyyy
   const reMonth=/(?:m[eê]s\s*)?(\d{1,2})\/(\d{4})/i;
   const mm=t.match(reMonth);
   if(mm){
@@ -416,7 +433,6 @@ function buildCategoryTotals(rows){
     const val  = parseFloat(r.get("valor")||"0");
     map[nome] = (map[nome]||0) + val;
   }
-  // ordenar desc
   const arr = Object.entries(map).map(([conta, total])=>({conta,total})).sort((a,b)=> b.total - a.total);
   return arr;
 }
@@ -457,9 +473,48 @@ async function handleUserText(from, text){
     await sendText(from, msg.trim()); return;
   }
 
+  // "meus gastos" / "extrato" / "lançamentos de hoje"
+  if (intent === "listar_gastos_ext") {
+    const rows = await sheet.getRows();
+    const lower=(text||"").toLowerCase();
+    const isHoje = /\bhoje\b/i.test(lower);
+
+    let itens = rows
+      .filter(r => typeof r.get==="function" && r.get("user")===from);
+
+    if (isHoje) {
+      const today = startOfDay(new Date()).getTime();
+      itens = itens.filter(r => {
+        const d = r.get("vencimento_iso") ? startOfDay(new Date(r.get("vencimento_iso"))).getTime()
+                                          : startOfDay(new Date(r.get("timestamp"))).getTime();
+        return d === today;
+      });
+      itens.sort((a,b)=> new Date(a.get("timestamp")) - new Date(b.get("timestamp")));
+      let msg = "📋 *Lançamentos de hoje:*\n\n";
+      if (!itens.length) { await sendText(from, "✅ Nenhum lançamento hoje."); return; }
+      for (const r of itens) {
+        const tip = r.get("tipo")==="conta_pagar" ? "Gasto" : "Recebimento";
+        msg += `• ${tip} — ${r.get("conta")} (${formatCurrencyBR(parseFloat(r.get("valor")||"0"))}) — ${r.get("status")}\n`;
+      }
+      await sendText(from, msg.trim()); return;
+    }
+
+    // Extrato: últimos 15 lançamentos (pagos e pendentes)
+    itens.sort((a,b)=> new Date(b.get("timestamp")) - new Date(a.get("timestamp")));
+    itens = itens.slice(0,15);
+    if (!itens.length) { await sendText(from, "✅ Nenhum lançamento encontrado."); return; }
+    let msg = "📋 *Extrato recente:*\n\n";
+    for (const r of itens) {
+      const tip = r.get("tipo")==="conta_pagar" ? "Gasto" : "Receb.";
+      const when = r.get("vencimento_br") || formatBRDate(r.get("timestamp"));
+      msg += `• ${when} — ${tip} — ${r.get("conta")} (${formatCurrencyBR(parseFloat(r.get("valor")||"0"))}) — ${r.get("status")}\n`;
+    }
+    await sendText(from, msg.trim()); return;
+  }
+
   if (intent === "relatorio") {
     const pr = parseReportQuery(text);
-    if(!pr){ await sendText(from, "⚠️ *Período inválido.* Tente:\n• `Relatório do mês`\n• `Relatório 3 meses`\n• `Relatório 01/08/2025 a 30/09/2025`"); return; }
+    if(!pr){ await sendText(from, "⚠️ *Período inválido.* Tente:\n• `Relatório do mês`\n• `Relatório 3 meses`\n• `Relatório 01/08/2025 a 30/09/2025`\n• `Relatório geral`"); return; }
 
     const rows = await sheet.getRows();
     const mine = rows.filter(r => typeof r.get==="function" && r.get("user")===from);
@@ -537,7 +592,7 @@ async function handleUserText(from, text){
     const { conta, valor, vencimento, tipo_pagamento, codigo_pagamento, status, tipo } = extractEntities(text, intent);
     const rowId = uuidShort();
 
-    // Se status for nulo → perguntar ao usuário (mas já registra como pendente por padrão)
+    // se status for nulo (ambíguo), salva pendente e pergunta
     const finalStatus = status ?? "pendente";
 
     await sheet.addRow({
@@ -566,12 +621,12 @@ async function handleUserText(from, text){
       await sendText(from, MSG.RECEB_OK(conta, valorFmt, dataFmt, finalStatus));
     }
 
-    // Se foi ambíguo, perguntar explicitamente com botões
+    // Perguntar status se ambíguo
     if (status === null) {
       await sendStatusChoiceButtons(from, rowId);
     }
 
-    // saldo do mês → apenas se pago
+    // Mostrar saldo do mês apenas se pago
     if (finalStatus === "pago") {
       const saldo = await computeUserMonthlyBalance(sheet, from);
       await sendText(from, MSG.SALDO_MES(saldo));
@@ -625,7 +680,7 @@ app.post("/webhook",async(req,res)=>{
             if(m.type==="interactive"){
               const id=m.interactive?.button_reply?.id;
 
-              // Botão confirmar pagamento (de lembrete ou após registro)
+              // Botão confirmar pagamento
               if(id?.startsWith("CONFIRMAR:")){
                 const rowId=id.split("CONFIRMAR:")[1];
                 const sheet=await ensureSheet();
