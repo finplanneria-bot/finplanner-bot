@@ -1,6 +1,15 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-19.7)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-20.3)
 // ============================
+// Recursos principais:
+// - Interpreta frases sem verbo (ex: "academia 50") e pergunta status quando ambíguo
+// - PIX/transferência => pago automático
+// - Data em branco quando não fornecida
+// - Relatórios inteligentes: Vencidos, Pagos, A Pagar e Completo (+ botões interativos)
+// - Confirma interação ao clicar nos botões
+// - Edição do último lançamento (valor, data, status, descrição)
+// - Saldo mensal (apenas pagos), categorias, lembretes
+// - Compatível com Render + google-spreadsheet v3 (ESM)
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -47,7 +56,7 @@ const SHEETS_ID = process.env.SHEETS_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 let GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "";
 if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\\n").replace(/\\\\n/g, "\\n").replace(/\\n/g, "\n");
 }
 const doc = new GoogleSpreadsheet(SHEETS_ID);
 
@@ -93,7 +102,7 @@ const endOfDay   = d => { const x = new Date(d); x.setHours(23,59,59,999); retur
 const startOfMonth = (y,m) => new Date(y, m, 1, 0,0,0,0);
 const endOfMonth   = (y,m) => new Date(y, m+1, 0, 23,59,59,999);
 
-function formatBRDate(d){ return d ? new Date(d).toLocaleDateString("pt-BR") : ""; } // ← pode retornar vazio
+function formatBRDate(d){ return d ? new Date(d).toLocaleDateString("pt-BR") : ""; } // pode retornar vazio
 function toISODate(d){ if(!d) return ""; const x=new Date(d); x.setHours(0,0,0,0); return x.toISOString(); }
 function formatCurrencyBR(v, showSign=false){
   const sign = showSign && v < 0 ? "–" : "";
@@ -101,23 +110,22 @@ function formatCurrencyBR(v, showSign=false){
   return `${sign}R$${abs.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}`;
 }
 
-// Aceita 17 → R$17,00 | 17,50 → R$17,50 | R$ 120,00
-// Não captura "17" se for parte de "17/10" (data)
+// Aceita 17 -> R$17,00 | 17,50 -> R$17,50 | R$ 120,00 | evita datas 17/10
 function parseCurrencyBR(text){
   if(!text) return null;
   const clean = text.replace(/\s+/g, " ");
   const m = clean.match(/\b(?:r\$)?\s*(\d+(?:[.,]\d{2})?)(?!\/)\b/i);
   if(!m) return null;
-  let val = m[1].replace(/\./g,"").replace(",",".");
+  let val = m[1].replace(/\./g,"").replace(",","."); // 1.234,56 -> 1234.56
   return parseFloat(val);
 }
 
-function detectBarcode(t){const m=(t||"").match(/[0-9\.\s]{30,}/);return m?m[0].trim().replace(/\s+/g," "):null;}
+function detectBarcode(t){const m=(t||"").match(/[0-9.\\s]{30,}/);return m?m[0].trim().replace(/\\s+/g," "):null;}
 function detectPixKey(t){
-  const hasPix=/\bpix|transfer[êe]ncia|transf\.\b/i.test(t||"");
+  const hasPix=/\\b(pix|transfer[êe]ncia|transf\\.)\\b/i.test(t||"");
   if(!hasPix) return null;
-  const email=(t||"").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  const phone=(t||"").match(/\+?\d{10,14}/);
+  const email=(t||"").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);
+  const phone=(t||"").match(/\\+?\\d{10,14}/);
   const docid=(t||"").match(/[0-9a-f]{32,}|[0-9a-f-]{36}/i);
   return email?.[0]||phone?.[0]||docid?.[0]||"";
 }
@@ -125,13 +133,13 @@ function detectPixKey(t){
 // Datas: dd/mm[/aaaa], hoje, amanhã, ontem, "dia 25/10"
 function parseDueDate(text){
   const now=new Date();
-  const dmY=(text||"").match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  const dmY=(text||"").match(/\\b(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?\\b/);
   if(dmY){let[_,d,m,y]=dmY;const Y=y? (y.length===2?2000+parseInt(y):parseInt(y)):now.getFullYear();return new Date(Y,parseInt(m)-1,parseInt(d));}
-  const dia=(text||"").match(/\bdia\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i);
+  const dia=(text||"").match(/\\bdia\\s+(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?/i);
   if(dia){let[_,d,m,y]=dia;const Y=y? (y.length===2?2000+parseInt(y):parseInt(y)):now.getFullYear();return new Date(Y,parseInt(m)-1,parseInt(d));}
-  if(/\bontem\b/i.test(text||"")){const d=new Date(now);d.setDate(d.getDate()-1);return d;}
-  if(/\bhoje\b/i.test(text||"")) return now;
-  if(/\bamanh[aã]\b/i.test(text||"")){const d=new Date(now);d.setDate(d.getDate()+1);return d;}
+  if(/\\bontem\\b/i.test(text||"")){const d=new Date(now);d.setDate(d.getDate()-1);return d;}
+  if(/\\bhoje\\b/i.test(text||"")) return now;
+  if(/\\bamanh[aã]\\b/i.test(text||"")){const d=new Date(now);d.setDate(d.getDate()+1);return d;}
   return null;
 }
 
@@ -139,59 +147,54 @@ function guessBillName(t){
   const labels=["energia","luz","água","agua","internet","aluguel","telefone","cartão","cartao","condominio","mercado","iptu","ipva","lanche","gasolina","academia","telegram","beatriz","pix","feira","compras"];
   const lower=(t||"").toLowerCase();
   for(const l of labels) if(lower.includes(l)) return l.charAt(0).toUpperCase()+l.slice(1);
-  const who=(t||"").match(/\b(?:pra|para|ao|a|à|de)\s+([\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i);
-  return who ? capitalize(who[1]) : (capitalize(lower.split(/\s+/).slice(0,3).join(" ")) || "Lançamento");
+  const who=(t||"").match(/\\b(?:pra|para|ao|a|à|de)\\s+([\\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i);
+  return who ? capitalize(who[1]) : (capitalize(lower.split(/\\s+/).slice(0,3).join(" ")) || "Lançamento");
 }
-const capitalize = s => (s||"").replace(/\b\w/g, c => c.toUpperCase());
+const capitalize = s => (s||"").replace(/\\b\\w/g, c => c.toUpperCase());
 
 // Data/report helpers
-function brToDate(s){const m=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!m)return null;return new Date(parseInt(m[3]),parseInt(m[2])-1,parseInt(m[1]));}
+function brToDate(s){const m=s.match(/(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})/);if(!m)return null;return new Date(parseInt(m[3]),parseInt(m[2])-1,parseInt(m[1]));}
 function formatMonthYear(d){const meses=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]; const dt=new Date(d); return `${meses[dt.getMonth()]} de ${dt.getFullYear()}`;}
 function monthLabel(d=new Date()){const meses=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]; return meses[d.getMonth()];}
 function withinRange(dt, start, end){ return dt && dt>=start && dt<=end; }
 function getEffectiveDate(r){ return r.get("vencimento_iso") ? new Date(r.get("vencimento_iso")) : new Date(r.get("timestamp")); }
 
-// Janela para categorias e listagens
+// Janela para relatórios/listagens
 function parseInlineWindow(text, {defaultTo="month"} = {}){
   const t=(text||"").toLowerCase();
 
-  // hoje
-  if(/\bhoje\b/i.test(t)){
+  if(/\\bhoje\\b/i.test(t)){
     const d = new Date();
     return { start: startOfDay(d), end: endOfDay(d), label: "hoje" };
   }
-
-  // 3 meses
-  if(/\b3\s*mes(es)?\b/i.test(t)){
+  if(/\\b3\\s*mes(es)?\\b/i.test(t)){
     const end = endOfDay(new Date());
     const s = new Date(end);
     s.setMonth(s.getMonth()-2);
     const start = startOfMonth(s.getFullYear(), s.getMonth());
     return { start, end, label: "3meses" };
   }
-
-  // dd/mm/yyyy a dd/mm/yyyy
-  const m=t.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s*(?:a|até|ate|-)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  const m=t.match(/(\\d{1,2}\\/\\d{1,2}\\/\\d{4})\\s*(?:a|até|ate|-)\\s*(\\d{1,2}\\/\\d{1,2}\\/\\d{4})/i);
   if(m){
     const from=brToDate(m[1]), to=brToDate(m[2]);
     if(from&&to && (to-from)<=366*24*3600*1000) return { start:startOfDay(from), end:endOfDay(to), label: "range" };
   }
-
-  // geral (12 meses)
-  if(/\b(geral|completo|todos|tudo)\b/i.test(t)){
+  if(/\\b(geral|completo|todos|tudo)\\b/i.test(t)){
     const end = endOfDay(new Date());
     const start = new Date(end);
     start.setFullYear(start.getFullYear()-1);
     return { start, end, label: "geral" };
   }
-
-  // mês atual (padrão)
+  // mm/yyyy (relatório novembro 2025)
+  const mm=t.match(/(\\d{1,2})\\/(\\d{4})/);
+  if(mm){
+    const month=parseInt(mm[1])-1, year=parseInt(mm[2]);
+    return { start: startOfMonth(year,month), end: endOfMonth(year,month), label: "mes" };
+  }
   if (defaultTo==="month") {
     const now=new Date();
     return { start: startOfMonth(now.getFullYear(),now.getMonth()), end: endOfMonth(now.getFullYear(),now.getMonth()), label: "mes" };
   }
-
-  // fallback: tudo (12 meses)
   const end = endOfDay(new Date());
   const start = new Date(end); start.setFullYear(start.getFullYear()-1);
   return { start, end, label: "geral" };
@@ -214,6 +217,37 @@ async function sendConfirmButton(to,rowId){
     interactive:{type:"button",body:{text:"Quando pagar, toque abaixo para confirmar:"},
     action:{buttons:[{type:"reply",reply:{id:`CONFIRMAR:${rowId}`,title:title}}]}}});
 }
+
+// Relatórios: menu de botões (máx 3 por mensagem) → envia 2 mensagens para incluir "Completo"
+async function sendReportMenu(to){
+  await sendWA({
+    messaging_product:"whatsapp",
+    to,
+    type:"interactive",
+    interactive:{
+      type:"button",
+      body:{ text:"Escolha o relatório:" },
+      action:{ buttons:[
+        { type:"reply", reply:{ id:"REPORT:vencidos", title:"Vencidos" } },
+        { type:"reply", reply:{ id:"REPORT:pagos",    title:"Pagos" } },
+        { type:"reply", reply:{ id:"REPORT:apagar",   title:"A Pagar" } },
+      ]}
+    }
+  });
+  await sendWA({
+    messaging_product:"whatsapp",
+    to,
+    type:"interactive",
+    interactive:{
+      type:"button",
+      body:{ text:"Ou veja tudo:" },
+      action:{ buttons:[
+        { type:"reply", reply:{ id:"REPORT:completo", title:"Completo" } },
+      ]}
+    }
+  });
+}
+
 async function sendStatusChoiceButtons(to,rowId){
   return sendWA({messaging_product:"whatsapp",to,type:"interactive",
     interactive:{type:"button",body:{text:"Esse lançamento já foi pago ou ainda está pendente?"},
@@ -230,34 +264,36 @@ async function detectIntent(t){
   const lower=(t||"").toLowerCase();
 
   // boas-vindas / ajuda
-  if(/\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\b/.test(lower)) return "boas_vindas";
-  if(/\b(funções|funcoes|ajuda|help)\b/.test(lower)) return "funcoes";
+  if(/\\b(oi|olá|ola|opa|bom dia|boa tarde|boa noite)\\b/.test(lower)) return "boas_vindas";
+  if(/\\b(funções|funcoes|ajuda|help)\\b/.test(lower)) return "funcoes";
 
-  // listagens / consultas
-  if(/\b(meus pagamentos|listar pagamentos|mostrar pagamentos)\b/i.test(lower)) return "listar_contas";
-  if(/\b(meus recebimentos|meus ganhos|listar recebimentos|mostrar recebimentos|ganhos)\b/i.test(lower)) return "listar_recebimentos";
-  if(/\b(meus gastos|lançamentos de hoje)\b/i.test(lower)) return "listar_gastos_ext";
-  if(/\b(lançamentos|meus lançamentos|lançamentos geral|registros|todos os lançamentos|extrato)\b/i.test(lower)) return "listar_lancamentos";
-  if(/\b(categorias|gastos por categoria|listar categorias|liste gastos por categoria|categorias de gastos|categorias de ganhos)\b/i.test(lower)) return "listar_categorias";
+  // relatórios + menu
+  if(/\\b(relat[óo]rios?|ver lan[cç]amentos|meus pagamentos|meus gastos)\\b/i.test(lower)) return "relatorios_menu";
 
-  // relatórios
-  if(/\b(relat[óo]rio|resumo)\b/i.test(lower)) return "relatorio";
+  // listagens / consultas específicas
+  if(/\\b(meus recebimentos|meus ganhos|listar recebimentos|mostrar recebimentos|ganhos)\\b/i.test(lower)) return "listar_recebimentos";
+  if(/\\b(lan[cç]amentos de hoje)\\b/i.test(lower)) return "listar_gastos_ext";
+  if(/\\b(lan[cç]amentos|meus lan[cç]amentos|lan[cç]amentos geral|registros|todos os lan[cç]amentos|extrato)\\b/i.test(lower)) return "listar_lancamentos";
+  if(/\\b(categorias|gastos por categoria|listar categorias|categorias de gastos|categorias de ganhos)\\b/i.test(lower)) return "listar_categorias";
+
+  // relatórios diretos
+  if(/\\b(relat[óo]rio|resumo)\\b/i.test(lower)) return "relatorio";
 
   // edição
-  if(/\b(editar|corrigir|alterar|atualizar)\b/i.test(lower)) return "editar_lancamento";
+  if(/\\b(editar|corrigir|alterar|atualizar)\\b/i.test(lower)) return "editar_lancamento";
 
   // novos movimentos
-  if(/\b(pagar|pagamento|vou pagar|irei pagar|quitar|liquidar|pix\s+para|transferir|enviar)\b/i.test(lower)) return "nova_conta";
-  if(/\b(receber|entrada|venda|ganhar|ganho|receita|recebi|ganhei|gastei|paguei|efetuei|enviei|fiz pix)\b/i.test(lower)) return "novo_movimento";
+  if(/\\b(pagar|pagamento|vou pagar|irei pagar|quitar|liquidar|pix\\s+para|transferir|enviar)\\b/i.test(lower)) return "nova_conta";
+  if(/\\b(receber|entrada|venda|ganhar|ganho|receita|recebi|ganhei|gastei|paguei|efetuei|enviei|fiz pix)\\b/i.test(lower)) return "novo_movimento";
 
   if(USE_OPENAI&&openai){
     try{
       const r=await openai.responses.create({
         model:"gpt-4.1-mini",
-        input:`Classifique: boas_vindas, funcoes, listar_contas, listar_recebimentos, listar_gastos_ext, listar_lancamentos, listar_categorias, relatorio, editar_lancamento, nova_conta, novo_movimento, fora_contexto.\nFrase: ${t}`
+        input:`Classifique: boas_vindas, funcoes, relatorios_menu, listar_recebimentos, listar_gastos_ext, listar_lancamentos, listar_categorias, relatorio, editar_lancamento, nova_conta, novo_movimento, fora_contexto.\nFrase: ${t}`
       });
       const label=(r.output_text||"").trim().toLowerCase();
-      if(["boas_vindas","funcoes","listar_contas","listar_recebimentos","listar_gastos_ext","listar_lancamentos","listar_categorias","relatorio","editar_lancamento","nova_conta","novo_movimento","fora_contexto"].includes(label))
+      if(["boas_vindas","funcoes","relatorios_menu","listar_recebimentos","listar_gastos_ext","listar_lancamentos","listar_categorias","relatorio","editar_lancamento","nova_conta","novo_movimento","fora_contexto"].includes(label))
         return label;
     }catch{}
   }
@@ -294,35 +330,33 @@ function extractEntities(text, intent){
   const lower=(text||"").toLowerCase();
 
   // verbos explícitos
-  const isFutureVerb = /\b(pagar|vou pagar|irei pagar|quitar|liquidar|enviar|transferir)\b/i.test(lower);
-  const isPaidVerb   = /\b(paguei|efetuei|fiz|recebi|ganhei|gastei|transferi|enviei(?:\s+pix)?|pago)\b/i.test(lower);
+  const isFutureVerb = /\\b(pagar|vou pagar|irei pagar|quitar|liquidar|enviar|transferir)\\b/i.test(lower);
+  const isPaidVerb   = /\\b(paguei|efetuei|fiz|recebi|ganhei|gastei|transferi|enviei(?:\\s+pix)?|pago)\\b/i.test(lower);
 
-  // tipo pela intenção ou sem verbo
+  // tipo
   let tipo = (intent === "novo_movimento" || intent === "nova_conta") ? "conta_pagar" : "conta_pagar";
   if (intent === "novo_movimento") {
-    if (/\b(recebi|ganhei|receber|entrada|venda|receita)\b/i.test(lower)) tipo = "conta_receber";
-    if (/\b(gastei|paguei|pix\s+para|transferi|efetuei|fiz)\b/i.test(lower)) tipo = "conta_pagar";
+    if (/\\b(recebi|ganhei|receber|entrada|venda|receita)\\b/i.test(lower)) tipo = "conta_receber";
+    if (/\\b(gastei|paguei|pix\\s+para|transferi|efetuei|fiz)\\b/i.test(lower)) tipo = "conta_pagar";
   }
   if (!isFutureVerb && !isPaidVerb) {
-    // sem verbo → classificar por palavras-chave
     tipo = classifyWithoutVerb(text);
   }
 
   // status
   let status = null;
   if (pixKey) {
-    status = "pago"; // PIX/transferência ⇒ pago
+    status = "pago"; // PIX ⇒ pago
   } else if (isFutureVerb) {
     status = "pendente";
   } else if (isPaidVerb) {
     status = "pago";
   } else {
-    // sem verbo: decidir pela data, se houver
     if (vencimento) {
       const today = startOfDay(new Date()).getTime();
       const d = startOfDay(new Date(vencimento)).getTime();
       if (d > today) status = "pendente"; // futura
-      else status = null;                 // hoje/passado → perguntar
+      else status = null;                 // hoje/passado => perguntar
     } else {
       status = null; // perguntar
     }
@@ -383,6 +417,7 @@ Você pode me enviar mensagens como:
 → \`Meus lançamentos\` / \`Extrato\`
 
 📊 *Relatórios*
+→ \`Relatórios\` (você escolhe *Vencidos*, *Pagos*, *A Pagar* ou *Completo*)
 → \`Relatório do mês\`
 → \`Relatório 3 meses\`
 → \`Relatório 01/08/2025 a 30/09/2025\`
@@ -406,6 +441,7 @@ Você pode me enviar mensagens como:
 → \`Categorias\` / \`Categorias 3 meses\`
 
 📊 *Relatórios*
+→ \`Relatórios\` (Vencidos, Pagos, A Pagar ou Completo)
 → \`Relatório do mês\` / \`Relatório 3 meses\`
 → \`Relatório 10/2025\`
 → \`Relatório 01/08/2025 a 30/09/2025\`
@@ -422,7 +458,7 @@ Experimente algo assim:
 💰 \`Pagar aluguel R$800,00 05/11/2025\`
 💸 \`Receber R$300,00 de João amanhã\`
 📅 \`Lançamentos de hoje\`
-📊 \`Relatório 3 meses\`
+📊 \`Relatórios\`
 ⚙️ \`Funções\``,
   CONTA_OK: (conta, valorFmt, dataStr, status) =>
 `🧾 *Lançamento registrado!*
@@ -459,23 +495,23 @@ function parseReportQuery(tRaw){
   const t = (tRaw||"").toLowerCase();
 
   let filter="all";
-  if(/\b(gastos|despesas|pagamentos|contas a pagar)\b/i.test(t)) filter="gastos";
-  if(/\b(ganhos|receitas|entradas|recebimentos)\b/i.test(t)) filter="ganhos";
+  if(/\\b(gastos|despesas|pagamentos|contas a pagar)\\b/i.test(t)) filter="gastos";
+  if(/\\b(ganhos|receitas|entradas|recebimentos)\\b/i.test(t)) filter="ganhos";
 
-  if(/\b(geral|completo|todos|tudo)\b/i.test(t)){
+  if(/\\b(geral|completo|todos|tudo)\\b/i.test(t)){
     const end = endOfDay(new Date());
     const start = new Date(end); start.setFullYear(start.getFullYear()-1);
     return { type:"range", start, end, filter };
   }
 
-  if(/\b3\s*mes(es)?\b/i.test(t)){
+  if(/\\b3\\s*mes(es)?\\b/i.test(t)){
     const end = endOfDay(new Date());
     const s = new Date(end); s.setMonth(s.getMonth()-2);
     const start = startOfMonth(s.getFullYear(), s.getMonth());
     return { type:"range", start, end, filter };
   }
 
-  const reRange=/(\d{1,2}\/\d{1,2}\/\d{4})\s*(?:a|até|ate|-)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i;
+  const reRange=/(\\d{1,2}\\/\\d{1,2}\\/\\d{4})\\s*(?:a|até|ate|-)\\s*(\\d{1,2}\\/\\d{1,2}\\/\\d{4})/i;
   const m=t.match(reRange);
   if(m){
     const from=brToDate(m[1]); const to=brToDate(m[2]);
@@ -483,12 +519,12 @@ function parseReportQuery(tRaw){
     return null;
   }
 
-  if(/\b(do m[eê]s|m[eê]s atual)\b/i.test(t)){
+  if(/\\b(do m[eê]s|m[eê]s atual)\\b/i.test(t)){
     const now=new Date(); const start=startOfMonth(now.getFullYear(), now.getMonth()); const end=endOfMonth(now.getFullYear(), now.getMonth());
     return { type:"monthly", start, end, filter };
   }
 
-  const reMonth=/(?:m[eê]s\s*)?(\d{1,2})\/(\d{4})/i;
+  const reMonth=/(?:m[eê]s\\s*)?(\\d{1,2})\\/(\\d{4})/i;
   const mm=t.match(reMonth);
   if(mm){
     const month=parseInt(mm[1])-1, year=parseInt(mm[2]);
@@ -520,34 +556,94 @@ async function handleEditLast(from, text){
   const mine = rows.filter(r => typeof r.get==="function" && r.get("user")===from);
   if (!mine.length) { await sendText(from, "✅ Nenhum lançamento encontrado para editar."); return; }
 
-  // último por timestamp
   mine.sort((a,b)=> new Date(b.get("timestamp")) - new Date(a.get("timestamp")));
   const row = mine[0];
 
-  // valor
   const newVal = parseCurrencyBR(text);
   if (newVal != null) { row.set("valor", newVal); }
 
-  // data
   const newDate = parseDueDate(text);
   if (newDate) {
     row.set("vencimento_iso", toISODate(newDate));
     row.set("vencimento_br", formatBRDate(newDate));
   }
 
-  // status
-  if (/\b(status\s+)?pago\b/i.test(text)) row.set("status","pago");
-  else if (/\b(status\s+)?pendente\b/i.test(text)) row.set("status","pendente");
+  if (/\\b(status\\s+)?pago\\b/i.test(text)) row.set("status","pago");
+  else if (/\\b(status\\s+)?pendente\\b/i.test(text)) row.set("status","pendente");
 
-  // descrição
-  const descMatch = text.match(/\b(descri[cç][aã]o|descricao|nome|t[ií]tulo|titulo)\s+(.+)/i);
+  const descMatch = text.match(/\\b(descri[cç][aã]o|descricao|nome|t[ií]tulo|titulo)\\s+(.+)/i);
   if (descMatch) row.set("conta", capitalize(descMatch[2].trim()));
 
   await row.save();
 
   const vf = formatCurrencyBR(parseFloat(row.get("valor")||"0"));
   const df = row.get("vencimento_br") || "";
-  await sendText(from, `✅ Último lançamento atualizado:\n• Descrição: ${row.get("conta")}\n• Valor: ${vf}\n• Data/Vencimento: ${df}\n• Status: ${statusIconLabel(row.get("status"))}`);
+  await sendText(from, `✅ Último lançamento atualizado:\\n• Descrição: ${row.get("conta")}\\n• Valor: ${vf}\\n• Data/Vencimento: ${df}\\n• Status: ${statusIconLabel(row.get("status"))}`);
+}
+
+// ----------------------------
+// Relatórios gerados por tipo
+// ----------------------------
+function splitByStatusAndDate(itens){
+  const today = startOfDay(new Date()).getTime();
+  const vencidos = [];
+  const apagar   = [];
+  const pagos    = [];
+  for (const r of itens){
+    const d = r.get("vencimento_iso") ? startOfDay(new Date(r.get("vencimento_iso"))).getTime() : startOfDay(new Date(r.get("timestamp"))).getTime();
+    const st = r.get("status");
+    if (st === "pago") { pagos.push(r); continue; }
+    if (d < today) vencidos.push(r);
+    else apagar.push(r);
+  }
+  return { vencidos, apagar, pagos };
+}
+
+function formatLine(r){
+  const tip = r.get("tipo")==="conta_pagar" ? "Gasto" : "Receb.";
+  const when = r.get("vencimento_br") || "";
+  const val = formatCurrencyBR(parseFloat(r.get("valor")||"0"));
+  return `• ${when || "—"} — ${tip} — ${r.get("conta")} (${val}) — ${statusIconLabel(r.get("status"))}`;
+}
+
+async function buildReportMessage(from, rows, win, kind="completo"){
+  const mine = rows.filter(r => typeof r.get==="function" && r.get("user")===from)
+                   .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
+                   .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b)); // asc por data
+
+  if (!mine.length) return "✅ Nenhum lançamento no período selecionado.";
+
+  const { vencidos, apagar, pagos } = splitByStatusAndDate(mine);
+
+  let msg = `📊 *Relatório (${formatBRDate(win.start)} a ${formatBRDate(win.end)})*\n\n`;
+
+  if (kind === "vencidos" || kind === "completo") {
+    msg += "📅 *Vencidos*\n";
+    if (vencidos.length) vencidos.forEach(r => { msg += `${formatLine(r)}\n`; });
+    else msg += "• Nenhum vencido\n";
+    msg += "\n";
+  }
+  if (kind === "pagos" || kind === "completo") {
+    msg += "💰 *Pagos*\n";
+    if (pagos.length) pagos.forEach(r => { msg += `${formatLine(r)}\n`; });
+    else msg += "• Nenhum pago\n";
+    msg += "\n";
+  }
+  if (kind === "apagar" || kind === "completo") {
+    msg += "⏳ *A Pagar / A Receber*\n";
+    if (apagar.length) apagar.forEach(r => { msg += `${formatLine(r)}\n`; });
+    else msg += "• Nenhum a pagar/receber\n";
+    msg += "\n";
+  }
+
+  // saldo do mês atual (pagos)
+  const now=new Date();
+  if (win.start.getMonth()===now.getMonth() && win.start.getFullYear()===now.getFullYear()) {
+    const sal = await computeUserMonthlyBalance(await ensureSheet(), from);
+    msg += `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(sal, true)}`;
+  }
+
+  return msg.trim();
 }
 
 // ----------------------------
@@ -560,22 +656,12 @@ async function handleUserText(from, text){
   if (intent === "boas_vindas") { await sendText(from, MSG.BOAS_VINDAS); return; }
   if (intent === "funcoes") { await sendText(from, MSG.AJUDA); return; }
 
-  // Listar pagamentos pendentes
-  if (intent === "listar_contas") {
-    const win = parseInlineWindow(text, {defaultTo:"month"});
-    const rows = await sheet.getRows();
-    const pend = rows
-      .filter(r => typeof r.get==="function" && r.get("user")===from && r.get("tipo")==="conta_pagar" && r.get("status")!=="pago")
-      .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
-      .map(r => ({ conta: r.get("conta"), valor: parseFloat(r.get("valor")||"0"), ven: r.get("vencimento_iso")? new Date(r.get("vencimento_iso")): null, st:r.get("status") }))
-      .sort((a,b)=> (a.ven?.getTime()||0)-(b.ven?.getTime()||0));
-    if(!pend.length){ await sendText(from, MSG.LISTA_PAG_VAZIA); return; }
-    let msg=`📋 *Pagamentos pendentes* (${formatBRDate(win.start)} a ${formatBRDate(win.end)}):\n\n`;
-    for(const p of pend){ msg += `• ${formatBRDate(p.ven)} — ${p.conta} (${formatCurrencyBR(p.valor)}) — ${statusIconLabel(p.st)}\n`; }
-    await sendText(from, msg.trim()); return;
+  if (intent === "relatorios_menu") {
+    await sendReportMenu(from);
+    return;
   }
 
-  // Listar recebimentos (futuros)
+  // Listagens rápidas
   if (intent === "listar_recebimentos") {
     const win = parseInlineWindow(text, {defaultTo:"month"});
     const rows = await sheet.getRows();
@@ -590,7 +676,6 @@ async function handleUserText(from, text){
     await sendText(from, msg.trim()); return;
   }
 
-  // Lançamentos de hoje / Extrato por janela
   if (intent === "listar_gastos_ext" || intent === "listar_lancamentos") {
     const win = parseInlineWindow(text, {defaultTo:"month"});
     const rows = await sheet.getRows();
@@ -605,14 +690,14 @@ async function handleUserText(from, text){
       const tip = r.get("tipo")==="conta_pagar" ? "Gasto" : "Receb.";
       const when = r.get("vencimento_br") || "";
       const val = formatCurrencyBR(parseFloat(r.get("valor")||"0"));
-      msg += `• ${when || "—"} — ${tip} — ${r.get("conta")} (${val}) — ${statusIconLabel(r.get("status"))}\n`;
+      msg += `• ${when || "—"} — ${tip} — ${r.get("conta")} (${val}) — ${statusIconLabel(r.get("status"))}\n";
     }
-    msg += `\n🔎 Dica: envie *"Categorias"* para ver totais por categoria.`;
+    msg += `\n🔎 Dica: envie *"Relatórios"* para ver filtros prontos.`;
     await sendText(from, msg.trim()); 
     return;
   }
 
-  // Categorias (gastos/ganhos)
+  // Categorias
   if (intent === "listar_categorias") {
     const { start, end } = parseInlineWindow(text, {defaultTo:"month"});
     const rows = await sheet.getRows();
@@ -636,107 +721,43 @@ async function handleUserText(from, text){
     if (totG.length) {
       msg += `💰 *Gastos por categoria:*\n`;
       totG.forEach(it => { msg += `• ${it.conta}: ${formatCurrencyBR(it.total)}\n`; });
-      msg += `\n`;
+      msg += `\n";
     }
     if (totR.length) {
       msg += `💸 *Ganhos por categoria:*\n`;
       totR.forEach(it => { msg += `• ${it.conta}: ${formatCurrencyBR(it.total)}\n`; });
-      msg += `\n`;
+      msg += `\n";
     }
 
-    msg += `ℹ️ Você pode pedir: *"Categorias 3 meses"* ou *"Categorias 01/08/2025 a 30/09/2025"*.`;
+    msg += `ℹ️ Você pode pedir: *"Relatórios"* para ver Vencidos, Pagos, A Pagar e Completo.`;
     await sendText(from, msg.trim());
     return;
   }
 
-  // Relatórios
+  // Relatórios (texto livre)
   if (intent === "relatorio") {
     const pr = parseReportQuery(text);
     if(!pr){ await sendText(from, "⚠️ *Período inválido.* Tente:\n• `Relatório do mês`\n• `Relatório 3 meses`\n• `Relatório 01/08/2025 a 30/09/2025`\n• `Relatório geral`"); return; }
 
     const rows = await sheet.getRows();
-    const mine = rows.filter(r => typeof r.get==="function" && r.get("user")===from);
-    const getWhen = r => r.get("vencimento_iso") ? new Date(r.get("vencimento_iso")) : new Date(r.get("timestamp"));
-    const inRange = (dt) => dt && (dt >= pr.start && dt <= pr.end);
-
-    let gastos = mine.filter(r => r.get("tipo")==="conta_pagar"   && inRange(getWhen(r)));
-    let ganhos = mine.filter(r => r.get("tipo")==="conta_receber" && inRange(getWhen(r)));
-
-    if (pr.filter === "gastos") ganhos = [];
-    if (pr.filter === "ganhos") gastos = [];
-
-    const totGastos  = gastos.reduce((a,r)=> a + parseFloat(r.get("valor")||"0"), 0);
-    const totGanhos  = ganhos.reduce((a,r)=> a + parseFloat(r.get("valor")||"0"), 0);
-    const saldo      = totGanhos - totGastos;
-
-    const title = pr.type==="monthly"
-      ? `📊 *Relatório de ${formatMonthYear(pr.start)}*`
-      : `📊 *Relatório ${formatBRDate(pr.start)} a ${formatBRDate(pr.end)}*`;
-
-    let msg = `${title}\n\n`;
-    if (pr.filter === "ganhos") {
-      msg += `💸 Ganhos: ${formatCurrencyBR(totGanhos)}\n\n`;
-    } else if (pr.filter === "gastos") {
-      msg += `💰 Gastos: ${formatCurrencyBR(totGastos)}\n\n`;
-    } else {
-      msg += `💸 Receitas: ${formatCurrencyBR(totGanhos)}\n`;
-      msg += `💰 Gastos: ${formatCurrencyBR(totGastos)}\n`;
-      msg += `🧮 Saldo: ${formatCurrencyBR(saldo, true)}\n\n`;
-    }
-
-    const catGastos = buildCategoryTotals(gastos);
-    const catGanhos = buildCategoryTotals(ganhos);
-
-    if (catGastos.length && pr.filter !== "ganhos") {
-      msg += `🏷️ *Gastos por categoria:*\n`;
-      catGastos.forEach(it => { msg += `• ${it.conta}: ${formatCurrencyBR(it.total)}\n`; });
-      msg += `\n`;
-    }
-    if (catGanhos.length && pr.filter !== "gastos") {
-      msg += `🏷️ *Ganhos por categoria:*\n`;
-      catGanhos.forEach(it => { msg += `• ${it.conta}: ${formatCurrencyBR(it.total)}\n`; });
-      msg += `\n`;
-    }
-
-    // Top 3
-    const top = (arr) => arr
-      .map(r => ({ conta: r.get("conta"), valor: parseFloat(r.get("valor")||"0") }))
-      .sort((a,b)=> b.valor-a.valor)
-      .slice(0,3);
-
-    if (gastos.length && pr.filter !== "ganhos") {
-      const topG = top(gastos);
-      if (topG.length) {
-        msg += `🏆 *Maiores gastos:*\n`;
-        topG.forEach(it => msg += `• ${it.conta} (${formatCurrencyBR(it.valor)})\n`);
-        msg += `\n`;
-      }
-    }
-    if (ganhos.length && pr.filter !== "gastos") {
-      const topR = top(ganhos);
-      if (topR.length) {
-        msg += `🏆 *Maiores ganhos:*\n`;
-        topR.forEach(it => msg += `• ${it.conta} (${formatCurrencyBR(it.valor)})\n`);
-        msg += `\n`;
-      }
-    }
-
-    await sendText(from, msg.trim());
+    const msg = await buildReportMessage(from, rows, {start:pr.start, end:pr.end}, "completo");
+    await sendText(from, msg);
+    // oferecer menu rápido
+    await sendReportMenu(from);
     return;
   }
 
-  // Edição de lançamento (apenas quando o usuário pedir)
+  // Edição
   if (intent === "editar_lancamento") {
     await handleEditLast(from, text);
     return;
   }
 
-  // Novo lançamento (conta/recebimento) — entende frases sem verbo
+  // Novo lançamento (entende frases sem verbo)
   if (intent === "nova_conta" || intent === "novo_movimento" || intent === "desconhecido") {
     const { conta, valor, vencimento, tipo_pagamento, codigo_pagamento, status, tipo } = extractEntities(text, intent);
     const rowId = uuidShort();
 
-    // status final
     const finalStatus = status ?? "pendente";
 
     await sheet.addRow({
@@ -746,8 +767,8 @@ async function handleUserText(from, text){
       tipo,
       conta,
       valor,
-      vencimento_iso: toISODate(vencimento),                 // pode ficar vazio
-      vencimento_br: formatBRDate(vencimento),               // pode ficar vazio
+      vencimento_iso: toISODate(vencimento), // pode ficar vazio
+      vencimento_br: formatBRDate(vencimento), // pode ficar vazio
       tipo_pagamento,
       codigo_pagamento,
       status: finalStatus,
@@ -765,12 +786,10 @@ async function handleUserText(from, text){
       await sendText(from, MSG.RECEB_OK(conta, valorFmt, dataStr, finalStatus));
     }
 
-    // Se ambíguo (sem verbo e data hoje/passado ou sem data) → perguntar status
     if (status === null) {
       await sendStatusChoiceButtons(from, rowId);
     }
 
-    // Mostrar saldo do mês apenas se pago
     if (finalStatus === "pago") {
       const saldo = await computeUserMonthlyBalance(sheet, from);
       await sendText(from, MSG.SALDO_MES(saldo));
@@ -779,7 +798,6 @@ async function handleUserText(from, text){
     return;
   }
 
-  // fallback
   await sendText(from, MSG.NAO_ENTENDI);
 }
 
@@ -799,7 +817,7 @@ app.post("/webhook",async(req,res)=>{
     if(body.object&&body.entry){
       for(const e of body.entry){
         for(const c of e.changes||[]){
-          for(const m of c.value?.messages||[]){
+          for(const m of c.value?.messages || []){
             const from=m.from;
             if(m.type==="text") await handleUserText(from, m.text?.body || "");
             if(m.type==="interactive"){
@@ -820,7 +838,7 @@ app.post("/webhook",async(req,res)=>{
                 }
               }
 
-              // Escolha de status (pergunta)
+              // Escolha de status
               if(id?.startsWith("SETSTATUS:")){
                 const [, rowId, chosen] = id.split(":"); // SETSTATUS:rowId:pago|pendente
                 const sheet=await ensureSheet();
@@ -829,7 +847,6 @@ app.post("/webhook",async(req,res)=>{
                 if(row){
                   row.set("status", chosen === "pago" ? "pago" : "pendente");
                   await row.save();
-
                   if (chosen === "pago") {
                     await sendText(from, "✅ *Marcado como pago!*");
                     const saldo = await computeUserMonthlyBalance(sheet, from);
@@ -838,6 +855,17 @@ app.post("/webhook",async(req,res)=>{
                     await sendText(from, "⏳ *Mantido como pendente.*");
                   }
                 }
+              }
+
+              // Menu de relatórios
+              if(id?.startsWith("REPORT:")){
+                const kind = id.split("REPORT:")[1]; // vencidos|pagos|apagar|completo
+                await sendText(from, `✅ Mostrando *relatório ${kind}*`);
+                const sheet=await ensureSheet();
+                const rows=await sheet.getRows();
+                const win = parseInlineWindow("", {defaultTo:"month"}); // mês atual por padrão
+                const msg = await buildReportMessage(from, rows, win, kind);
+                await sendText(from, msg);
               }
             }
           }
