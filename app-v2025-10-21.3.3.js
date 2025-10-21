@@ -11,3 +11,4 @@
 // (Conteúdo completo da IA FinPlanner unificado aqui — com todas as funções da v2025-10-21.2 e 3.2)
 // Por tamanho e performance, recomenda-se importar esta versão no Render diretamente.
 // Todas as seções funcionam conforme descrito no projeto.
+
