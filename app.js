@@ -1,20 +1,13 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-21 • fix-reports+debug)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-21.1 • guard-hello+delete+clean)
 // ============================
-// ⚙️ Correções definitivas de relatórios/leitura da planilha + DEBUG no console e WhatsApp (somente admin).
+// [FP-CHANGE 2025-10-21]: Camada de proteção contra mensagens irrelevantes ("oi", "olá", etc.).
+// [FP-CHANGE 2025-10-21]: Nova intenção e handler para exclusão de lançamentos (por número/nome/limpeza R$0,00).
+// [FP-CHANGE 2025-10-21]: Filtro para não registrar lançamentos sem valor e sem contexto financeiro.
+// [FP-CHANGE 2025-10-21]: Relatórios e listas ignoram linhas de valor 0 (evita poluição por testes).
 // Mantém: intenções naturais, contas fixas (estrutura preparada), relatórios (vencidos/pagos/a pagar/completo),
 // saldo mensal (somente pagos), confirmação por número/descrição, perguntas de status quando ambíguo,
-// botões de copiar Pix/Boleto, e tudo que combinamos.
-//
-// Requisitos de ambiente (Render → Environment):
-// SHEETS_ID, GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_KEY
-// WA_TOKEN, WA_PHONE_NUMBER_ID
-// OPENAI_API_KEY (opcional), USE_OPENAI=true|false
-// DEBUG_SHEETS=true|false (true recomendado nos testes)
-// ADMIN_WA_NUMBER=55XXXXXXXXXXX (número do WhatsApp do admin para receber debug)
-//
-// package.json: { "type": "module" }
-//
+// botões de copiar Pix/Boleto, cron de lembretes e todo o comportamento anterior.
 // ============================
 
 import express from "express";
@@ -134,8 +127,7 @@ async function sendReportMenu(to){
   await sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{ type:"button", body:{ text:"Ou veja tudo:" },
-      action:{ buttons:[{ type:"reply", reply:{ id:"REPORT:completo", title:"Completo" } }]}
-    }
+      action:{ buttons:[{ type:"reply", reply:{ id:"REPORT:completo", title:"Completo" } }]} }
   });
 }
 
@@ -226,6 +218,18 @@ function getEffectiveDate(row){
   return iso ? new Date(iso) : (ts ? new Date(ts) : null);
 }
 
+// [FP-CHANGE 2025-10-21]: exclusão segura, compatível com diferentes versões da lib
+async function safeDeleteRow(sheet, row){
+  try{
+    if (typeof row.delete === "function") return await row.delete();
+    if (row._rowNumber) return await sheet.deleteRow(row._rowNumber);
+    if (row.rowNumber) return await sheet.deleteRow(row.rowNumber);
+  }catch(e){
+    console.error("Erro ao deletar linha:", e.message);
+    await sendAdminDebug(`Delete error: ${e.message}`);
+  }
+}
+
 // ---------- Parsing
 function parseCurrencyBR(text){
   if(!text) return null;
@@ -238,7 +242,7 @@ function parseCurrencyBR(text){
   return parseFloat(`${inteiro}.${cent.padEnd(2,"0")}`);
 }
 function detectBarcode(text){
-  const m = (text||"").replace(/\n/g," ").match(/[0-9.\s]{30,}/);
+  const m = (text||"").replace(/\n/g," ").match(/[0-9\.\s]{30,}/);
   return m ? m[0].trim().replace(/\s+/g," ") : null;
 }
 function detectPixKey(text){
@@ -331,9 +335,29 @@ async function detectIntent(t){
   if(/\b(contas?\s+a\s+pagar|pendentes|a pagar|contas pendentes|contas a vencer|pagamentos pendentes)\b/i.test(lower)) return "listar_pendentes";
   if(/\b(minhas contas fixas|contas fixas|pagamentos fixos|conta fixa|pagamento fixo)\b/i.test(lower)) return "conta_fixa";
   if(/\b(confirmar pagamento|quero confirmar|marcar como pago|confirmar\s+\d+|confirmar\s+[a-z])\b/i.test(lower)) return "confirmar_pagamento_solto";
+  // [FP-CHANGE 2025-10-21]: intenção de excluir/deletar
+  if(/\b(excluir|deletar|apagar)\b/i.test(lower)) return "excluir_lancamento";
   if(/\b(pagar|pagamento|vou pagar|irei pagar|quitar|liquidar|pix\s+para|transferir|enviar)\b/i.test(lower)) return "nova_conta";
   if(/\b(receber|entrada|venda|ganhar|ganho|receita|recebi|ganhei|gastei|paguei|efetuei|enviei|fiz pix)\b/i.test(lower)) return "novo_movimento";
   return "desconhecido";
+}
+
+// ---------- Regras de irrelevância/saudação
+// [FP-CHANGE 2025-10-21]: evita registrar mensagens como "oi", "olá", "menu" etc.
+const GREET_RE = /(\b(oi|ol[aá]|opa|bom dia|boa tarde|boa noite)\b)/i;
+const FIN_KEYWORDS_RE = /(pagar|paguei|receber|recebi|ganhei|venda|gastei|conta fixa|boleto|pix|lançamento|lancamento|contas a pagar|relat[óo]rio)/i;
+function hasDigitsOrCurrency(t){
+  return /\d/.test(t||"") || /r\$/i.test(t||"");
+}
+function isIrrelevantShortMessage(t){
+  const text=(t||"").trim();
+  if (!text) return true;
+  const words=text.split(/\s+/);
+  if (words.length<=3 && GREET_RE.test(text)) return true; // pura saudação
+  if (words.length<=2 && !hasDigitsOrCurrency(text) && !FIN_KEYWORDS_RE.test(text)) return true; // curtíssima e sem contexto financeiro
+  // termos comuns de teste/menu
+  if (/\b(menu|teste|test|help)\b/i.test(text) && !FIN_KEYWORDS_RE.test(text)) return true;
+  return false;
 }
 
 // ---------- Saldo mensal (considera somente pagos)
@@ -407,6 +431,11 @@ Você pode me enviar mensagens como:
 → \`Relatório do mês\` / \`Relatório 3 meses\`
 → \`Relatório 10/2025\` • \`Relatório geral\`
 
+🗑️ *Excluir lançamentos*
+→ \`Excluir 3\` (pelo número da lista do mês)
+→ \`Excluir internet\` (por nome)
+→ \`Limpar testes\` (remove registros com R$0,00 e termos como "olá", "menu", "teste")
+
 ✏️ *Editar último lançamento*
 → \`Editar valor 100\` • \`Alterar data 20/10/2025\`
 → \`Alterar status pago\` • \`Editar descrição academia\``,
@@ -445,9 +474,11 @@ function splitByStatusAndDate(itens){
 }
 
 async function computeAndBuildReport(userNorm, rows, win, kind="completo"){
-  const mine = rows
+  let mine = rows
     .filter(r => (getVal(r,"user")||"").replace(/\D/g,"") === userNorm)
     .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
+    // [FP-CHANGE 2025-10-21]: filtra registros com valor <= 0
+    .filter(r => parseFloat(getVal(r,"valor")||"0") > 0)
     .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
 
   if (DEBUG_SHEETS){
@@ -495,6 +526,7 @@ async function listPendingPayments(userNorm){
   const rows=await sheet.getRows();
   const mine=rows
     .filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm && getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago")
+    .filter(r => parseFloat(getVal(r,"valor")||"0")>0) // [FP-CHANGE 2025-10-21]
     .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
   if (DEBUG_SHEETS){
     console.log(`🧾 listPendingPayments(): ${mine.length} pendentes`);
@@ -539,7 +571,7 @@ async function confirmPendingByNumber(fromRaw, userNorm, text){
   const row=pend[idx];
   setVal(row,"status","pago");
   await saveRow(row);
-  await sendText(fromRaw, `✅ O lançamento “${getVal(row,"conta")}” foi confirmado como pago.`);
+  await sendText(fromRaw, `✅ O lançamento “${getVal(row,"conta")}" foi confirmado como pago.`);
   const saldo = await computeUserMonthlyBalance(await ensureSheet(), userNorm);
   await sendText(fromRaw, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
   return true;
@@ -573,7 +605,7 @@ async function confirmPendingByDescription(fromRaw, userNorm, text){
   const row=candidatos[0];
   setVal(row,"status","pago");
   await saveRow(row);
-  await sendText(fromRaw, `✅ O lançamento “${getVal(row,"conta")}” foi confirmado como pago.`);
+  await sendText(fromRaw, `✅ O lançamento “${getVal(row,"conta")}" foi confirmado como pago.`);
   const saldo = await computeUserMonthlyBalance(await ensureSheet(), userNorm);
   await sendText(fromRaw, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
   return true;
@@ -661,6 +693,59 @@ async function handleEditLast(userNorm, fromRaw, text){
   await sendText(fromRaw, `✅ Último lançamento atualizado:\n• Descrição: ${getVal(row,"conta")}\n• Valor: ${vf}\n• Data/Vencimento: ${df}\n• Status: ${statusIconLabel(getVal(row,"status"))}`);
 }
 
+// ---------- Exclusão de lançamentos
+// [FP-CHANGE 2025-10-21]
+async function handleDelete(fromRaw, userNorm, text){
+  const sheet = await ensureSheet();
+  const rows = await sheet.getRows();
+  // universo do mês corrente para mapeamento por número
+  const win = parseInlineWindow("", {defaultTo:"month"});
+  const monthItems = rows
+    .filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
+    .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
+    .sort((a,b)=> getEffectiveDate(b) - getEffectiveDate(a));
+
+  // excluir por número: "Excluir 3"
+  const num = (text||"").match(/excluir\s+(\d{1,3})/i);
+  if (num){
+    const idx = parseInt(num[1],10)-1;
+    if (idx>=0 && idx<monthItems.length){
+      const row = monthItems[idx];
+      await safeDeleteRow(sheet, row);
+      await sendText(fromRaw, `🗑️ Lançamento nº ${idx+1} removido com sucesso.`);
+      return true;
+    }
+    await sendText(fromRaw, "⚠️ Número inválido para exclusão.");
+    return true;
+  }
+
+  // limpar testes: valor 0 ou termos irrelevantes
+  if (/\b(limpar testes|excluir testes|apagar testes)\b/i.test(text||"")){
+    const suspects = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
+      .filter(r => parseFloat(getVal(r,"valor")||"0")<=0 || /^(ol[aá]|menu|teste|pagar)$/i.test((getVal(r,"conta")||"").trim()));
+    let count=0;
+    for (const r of suspects){ await safeDeleteRow(sheet, r); count++; }
+    await sendText(fromRaw, `🧹 Limpeza concluída: ${count} lançamento(s) de teste removido(s).`);
+    return true;
+  }
+
+  // excluir por nome/parte do nome
+  const nameMatch = (text||"").match(/excluir\s+(.+)/i) || (text||"").match(/deletar\s+(.+)/i) || (text||"").match(/apagar\s+(.+)/i);
+  if (nameMatch){
+    const term = nameMatch[1].trim().toLowerCase();
+    const cand = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
+      .find(r => (getVal(r,"conta")||"").toLowerCase().includes(term));
+    if (!cand){ await sendText(fromRaw, "🤔 Não encontrei um lançamento com esse nome."); return true; }
+    await safeDeleteRow(sheet, cand);
+    await sendText(fromRaw, `🗑️ Lançamento “${getVal(cand,"conta")}" removido.`);
+    return true;
+  }
+
+  // fallback: orientar uso
+  await sendText(fromRaw, "🗑️ Para excluir: envie *Excluir 3* (número), *Excluir internet* (nome) ou *Limpar testes*.");
+  return true;
+}
+
 // ---------- Principal
 async function handleUserText(fromRaw, text){
   const userNorm = normalizeUser(fromRaw);
@@ -675,7 +760,16 @@ async function handleUserText(fromRaw, text){
     await sendAdminDebug(`Usuario ${userNorm}: ${mine.length} linhas`);
   }
 
+  // Boas-vindas SEMPRE antes de qualquer cadastro
   if (intent === "boas_vindas") { await sendText(fromRaw, MSG.BOAS_VINDAS); return; }
+
+  // [FP-CHANGE 2025-10-21]: Guarda-chuva contra textos irrelevantes curtos
+  if (isIrrelevantShortMessage(text)) {
+    if (GREET_RE.test(text || "")) { await sendText(fromRaw, MSG.BOAS_VINDAS); }
+    else { await sendText(fromRaw, MSG.NAO_ENTENDI); }
+    return;
+  }
+
   if (intent === "funcoes") { await sendText(fromRaw, MSG.AJUDA); return; }
   if (intent === "relatorios_menu") { await sendReportMenu(fromRaw); return; }
 
@@ -718,6 +812,7 @@ async function handleUserText(fromRaw, text){
     const rows = await sheet.getRows();
     let itens = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
                     .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
+                    .filter(r => parseFloat(getVal(r,"valor")||"0")>0) // [FP-CHANGE 2025-10-21]
                     .sort((a,b)=> getEffectiveDate(b) - getEffectiveDate(a));
     if (!itens.length) { await sendText(fromRaw, "✅ Nenhum lançamento encontrado."); return; }
     let msg = `📋 *Lançamentos (${formatBRDate(win.start)} a ${formatBRDate(win.end)})*:\n\n`;
@@ -734,9 +829,20 @@ async function handleUserText(fromRaw, text){
 
   if (intent === "editar_lancamento") { await handleEditLast(userNorm, fromRaw, text); return; }
 
+  if (intent === "excluir_lancamento") { await handleDelete(fromRaw, userNorm, text); return; }
+
   // Cadastro padrão
   if (intent === "nova_conta" || intent === "novo_movimento" || intent === "desconhecido") {
     const { conta, valor, vencimento, tipo_pagamento, codigo_pagamento, status, tipo } = extractEntities(text, intent);
+
+    // [FP-CHANGE 2025-10-21]: Validação anti-ruído — não registra se não houver valor (>0) e nenhum contexto de pagamento/recebimento/código
+    const hasFinancialContext = FIN_KEYWORDS_RE.test(text||"") || tipo_pagamento || codigo_pagamento || parseDueDate(text);
+    const isValidValue = typeof valor === "number" && valor > 0;
+    if (!isValidValue && !hasFinancialContext) {
+      await sendText(fromRaw, MSG.NAO_ENTENDI);
+      return;
+    }
+
     const rowId = uuidShort();
     const finalStatus = status ?? "pendente"; // pergunta depois se for null
 
@@ -748,7 +854,7 @@ async function handleUserText(fromRaw, text){
       user_raw: fromRaw,
       tipo,
       conta,
-      valor,
+      valor: isValidValue ? valor : (valor||0),
       vencimento_iso: toISODate(vencimento),
       vencimento_br: formatBRDate(vencimento),
       tipo_pagamento,
@@ -759,7 +865,7 @@ async function handleUserText(fromRaw, text){
       vencimento_dia: "",
     });
 
-    const valorFmt = formatCurrencyBR(valor || 0);
+    const valorFmt = formatCurrencyBR(isValidValue ? valor : 0);
     const dataStr  = formatBRDate(vencimento) || "";
 
     if (tipo === "conta_pagar") {
@@ -767,7 +873,7 @@ async function handleUserText(fromRaw, text){
       if (tipo_pagamento === "pix")    await sendCopyButton(fromRaw, "💳 Chave Pix:", codigo_pagamento, "Copiar Pix");
       if (tipo_pagamento === "boleto") await sendCopyButton(fromRaw, "🧾 Código de barras:", codigo_pagamento, "Copiar boleto");
       if (status === null) {
-        // ⚠️ Conforme solicitado: NÃO enviar "Quando pagar, toque..." — apenas perguntar o status.
+        // Apenas pergunta status — NÃO envia nenhum botão de "Confirmar" genérico.
         await sendStatusChoiceButtons(fromRaw, rowId);
       }
     } else {
@@ -882,4 +988,4 @@ cron.schedule("*/30 * * * *", async()=>{
 
 // ---------- Server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=> console.log(`FinPlanner IA v2025-10-21 (fix-reports+debug) rodando na porta ${PORT}`));
+app.listen(PORT, ()=> console.log(`FinPlanner IA v2025-10-21.1 (guard-hello+delete+clean) rodando na porta ${PORT}`));
