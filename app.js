@@ -41,11 +41,15 @@ const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 
 let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
-if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\n")) {
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n").replace(/\\n/g, "\n");
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "
-");
+// Corrige automaticamente a chave privada, independente do formato
+if (GOOGLE_SERVICE_ACCOUNT_KEY) {
+  if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
+    // Caso venha com \n literais
+    GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
+  }
+  // Caso venha já com quebras reais, mantém como está
 }
+
 
 // ---------- Utils base
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
@@ -697,3 +701,4 @@ cron.schedule("*/30 * * * *", async()=>{
 // ---------- Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=> console.log(`FinPlanner IA v2025-10-21.3 (menus/listas) rodando na porta ${PORT}`));
+
