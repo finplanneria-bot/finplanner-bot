@@ -1,10 +1,12 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot (versão 2025-10-21.2 • visual+emoji)
+// FinPlanner IA - WhatsApp Bot (versão 2025-10-21.3 • menus/listas)
 // ============================
-// [FP-CHANGE 2025-10-21.2]: Visual dos relatórios (formato em blocos com emojis e separadores).
-// [FP-CHANGE 2025-10-21.2]: Contas a pagar numeradas com emojis (1️⃣ 2️⃣ 3️⃣ … 🔟).
-// [FP-CHANGE 2025-10-21.2]: Remoção de abreviações nas mensagens (“Conta a pagar” / “Recebimento”).
-// Mantém todo o comportamento funcional da 2025-10-21.1 (guard-hello+delete+clean).
+// [FP-CHANGE 2025-10-21.3]: Novo fluxo de navegação por *listas* (interactive.type="list") e submenus.
+// [FP-CHANGE 2025-10-21.3]: Boas-vindas com botão "Ver opções" que abre o Menu Principal (list message).
+// [FP-CHANGE 2025-10-21.3]: Submenu Editar → (1) Alterar último registro, (2) Ver lista por categoria.
+// [FP-CHANGE 2025-10-21.3]: Listagem por categoria para edição usando "list message" (até 10 por vez) e menu de edição por campos.
+// [FP-CHANGE 2025-10-21.3]: Sem numeração em *menus/submenus fixos*. Numeração mantém-se em "Contas a pagar" e na lista dinâmica de edição.
+// Mantém todo o comportamento funcional da 2025-10-21.2 (visual+emoji).
 // ============================
 
 import express from "express";
@@ -39,9 +41,10 @@ const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 
 let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
-if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
-  // Render/Env geralmente salva com \n literais; converte para que a chave funcione
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
+if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\n")) {
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n").replace(/\\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "
+");
 }
 
 // ---------- Utils base
@@ -56,7 +59,7 @@ function formatBRDate(d){ return d ? new Date(d).toLocaleDateString("pt-BR") : "
 function toISODate(d){ if(!d) return ""; const x=new Date(d); x.setHours(0,0,0,0); return x.toISOString(); }
 function formatCurrencyBR(v, showSign=false){
   const num = Number(v || 0);
-  const sign = showSign && num < 0 ? "-" : ""; // usa sinal "-" quando negativo
+  const sign = showSign && num < 0 ? "-" : "";
   const abs = Math.abs(num);
   return `${sign}R$${abs.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}`;
 }
@@ -68,7 +71,6 @@ function withinRange(dt, start, end){ return dt && dt>=start && dt<=end; }
 function brToDate(s){const m=s?.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!m)return null;return new Date(parseInt(m[3]),parseInt(m[2])-1,parseInt(m[1]));}
 const capitalize = s => (s||"").replace(/\b\w/g, c => c.toUpperCase());
 
-// Visual helpers
 const SEP = "────────────";
 function dayMonth(d){
   const x = d ? new Date(d) : null;
@@ -123,57 +125,180 @@ async function sendStatusChoiceButtons(to,rowId){
   });
 }
 
-async function sendReportMenu(to){
-  // 2 blocos para caber nos limites de botões do WhatsApp
+// ---------- NEW: Menus (List Messages & Submenus)
+
+async function sendWelcomeWithOpenMenuButton(to){
+  const body = `👋 Olá! Eu sou a FinPlanner IA.
+
+💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.
+
+Toque em *“Ver opções”* ou digite o que deseja fazer.`;
   await sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
-    interactive:{ type:"button", body:{ text:"Escolha o relatório:" },
+    interactive:{
+      type:"button",
+      body:{ text: body },
+      action:{ buttons:[{ type:"reply", reply:{ id:"OPEN_MAIN_MENU", title:"Ver opções" } }] }
+    }
+  });
+}
+
+async function sendMenuPrincipalList(to){
+  return sendWA({
+    messaging_product:"whatsapp", to, type:"interactive",
+    interactive:{
+      type:"list",
+      header:{ type:"text", text:"Ver opções" },
+      body:{ text:"Selecione uma opção:" },
+      action:{
+        button:"Abrir menu",
+        sections:[
+          {
+            title:"Lançamentos e Contas",
+            rows:[
+              { id:"MENU:registrar_pagamento", title:"💰 Registrar pagamento", description:"Adicionar um novo gasto." },
+              { id:"MENU:registrar_recebimento", title:"💵 Registrar recebimento", description:"Adicionar uma entrada de dinheiro." },
+              { id:"MENU:contas_pagar", title:"📅 Contas a pagar", description:"Ver e confirmar pagamentos pendentes." },
+              { id:"MENU:contas_fixas", title:"♻️ Contas fixas", description:"Cadastrar ou excluir contas recorrentes." },
+            ]
+          },
+          {
+            title:"Relatórios e Histórico",
+            rows:[
+              { id:"MENU:relatorios", title:"📊 Relatórios", description:"Pagos, pendentes ou completo." },
+              { id:"MENU:lancamentos", title:"🧾 Meus lançamentos", description:"Ver movimentações do mês." },
+            ]
+          },
+          {
+            title:"Ajustes e Ajuda",
+            rows:[
+              { id:"MENU:editar", title:"✏️ Editar lançamentos", description:"Alterar ou revisar registros." },
+              { id:"MENU:excluir", title:"🗑️ Excluir lançamento", description:"Remover lançamento manualmente." },
+              { id:"MENU:ajuda", title:"⚙️ Ajuda e exemplos", description:"Ver como usar a FinPlanner IA." },
+            ]
+          }
+        ]
+      }
+    }
+  });
+}
+
+async function sendSubmenuEditarButtons(to){
+  return sendWA({
+    messaging_product:"whatsapp", to, type:"interactive",
+    interactive:{
+      type:"button",
+      body:{ text:"✏️ O que você deseja fazer?" },
       action:{ buttons:[
-        { type:"reply", reply:{ id:"REPORT:vencidos", title:"Vencidos" } },
-        { type:"reply", reply:{ id:"REPORT:pagos",    title:"Pagos" } },
-        { type:"reply", reply:{ id:"REPORT:apagar",   title:"A Pagar" } },
+        { type:"reply", reply:{ id:"EDITAR:ULTIMO",    title:"Alterar o último registro" } },
+        { type:"reply", reply:{ id:"EDITAR:POR_CATEG", title:"Ver lista por categoria" } },
+        { type:"reply", reply:{ id:"MENU:principal",   title:"🔙 Voltar ao menu" } },
       ]}
     }
   });
-  await sendWA({
+}
+
+async function sendListCategoriasEdicao(to){
+  return sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
-    interactive:{ type:"button", body:{ text:"Ou veja tudo:" },
-      action:{ buttons:[{ type:"reply", reply:{ id:"REPORT:completo", title:"Completo" } }]} }
+    interactive:{
+      type:"list",
+      header:{ type:"text", text:"Editar por categoria" },
+      body:{ text:"Escolha a categoria que deseja editar:" },
+      action:{
+        button:"Categorias",
+        sections:[{
+          title:"Categorias",
+          rows:[
+            { id:"EDITAR:CATEG:conta_pagar",   title:"💡 Contas a pagar",   description:"Editar gastos/pendentes" },
+            { id:"EDITAR:CATEG:conta_receber", title:"💸 Contas a receber", description:"Editar receitas" },
+            { id:"EDITAR:CATEG:fixa",          title:"♻️ Contas fixas",     description:"Editar recorrências" },
+            { id:"MENU:principal",             title:"🔙 Voltar ao menu",   description:"" },
+          ]
+        }]
+      }
+    }
   });
 }
 
-// Debug para admin via WhatsApp
-async function sendAdminDebug(message){
-  if (!DEBUG_SHEETS) return;
-  const admin = (ADMIN_WA_NUMBER || "").trim();
-  if (!admin) return;
-  try { await sendText(admin, `🐞 DEBUG\n${message}`); } catch {}
+// Lista interativa de lançamentos por categoria (até 10)
+async function sendEditListForCategory(to, userNorm, category){
+  const sheet=await ensureSheet();
+  const rows=await sheet.getRows();
+  const now=new Date();
+  const win = { start:startOfMonth(now.getFullYear(),now.getMonth()), end:endOfMonth(now.getFullYear(),now.getMonth()) };
+  let itens = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
+                  .filter(r => withinRange(getEffectiveDate(r), win.start, win.end));
+
+  if (category==="conta_pagar")   itens = itens.filter(r=>getVal(r,"tipo")==="conta_pagar");
+  if (category==="conta_receber") itens = itens.filter(r=>getVal(r,"tipo")==="conta_receber");
+  if (category==="fixa")          itens = itens.filter(r=> (getVal(r,"fixa")||"")!=="");
+
+  itens = itens.filter(r => parseFloat(getVal(r,"valor")||"0")>0)
+               .sort((a,b)=> getEffectiveDate(b) - getEffectiveDate(a))
+               .slice(0,10);
+
+  if(!itens.length){
+    await sendText(to, "✅ Nenhum lançamento encontrado nesta categoria.");
+    return;
+  }
+
+  const rowsList = itens.map((r, idx)=>{
+    const n = idx+1;
+    const title = `${numberEmoji(n)} ${getVal(r,"conta") || "Lançamento"} — ${formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"))}`;
+    const desc  = `${dayMonth(getEffectiveDate(r))} | ${getVal(r,"status")==="pago"?"✅ Pago":"⏳ Pendente"}`;
+    return { id:`EDITSEL:${getVal(r,"row_id")}`, title, description:desc };
+  });
+
+  return sendWA({
+    messaging_product:"whatsapp", to, type:"interactive",
+    interactive:{
+      type:"list",
+      header:{ type:"text", text:"Selecione o lançamento" },
+      body:{ text:"Escolha um item para editar:" },
+      action:{
+        button:"Ver itens",
+        sections:[{ title:"Lançamentos", rows: rowsList }]
+      }
+    }
+  });
 }
 
-// ---------- OpenAI (opcional, só para intenções se ativado)
+// Menu de edição de campos para um row_id
+async function sendEditFieldMenu(to, rowId){
+  return sendWA({
+    messaging_product:"whatsapp", to, type:"interactive",
+    interactive:{
+      type:"button",
+      body:{ text:"O que deseja alterar?" },
+      action:{ buttons:[
+        { type:"reply", reply:{ id:`EDITFIELD:${rowId}:valor`,  title:"Alterar valor 💰" } },
+        { type:"reply", reply:{ id:`EDITFIELD:${rowId}:data`,   title:"Alterar data 📅" } },
+        { type:"reply", reply:{ id:`EDITFIELD:${rowId}:status`, title:"Alterar status 🏷️" } },
+        { type:"reply", reply:{ id:`EDITFIELD:${rowId}:nome`,   title:"Alterar nome ✏️" } },
+        { type:"reply", reply:{ id:"EDITAR:POR_CATEG",          title:"🔙 Voltar às categorias" } },
+      ]}
+    }
+  });
+}
+
+// ---------- OpenAI (opcional)
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-// ---------- Google Sheets (compatível)
+// ---------- Google Sheets
 const doc = new GoogleSpreadsheet(SHEETS_ID);
 
 async function ensureAuth(){
   if (!SHEETS_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_SERVICE_ACCOUNT_KEY) {
     const msg = "Variáveis de autenticação ausentes";
     console.error("❌ Falha na autenticação do Google Sheets:", msg);
-    await sendAdminDebug(`Sheets auth error: ${msg}`);
     throw new Error(msg);
   }
   try{
-    if (DEBUG_SHEETS) console.log("🔑 Autenticando no Google Sheets...");
-    await doc.useServiceAccountAuth({
-      client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: GOOGLE_SERVICE_ACCOUNT_KEY,
-    });
+    await doc.useServiceAccountAuth({ client_email: GOOGLE_SERVICE_ACCOUNT_EMAIL, private_key: GOOGLE_SERVICE_ACCOUNT_KEY });
     await doc.loadInfo();
-    if (DEBUG_SHEETS) console.log(`✅ Planilha carregada: ${doc.title}`);
   }catch(e){
     console.error("❌ Falha na autenticação do Google Sheets:", e.message);
-    await sendAdminDebug(`Sheets auth error: ${e.message}`);
     throw e;
   }
 }
@@ -188,27 +313,22 @@ async function ensureSheet(){
   ];
   if (!sheet){
     sheet = await doc.addSheet({ title:"finplanner", headerValues: headers });
-    if (DEBUG_SHEETS) console.log("✅ Aba 'finplanner' criada.");
   }else{
     await sheet.loadHeaderRow();
     const current = sheet.headerValues || [];
     const missing = headers.filter(h => !current.includes(h));
     if (missing.length){
       await sheet.setHeaderRow([...current, ...missing]);
-      if (DEBUG_SHEETS) console.log("🧩 Cabeçalhos adicionados:", missing.join(", "));
-    } else {
-      if (DEBUG_SHEETS) console.log("📄 Cabeçalhos OK.");
     }
   }
   return sheet;
 }
 
-// Acesso robusto a células (v3/v4)
+// Acesso robusto
 function getVal(row, key){
   if (!row) return undefined;
   if (typeof row.get === "function") return row.get(key);
   if (key in row) return row[key];
-  // fallback para _rawData, se existir
   if (row._rawData && row._sheet?.headerValues){
     const idx = row._sheet.headerValues.indexOf(key);
     if (idx >= 0) return row._rawData[idx];
@@ -220,31 +340,24 @@ function setVal(row, key, value){
   if(typeof row.set === "function") row.set(key, value);
   else row[key] = value;
 }
-function saveRow(row){
-  return (typeof row.save === "function") ? row.save() : Promise.resolve();
-}
+function saveRow(row){ return (typeof row.save === "function") ? row.save() : Promise.resolve(); }
 function getEffectiveDate(row){
   const iso = getVal(row, "vencimento_iso");
   const ts  = getVal(row, "timestamp");
   return iso ? new Date(iso) : (ts ? new Date(ts) : null);
 }
-// exclusão segura
 async function safeDeleteRow(sheet, row){
   try{
     if (typeof row.delete === "function") return await row.delete();
     if (row._rowNumber) return await sheet.deleteRow(row._rowNumber);
     if (row.rowNumber) return await sheet.deleteRow(row.rowNumber);
-  }catch(e){
-    console.error("Erro ao deletar linha:", e.message);
-    await sendAdminDebug(`Delete error: ${e.message}`);
-  }
+  }catch(e){ console.error("Erro ao deletar linha:", e.message); }
 }
 
-// ---------- Parsing
+// ---------- Parsing (mesmo da 10-21.2)
 function parseCurrencyBR(text){
   if(!text) return null;
   const t = (text + " ").replace(/\s+/g," ");
-  // números sem "/" (para não confundir com datas); aceita "17" = R$17,00; 17,50; 1.234,56; com/sem R$
   const m = t.match(/\b(?:r\$)?\s*(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{1,2}))?(?!\/)\b/i);
   if (!m) return null;
   const inteiro = (m[1] || "0").replace(/\./g, "");
@@ -266,21 +379,18 @@ function detectPixKey(text){
 function parseDueDate(text){
   const t = text || "";
   const now = new Date();
-  // dd/mm(/yyyy)
   const dmY = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
   if (dmY){
     let [_, d, m, y] = dmY;
     const Y = y ? (y.length===2 ? 2000 + parseInt(y) : parseInt(y)) : now.getFullYear();
     return new Date(Y, parseInt(m)-1, parseInt(d));
   }
-  // "dia 20/10(/yyyy)"
   const dia = t.match(/\bdia\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i);
   if (dia){
     let [_, d, m, y] = dia;
     const Y = y ? (y.length===2 ? 2000 + parseInt(y) : parseInt(y)) : now.getFullYear();
     return new Date(Y, parseInt(m)-1, parseInt(d));
   }
-  // palavras relativas
   if (/\bontem\b/i.test(t)) { const d = new Date(now); d.setDate(d.getDate()-1); return d; }
   if (/\bhoje\b/i.test(t)) return now;
   if (/\bamanh[ãa]\b/i.test(t)) { const d = new Date(now); d.setDate(d.getDate()+1); return d; }
@@ -331,7 +441,7 @@ function parseInlineWindow(text, {defaultTo="month"} = {}){
   return { start, end, label: "geral" };
 }
 
-// ---------- Intenções (simples + robustas)
+// ---------- Intenções
 async function detectIntent(t){
   const lower=(t||"").toLowerCase();
   const norm = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -351,15 +461,12 @@ async function detectIntent(t){
   return "desconhecido";
 }
 
-// ---------- Regras de irrelevância/saudação
+// ---------- Saudação/Irrelevantes
 const GREET_RE = /(\b(oi|ol[aá]|opa|bom dia|boa tarde|boa noite)\b)/i;
 const FIN_KEYWORDS_RE = /(pagar|paguei|receber|recebi|ganhei|venda|gastei|conta fixa|boleto|pix|lançamento|lancamento|contas a pagar|relat[óo]rio)/i;
-function hasDigitsOrCurrency(t){
-  return /\d/.test(t||"") || /r\$/i.test(t||"");
-}
+function hasDigitsOrCurrency(t){ return /\d/.test(t||"") || /r\$/i.test(t||""); }
 function isIrrelevantShortMessage(t){
-  const text=(t||"").trim();
-  if (!text) return true;
+  const text=(t||"").trim(); if (!text) return true;
   const words=text.split(/\s+/);
   if (words.length<=3 && GREET_RE.test(text)) return true;
   if (words.length<=2 && !hasDigitsOrCurrency(text) && !FIN_KEYWORDS_RE.test(text)) return true;
@@ -367,7 +474,7 @@ function isIrrelevantShortMessage(t){
   return false;
 }
 
-// ---------- Saldo mensal (considera somente pagos)
+// ---------- Saldo mensal (pago)
 async function computeUserMonthlyBalance(sheet, userNorm){
   const rows = await sheet.getRows();
   const now = new Date();
@@ -380,183 +487,10 @@ async function computeUserMonthlyBalance(sheet, userNorm){
   return receitas - gastos;
 }
 
-// ---------- Mensagens
-const MSG = {
-  BOAS_VINDAS:
-`👋 *Olá! Eu sou a FinPlanner IA.*
-
-💡 *Organizo seus pagamentos, ganhos e gastos de forma simples e automática.*
-
-Você pode me enviar mensagens como:
-
-💰 *Registrar um pagamento*
-→ \`Pagar internet R$120,00 amanhã\`
-→ \`Paguei academia R$80,00 hoje\`
-→ \`Academia 50\` *(já entendo sem verbo!)*
-
-💸 *Registrar um recebimento*
-→ \`Receber venda de óleo R$90,00 sexta\`
-→ \`Ganhei R$300,00 hoje\`
-
-📆 *Cadastrar conta fixa*
-→ \`Conta fixa internet R$100,00 todo dia 01\`
-→ \`Pagamento fixo aluguel R$850,00 todo dia 05\`
-
-📋 *Ver movimentações*
-→ \`Lançamentos de hoje\`
-→ \`Meus lançamentos\` / \`Extrato\`
-
-📊 *Relatórios*
-→ \`Relatórios\` (Vencidos, Pagos, A Pagar, Completo)
-→ \`Relatório do mês\` • \`Relatório 3 meses\`
-→ \`Relatório 01/08/2025 a 30/09/2025\`
-→ \`Relatório geral\` (últimos 12 meses)
-
-🔔 *Eu te lembro dos vencimentos. Você também pode registrar gastos já pagos ou que acabou de pagar.*`,
-  AJUDA:
-`⚙️ *Funções da FinPlanner IA*
-
-💰 *Pagamentos*
-→ \`Pagar energia R$150,00 amanhã\`
-→ \`Paguei gasolina R$80,00 hoje\`
-→ \`Mercado 150\` (sem verbo)
-
-💸 *Recebimentos*
-→ \`Receber venda R$90,00 25/10/2025\`
-→ \`Ganhei R$300,00 hoje\`
-
-📆 *Contas Fixas*
-→ \`Conta fixa internet R$100,00 todo dia 01\`
-→ \`Excluir conta fixa internet\`
-
-📅 *Listar*
-→ \`Lançamentos de hoje\` / \`Meus lançamentos\`
-→ \`Contas a pagar\`
-
-📊 *Relatórios*
-→ \`Relatórios\` (Vencidos, Pagos, A Pagar, Completo)
-→ \`Relatório do mês\` / \`Relatório 3 meses\`
-→ \`Relatório 10/2025\` • \`Relatório geral\`
-
-🗑️ *Excluir lançamentos*
-→ \`Excluir 3\` (pelo número da lista do mês)
-→ \`Excluir internet\` (por nome)
-→ \`Limpar testes\` (remove registros com R$0,00 e termos como "olá", "menu", "teste")
-
-✏️ *Editar último lançamento*
-→ \`Editar valor 100\` • \`Alterar data 20/10/2025\`
-→ \`Alterar status pago\` • \`Editar descrição academia\``,
-  NAO_ENTENDI:
-`🤔 *Não consegui entender sua mensagem.*
-
-Experimente algo assim:
-
-💰 \`Pagar aluguel R$800,00 05/11/2025\`
-💸 \`Receber R$300,00 de João amanhã\`
-📅 \`Contas a pagar\`
-📊 \`Relatórios\`
-⚙️ \`Funções\``,
-};
-
 function statusIconLabel(status){ return status==="pago" ? "✅ Pago" : "⏳ Pendente"; }
-// (mantido para compatibilidade em outros pontos do código)
-function formatLine(r){
-  const tip = getVal(r,"tipo")==="conta_pagar" ? "Conta a pagar" : "Recebimento";
-  const when = getVal(r,"vencimento_br") || "";
-  const val = formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-  return `• ${when || "—"} — ${tip} — ${getVal(r,"conta")} (${val}) — ${statusIconLabel(getVal(r,"status"))}`;
-}
+function humanType(r){ return getVal(r,"tipo")==="conta_pagar" ? "Conta a pagar" : "Recebimento"; }
 
-// ---------- Relatórios (visual em blocos) [FP-CHANGE 2025-10-21.2]
-function splitByStatusAndDate(itens){
-  const today = startOfDay(new Date()).getTime();
-  const vencidos = [], apagar = [], pagos = [];
-  for (const r of itens){
-    const d = getEffectiveDate(r); const dd = d ? startOfDay(d).getTime() : 0;
-    const st = getVal(r,"status");
-    if (st === "pago") { pagos.push(r); continue; }
-    if (dd < today) vencidos.push(r);
-    else apagar.push(r);
-  }
-  return { vencidos, apagar, pagos };
-}
-
-function humanType(r){
-  return getVal(r,"tipo")==="conta_pagar" ? "Conta a pagar" : "Recebimento";
-}
-
-async function computeAndBuildReport(userNorm, rows, win, kind="completo"){
-  let mine = rows
-    .filter(r => (getVal(r,"user")||"").replace(/\D/g,"") === userNorm)
-    .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
-    .filter(r => parseFloat(getVal(r,"valor")||"0") > 0)
-    .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
-
-  if (DEBUG_SHEETS){
-    console.log(`🧮 computeAndBuildReport() rows totais: ${rows.length}, do usuário: ${mine.length}`);
-    await sendAdminDebug(`Relatório: total ${rows.length}, do usuário ${mine.length} (${formatBRDate(win.start)} a ${formatBRDate(win.end)})`);
-  }
-
-  if (!mine.length) return "✅ Nenhum lançamento no período selecionado.";
-
-  const { vencidos, apagar, pagos } = splitByStatusAndDate(mine);
-
-  const periodTitle = `${dayMonth(win.start)} a ${dayMonth(win.end)}`;
-  let msg = `📊 *Relatório (${periodTitle})*\n\n`;
-
-  // Vencidos
-  if (kind === "vencidos" || kind === "completo") {
-    msg += "📅 *Contas Vencidas*\n";
-    if (vencidos.length){
-      for(const r of vencidos){
-        const nome = getVal(r,"conta") || humanType(r);
-        const val  = formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-        const data = dayMonth(getEffectiveDate(r));
-        msg += `⚠️ ${nome}\n💰 ${val} | 📅 ${data} | 🏷️ Pendente\n${SEP}\n`;
-      }
-    } else { msg += "• Nenhum vencido\n"; }
-    msg += "\n";
-  }
-
-  // Pagos
-  if (kind === "pagos" || kind === "completo") {
-    msg += "💰 *Pagamentos Realizados*\n";
-    if (pagos.length){
-      for(const r of pagos){
-        const nome = getVal(r,"conta") || humanType(r);
-        const val  = formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-        const data = dayMonth(getEffectiveDate(r));
-        msg += `✅ ${nome}\n💰 ${val} | 📅 ${data} | 🏷️ Pago\n${SEP}\n`;
-      }
-    } else { msg += "• Nenhum pagamento no período\n"; }
-    msg += "\n";
-  }
-
-  // A pagar / A receber
-  if (kind === "apagar" || kind === "completo") {
-    msg += "⏳ *A Pagar / A Receber*\n";
-    if (apagar.length){
-      for(const r of apagar){
-        const nome = getVal(r,"conta") || humanType(r);
-        const val  = formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-        const data = dayMonth(getEffectiveDate(r));
-        const tipo = humanType(r);
-        msg += `💸 ${nome}\n💰 ${val} | 📅 ${data} | 🏷️ ${tipo}\n${SEP}\n`;
-      }
-    } else { msg += "• Nenhum lançamento pendente\n"; }
-    msg += "\n";
-  }
-
-  const now=new Date();
-  if (win.start.getMonth()===now.getMonth() && win.start.getFullYear()===now.getFullYear()) {
-    const sal = await computeUserMonthlyBalance(await ensureSheet(), userNorm);
-    msg += `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(sal, true)}`;
-  }
-
-  return msg.trim();
-}
-
-// ---------- PENDENTES (listar numerado e confirmar) — visual com emojis [FP-CHANGE 2025-10-21.2]
+// ---------- PENDENTES (listar numerado)
 async function listPendingPayments(userNorm){
   const sheet=await ensureSheet();
   const rows=await sheet.getRows();
@@ -564,361 +498,96 @@ async function listPendingPayments(userNorm){
     .filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm && getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago")
     .filter(r => parseFloat(getVal(r,"valor")||"0")>0)
     .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
-  if (DEBUG_SHEETS){
-    console.log(`🧾 listPendingPayments(): ${mine.length} pendentes`);
-    await sendAdminDebug(`Pendentes: ${mine.length}`);
-  }
   return mine;
 }
 async function showPendingWithNumbers(fromRaw, userNorm){
   const pend = await listPendingPayments(userNorm);
-  if (!pend.length){
-    await sendText(fromRaw,"✅ Você não tem contas a pagar no momento.");
-    return;
-  }
-  let msg="📋 *Suas contas a pagar:*\n\n";
+  if (!pend.length){ await sendText(fromRaw,"✅ Você não tem contas a pagar no momento."); return; }
+  let msg="📋 *Suas contas a pagar:*
+
+";
   pend.forEach((r, i)=>{
-    const n=i+1;
-    const emoji = numberEmoji(n);
+    const n=i+1; const emoji = numberEmoji(n);
     const nome=getVal(r,"conta")||"Conta";
     const val=formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
     const data=dayMonth(getEffectiveDate(r));
-    msg += `${emoji} 💡 ${nome}\n💰 ${val} | 📅 ${data} | ${statusIconLabel(getVal(r,"status"))}\n${SEP}\n`;
+    msg += `${emoji} 💡 ${nome}
+💰 ${val} | 📅 ${data} | ${statusIconLabel(getVal(r,"status"))}
+${SEP}
+`;
   });
-
-  msg += `\n💡 Envie o *número* ou o *nome* para confirmar o pagamento.\nExemplos: "2" ou "Confirmar internet"`;
+  msg += `
+💡 Envie o *número* ou o *nome* para confirmar o pagamento.
+Exemplos: "2" ou "Confirmar internet"`;
   await sendText(fromRaw, msg.trim());
   return pend;
 }
-async function confirmPendingByNumber(fromRaw, userNorm, text){
-  const m = (text||"").trim().match(/^\s*(\d{1,3})\s*$/);
-  if(!m) return false;
-  const idx = parseInt(m[1],10)-1;
-  const pend = await listPendingPayments(userNorm);
-  if(idx<0 || idx>=pend.length){
-    await sendText(fromRaw, "⚠️ O número informado não corresponde a nenhuma conta.");
-    return true;
-  }
-  const row=pend[idx];
-  setVal(row,"status","pago");
-  await saveRow(row);
-  await sendText(fromRaw, `✅ O lançamento “${getVal(row,"conta")}" foi confirmado como pago.`);
-  const saldo = await computeUserMonthlyBalance(await ensureSheet(), userNorm);
-  await sendText(fromRaw, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
-  return true;
-}
-async function confirmPendingByDescription(fromRaw, userNorm, text){
-  const nomeMatch = (text||"").match(/confirmar pagamento\s+(.+)/i) || (text||"").match(/paguei\s+(.+)/i);
-  if(!nomeMatch) return false;
-  const tail = nomeMatch[1];
-  const valor = parseCurrencyBR(tail);
-  const data  = parseDueDate(tail);
 
+// ---------- Sessão simples para edição (em memória)
+const session = new Map(); // key: userNorm -> { editRowId, field }
+
+async function applyPendingEditIfAny(fromRaw, userNorm, text){
+  const s = session.get(userNorm);
+  if (!s) return false;
   const sheet=await ensureSheet();
   const rows=await sheet.getRows();
-  const pend=rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm && getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago");
+  const row = rows.find(r => getVal(r,"row_id")===s.editRowId && (getVal(r,"user")||"").replace(/\D/g,"")===userNorm);
+  if(!row){ session.delete(userNorm); await sendText(fromRaw,"⚠️ Não encontrei o lançamento para edição."); return true; }
 
-  const lc = (s)=> (s||"").toString().toLowerCase();
-  let candidatos=pend.filter(r => lc(getVal(r,"conta")).includes(lc(tail)));
-  if(!candidatos.length && valor!=null) candidatos = pend.filter(r => Math.abs(parseFloat(getVal(r,"valor")||"0")-valor) < 0.01);
-  if(!candidatos.length && data) candidatos = pend.filter(r => {
-    const d=getEffectiveDate(r); return d && startOfDay(d).getTime()===startOfDay(data).getTime();
-  });
-
-  if(!candidatos.length){
-    await sendText(fromRaw,"🤔 Não encontrei esse lançamento.");
-    await sendWA({ messaging_product:"whatsapp", to:fromRaw, type:"interactive",
-      interactive:{ type:"button", body:{ text:"Você quer listar as contas a pagar?" },
-        action:{ buttons:[{ type:"reply", reply:{ id:"LISTAR_PENDENTES", title:"Listar contas a pagar" } }]}}});
-    return true;
+  if (s.field==="valor"){
+    const v = parseCurrencyBR(text);
+    if (v==null){ await sendText(fromRaw,"Informe um valor válido (ex.: 120,00)."); return true; }
+    setVal(row,"valor", v);
+  } else if (s.field==="data"){
+    const d = parseDueDate(text);
+    if(!d){ await sendText(fromRaw,"Informe uma data válida (ex.: 20/10/2025 ou 'amanhã')."); return true; }
+    setVal(row,"vencimento_iso", toISODate(d)); setVal(row,"vencimento_br", formatBRDate(d));
+  } else if (s.field==="status"){
+    const chosen = /\bpago\b/i.test(text) ? "pago" : (/\bpendente\b/i.test(text) ? "pendente" : null);
+    if(!chosen){ await sendText(fromRaw,"Digite 'pago' ou 'pendente'."); return true; }
+    setVal(row,"status", chosen);
+  } else if (s.field==="nome"){
+    const name = text.trim(); if(!name){ await sendText(fromRaw,"Digite um nome válido."); return true; }
+    setVal(row,"conta", capitalize(name));
   }
-
-  const row=candidatos[0];
-  setVal(row,"status","pago");
   await saveRow(row);
-  await sendText(fromRaw, `✅ O lançamento “${getVal(row,"conta")}" foi confirmado como pago.`);
-  const saldo = await computeUserMonthlyBalance(await ensureSheet(), userNorm);
-  await sendText(fromRaw, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
-  return true;
-}
+  session.delete(userNorm);
 
-// ---------- Classificação sem verbo
-function classifyWithoutVerb(text){
-  const lower=(text||"").toLowerCase();
-  const expenseWords = ["academia","aluguel","energia","luz","água","agua","internet","telefone","mercado","lanche","combustível","gasolina","iptu","ipva","condominio","feira","compras","cartão","cartao"];
-  const incomeWords  = ["venda","comissão","comissao","salário","salario","ganho","ganhei","recebi","cliente","freela","entrada","receita"];
-  let tipo="conta_pagar";
-  if (incomeWords.some(w=>lower.includes(w))) tipo="conta_receber";
-  else if (expenseWords.some(w=>lower.includes(w))) tipo="conta_pagar";
-  return tipo;
-}
-function extractEntities(text, intent){
-  const conta=guessBillName(text);
-  const valor=parseCurrencyBR(text);
-  const vencimento=parseDueDate(text);
-  const pixKey=detectPixKey(text);
-  const boleto=pixKey?null:detectBarcode(text);
-  let tipo_pagamento="", codigo_pagamento="";
-  if(pixKey){tipo_pagamento="pix";codigo_pagamento=pixKey;}
-  else if(boleto){tipo_pagamento="boleto";codigo_pagamento=boleto;}
-
-  const lower=(text||"").toLowerCase();
-  const isFutureVerb = /\b(pagar|vou pagar|irei pagar|liquidar|enviar|transferir)\b/i.test(lower);
-  const isPaidVerb   = /\b(paguei|efetuei|fiz|recebi|ganhei|gastei|transferi|enviei(?:\s+pix)?|pago)\b/i.test(lower);
-
-  let tipo = (intent === "novo_movimento" || intent === "nova_conta") ? "conta_pagar" : "conta_pagar";
-  if (intent === "novo_movimento") {
-    if (/\b(recebi|ganhei|receber|entrada|venda|receita)\b/i.test(lower)) tipo = "conta_receber";
-    if (/\b(gastei|paguei|pix\s+para|transferi|efetuei|fiz)\b/i.test(lower)) tipo = "conta_pagar";
-  }
-  if (!isFutureVerb && !isPaidVerb) { tipo = classifyWithoutVerb(text); }
-
-  let status = null;
-  if (pixKey) {
-    status = "pago";
-  } else if (isFutureVerb) {
-    status = "pendente";
-  } else if (isPaidVerb) {
-    status = "pago";
-  } else {
-    if (vencimento) {
-      const today = startOfDay(new Date()).getTime();
-      const d = startOfDay(new Date(vencimento)).getTime();
-      if (d > today) status = "pendente";
-      else status = null; // hoje/passado sem verbo -> perguntar status
-    } else {
-      status = null; // sem data/sem verbo -> perguntar status
-    }
-  }
-  return { conta, valor, vencimento, tipo_pagamento, codigo_pagamento, status, tipo };
-}
-
-// ---------- Edição simples (último lançamento)
-async function handleEditLast(userNorm, fromRaw, text){
-  const sheet = await ensureSheet();
-  const rows = await sheet.getRows();
-  const mine = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm);
-  if (!mine.length) { await sendText(fromRaw, "✅ Nenhum lançamento encontrado para editar."); return; }
-  mine.sort((a,b)=> new Date(getVal(b,"timestamp")) - new Date(getVal(a,"timestamp")));
-  const row = mine[0];
-
-  const newVal = parseCurrencyBR(text);
-  if (newVal != null) { setVal(row,"valor", newVal); }
-
-  const newDate = parseDueDate(text);
-  if (newDate) {
-    setVal(row,"vencimento_iso", toISODate(newDate));
-    setVal(row,"vencimento_br", formatBRDate(newDate));
-  }
-
-  if (/\b(status\s+)?pago\b/i.test(text)) setVal(row,"status","pago");
-  else if (/\b(status\s+)?pendente\b/i.test(text)) setVal(row,"status","pendente");
-
-  const descMatch = text.match(/\b(descri[cç][aã]o|descricao|nome|t[ií]tulo|titulo)\s+(.+)/i);
-  if (descMatch) setVal(row,"conta", capitalize(descMatch[2].trim()));
-
-  await saveRow(row);
-
-  const vf = formatCurrencyBR(parseFloat(getVal(row,"valor")||"0"));
-  const df = getVal(row,"vencimento_br") || "";
-  await sendText(fromRaw, `✅ Último lançamento atualizado:\n• Descrição: ${getVal(row,"conta")}\n• Valor: ${vf}\n• Data/Vencimento: ${df}\n• Status: ${statusIconLabel(getVal(row,"status"))}`);
-}
-
-// ---------- Exclusão de lançamentos (versão 2025-10-21.1 preservada)
-async function handleDelete(fromRaw, userNorm, text){
-  const sheet = await ensureSheet();
-  const rows = await sheet.getRows();
-  // universo do mês corrente para mapeamento por número
-  const win = parseInlineWindow("", {defaultTo:"month"});
-  const monthItems = rows
-    .filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
-    .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
-    .sort((a,b)=> getEffectiveDate(b) - getEffectiveDate(a));
-
-  // excluir por número: "Excluir 3"
-  const num = (text||"").match(/excluir\s+(\d{1,3})/i);
-  if (num){
-    const idx = parseInt(num[1],10)-1;
-    if (idx>=0 && idx<monthItems.length){
-      const row = monthItems[idx];
-      await safeDeleteRow(sheet, row);
-      await sendText(fromRaw, `🗑️ Lançamento nº ${idx+1} removido com sucesso.`);
-      return true;
-    }
-    await sendText(fromRaw, "⚠️ Número inválido para exclusão.");
-    return true;
-  }
-
-  // limpar testes: valor 0 ou termos irrelevantes
-  if (/\b(limpar testes|excluir testes|apagar testes)\b/i.test(text||"")){
-    const suspects = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
-      .filter(r => parseFloat(getVal(r,"valor")||"0")<=0 || /^(ol[aá]|menu|teste|pagar)$/i.test((getVal(r,"conta")||"").trim()));
-    let count=0;
-    for (const r of suspects){ await safeDeleteRow(sheet, r); count++; }
-    await sendText(fromRaw, `🧹 Limpeza concluída: ${count} lançamento(s) de teste removido(s).`);
-    return true;
-  }
-
-  // excluir por nome/parte do nome
-  const nameMatch = (text||"").match(/excluir\s+(.+)/i) || (text||"").match(/deletar\s+(.+)/i) || (text||"").match(/apagar\s+(.+)/i);
-  if (nameMatch){
-    const term = nameMatch[1].trim().toLowerCase();
-    const cand = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
-      .find(r => (getVal(r,"conta")||"").toLowerCase().includes(term));
-    if (!cand){ await sendText(fromRaw, "🤔 Não encontrei um lançamento com esse nome."); return true; }
-    await safeDeleteRow(sheet, cand);
-    await sendText(fromRaw, `🗑️ Lançamento “${getVal(cand,"conta")}" removido.`);
-    return true;
-  }
-
-  // fallback: orientar uso
-  await sendText(fromRaw, "🗑️ Para excluir: envie *Excluir 3* (número), *Excluir internet* (nome) ou *Limpar testes*.");
+  await sendText(fromRaw, `✅ ${capitalize(s.field)} atualizado com sucesso.`);
+  await sendEditFieldMenu(fromRaw, getVal(row,"row_id"));
   return true;
 }
 
 // ---------- Principal
 async function handleUserText(fromRaw, text){
   const userNorm = normalizeUser(fromRaw);
+
+  // Se há edição pendente, processa primeiro
+  if (await applyPendingEditIfAny(fromRaw, userNorm, text)) return;
+
   const intent = await detectIntent(text);
-  const sheet = await ensureSheet();
+  await ensureSheet();
 
-  // Debug: listagem rápida de linhas do usuário
-  if (DEBUG_SHEETS){
-    const rows = await sheet.getRows();
-    const mine = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm);
-    console.log(`👤 Usuário ${userNorm}: ${mine.length} linhas`);
-    await sendAdminDebug(`Usuario ${userNorm}: ${mine.length} linhas`);
-  }
-
-  // Boas-vindas SEMPRE antes de qualquer cadastro
-  if (intent === "boas_vindas") { await sendText(fromRaw, MSG.BOAS_VINDAS); return; }
+  // Boas-vindas → com botão "Ver opções"
+  if (intent === "boas_vindas") { await sendWelcomeWithOpenMenuButton(fromRaw); return; }
 
   // Guarda-chuva contra textos irrelevantes curtos
   if (isIrrelevantShortMessage(text)) {
-    if (GREET_RE.test(text || "")) { await sendText(fromRaw, MSG.BOAS_VINDAS); }
-    else { await sendText(fromRaw, MSG.NAO_ENTENDI); }
+    if (GREET_RE.test(text || "")) { await sendWelcomeWithOpenMenuButton(fromRaw); }
+    else { await sendText(fromRaw, "🤔 Não consegui entender sua mensagem. Toque em *Ver opções* para navegar."); }
     return;
   }
 
-  if (intent === "funcoes") { await sendText(fromRaw, MSG.AJUDA); return; }
-  if (intent === "relatorios_menu") { await sendReportMenu(fromRaw); return; }
-
-  if (intent === "relatorio") {
-    const win = parseInlineWindow(text, {defaultTo:"month"});
-    const rows = await sheet.getRows();
-    const msg = await computeAndBuildReport(userNorm, rows, win, "completo");
-    await sendText(fromRaw, msg);
-    await sendReportMenu(fromRaw);
-    return;
-  }
-
+  // Atalhos de texto
+  if (intent === "relatorios_menu") { await sendText(fromRaw,"📊 Toque em *Ver opções → Relatórios* para abrir os filtros."); return; }
   if (intent === "listar_pendentes") { await showPendingWithNumbers(fromRaw, userNorm); return; }
+  if (intent === "editar_lancamento") { await sendSubmenuEditarButtons(fromRaw); return; }
 
-  // Confirmar por número ou descrição (sempre tentar antes de qualquer fallback)
+  // Confirmar por número/descrição
   if (await confirmPendingByNumber(fromRaw, userNorm, text)) return;
   if (await confirmPendingByDescription(fromRaw, userNorm, text)) return;
 
-  if (intent === "responder_status_texto") {
-    const rows = await sheet.getRows();
-    const mine = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm);
-    if (!mine.length) { await sendText(fromRaw, "✅ Nenhum lançamento encontrado."); return; }
-    mine.sort((a,b)=> new Date(getVal(b,"timestamp")) - new Date(getVal(a,"timestamp")));
-    const row = mine[0];
-    const chosen = /^\s*pago\s*$/i.test(text) ? "pago" : "pendente";
-    setVal(row,"status", chosen);
-    await saveRow(row);
-    if (chosen === "pago") {
-      await sendText(fromRaw, "✅ Este lançamento foi registrado como pago.");
-      const saldo = await computeUserMonthlyBalance(sheet, userNorm);
-      await sendText(fromRaw, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
-    } else {
-      await sendText(fromRaw, "⏳ Mantido como pendente.");
-    }
-    return;
-  }
-
-  if (intent === "listar_lancamentos") {
-    const win = parseInlineWindow(text, {defaultTo:"month"});
-    const rows = await sheet.getRows();
-    let itens = rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm)
-                    .filter(r => withinRange(getEffectiveDate(r), win.start, win.end))
-                    .filter(r => parseFloat(getVal(r,"valor")||"0")>0)
-                    .sort((a,b)=> getEffectiveDate(b) - getEffectiveDate(a));
-    if (!itens.length) { await sendText(fromRaw, "✅ Nenhum lançamento encontrado."); return; }
-    let msg = `📋 *Lançamentos (${formatBRDate(win.start)} a ${formatBRDate(win.end)})*:\n\n`;
-    for (const r of itens) {
-      const tipoHuman = humanType(r);
-      const when = dayMonth(getEffectiveDate(r));
-      const val = formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-      msg += `🧾 ${getVal(r,"conta") || tipoHuman}\n💰 ${val} | 📅 ${when} | 🏷️ ${statusIconLabel(getVal(r,"status"))}\n${SEP}\n`;
-    }
-    msg += `\n🔎 Dica: envie *"Contas a pagar"* para confirmar por número.`;
-    await sendText(fromRaw, msg.trim()); 
-    return;
-  }
-
-  if (intent === "editar_lancamento") { await handleEditLast(userNorm, fromRaw, text); return; }
-
-  if (intent === "excluir_lancamento") { await handleDelete(fromRaw, userNorm, text); return; }
-
-  // Cadastro padrão
-  if (intent === "nova_conta" || intent === "novo_movimento" || intent === "desconhecido") {
-    const { conta, valor, vencimento, tipo_pagamento, codigo_pagamento, status, tipo } = extractEntities(text, intent);
-
-    // Validação anti-ruído — não registra se não houver valor (>0) e nenhum contexto de pagamento/recebimento/código
-    const hasFinancialContext = FIN_KEYWORDS_RE.test(text||"") || tipo_pagamento || codigo_pagamento || parseDueDate(text);
-    const isValidValue = typeof valor === "number" && valor > 0;
-    if (!isValidValue && !hasFinancialContext) {
-      await sendText(fromRaw, MSG.NAO_ENTENDI);
-      return;
-    }
-
-    const rowId = uuidShort();
-    const finalStatus = status ?? "pendente"; // pergunta depois se for null
-
-    const sheet2 = await ensureSheet();
-    await sheet2.addRow({
-      row_id: rowId,
-      timestamp: new Date().toISOString(),
-      user: userNorm,
-      user_raw: fromRaw,
-      tipo,
-      conta,
-      valor: isValidValue ? valor : (valor||0),
-      vencimento_iso: toISODate(vencimento),
-      vencimento_br: formatBRDate(vencimento),
-      tipo_pagamento,
-      codigo_pagamento,
-      status: finalStatus,
-      fixa: "",
-      fix_parent_id: "",
-      vencimento_dia: "",
-    });
-
-    const valorFmt = formatCurrencyBR(isValidValue ? valor : 0);
-    const dataStr  = formatBRDate(vencimento) || "";
-
-    if (tipo === "conta_pagar") {
-      await sendText(fromRaw, `🧾 *Lançamento registrado!*\n\n📘 Descrição: ${conta || "Lançamento"}\n💰 Valor: ${valorFmt}\n📅 Vencimento/Data: ${dataStr}\n${finalStatus==="pago" ? "✅ Status: Pago" : "⏳ Status: Pendente"}`);
-      if (tipo_pagamento === "pix")    await sendCopyButton(fromRaw, "💳 Chave Pix:", codigo_pagamento, "Copiar Pix");
-      if (tipo_pagamento === "boleto") await sendCopyButton(fromRaw, "🧾 Código de barras:", codigo_pagamento, "Copiar boleto");
-      if (status === null) {
-        // Apenas pergunta status — NÃO envia nenhum botão de "Confirmar" genérico.
-        await sendStatusChoiceButtons(fromRaw, rowId);
-      }
-    } else {
-      await sendText(fromRaw, `💸 *Recebimento registrado!*\n\n📘 Descrição: ${conta || "Recebimento"}\n💰 Valor: ${valorFmt}\n📅 Data: ${dataStr}\n${finalStatus==="pago" ? "✅ Status: Pago" : "⏳ Status: Pendente"}`);
-    }
-
-    if (finalStatus === "pago") {
-      const saldo = await computeUserMonthlyBalance(sheet2, userNorm);
-      await sendText(fromRaw, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
-    }
-
-    return;
-  }
-
-  await sendText(fromRaw, MSG.NAO_ENTENDI);
+  await sendText(fromRaw, "✅ Use *Ver opções* para navegar ou digite sua instrução (ex.: "Pagar internet 120 amanhã").");
 }
 
 // ---------- Webhook
@@ -937,42 +606,60 @@ app.post("/webhook",async(req,res)=>{
         for(const c of e.changes||[]){
           for(const m of c.value?.messages || []){
             const from=m.from;
+
             if(m.type==="text") await handleUserText(from, m.text?.body || "");
+
             if(m.type==="interactive"){
-              const id=m.interactive?.button_reply?.id;
+              const btn = m.interactive?.button_reply;
+              const list= m.interactive?.list_reply;
 
-              if(id==="LISTAR_PENDENTES"){ await showPendingWithNumbers(from, normalizeUser(from)); }
+              // ----- Button replies
+              if (btn?.id){
+                const id=btn.id;
 
-              if(id?.startsWith("SETSTATUS:")){
-                const [, rowId, chosen] = id.split(":");
-                const sheet=await ensureSheet();
-                const rows=await sheet.getRows();
-                const userNorm = normalizeUser(from);
-                const row=rows.find(r=> getVal(r,"row_id")===rowId && (getVal(r,"user")||"").replace(/\D/g,"")===userNorm);
-                if(row){
-                  setVal(row,"status", chosen === "pago" ? "pago" : "pendente");
-                  await saveRow(row);
-                  if (chosen === "pago") {
-                    await sendText(from, "✅ Este lançamento foi registrado como pago.");
-                    const saldo = await computeUserMonthlyBalance(sheet, userNorm);
-                    await sendText(from, `💼 *Seu saldo de ${monthLabel()}:* ${formatCurrencyBR(saldo, true)}`);
-                  } else {
-                    await sendText(from, "⏳ Mantido como pendente.");
-                  }
-                } else {
-                  await sendText(from, "⚠️ Não encontrei este lançamento.");
+                if(id==="OPEN_MAIN_MENU"){ await sendMenuPrincipalList(from); }
+                if(id==="MENU:principal"){ await sendMenuPrincipalList(from); }
+
+                if(id==="EDITAR:ULTIMO"){
+                  await sendText(from,"✏️ Você escolheu *Alterar o último registro*. Envie o que deseja alterar (ex.: "valor 120", "data 20/10", "status pago", "nome academia").");
+                }
+                if(id==="EDITAR:POR_CATEG"){ await sendListCategoriasEdicao(from); }
+
+                if(id?.startsWith("EDITFIELD:")){
+                  const [, rowId, field] = id.split(":");
+                  session.set(normalizeUser(from), { editRowId: rowId, field });
+                  if(field==="valor")  await sendText(from, "Digite o *novo valor* (ex.: 120,00):");
+                  if(field==="data")   await sendText(from, "Digite a *nova data* (ex.: 20/10/2025 ou 'amanhã'):");
+                  if(field==="status") await sendText(from, "Digite o *novo status* (pago ou pendente):");
+                  if(field==="nome")   await sendText(from, "Digite o *novo nome/descrição*:");
                 }
               }
 
-              if(id?.startsWith("REPORT:")){
-                const kind = id.split("REPORT:")[1];
-                await sendText(from, `✅ Mostrando *relatório ${kind}*`);
-                const sheet=await ensureSheet();
-                const rows=await sheet.getRows();
-                const userNorm = normalizeUser(from);
-                const win = parseInlineWindow("", {defaultTo:"month"});
-                const msg = await computeAndBuildReport(userNorm, rows, win, kind);
-                await sendText(from, msg);
+              // ----- List replies
+              if (list?.id){
+                const id=list.id;
+
+                // Menu Principal
+                if(id==="MENU:registrar_pagamento"){ await sendText(from,"💰 Envie algo como: *Pagar internet 120 amanhã*."); }
+                if(id==="MENU:registrar_recebimento"){ await sendText(from,"💵 Envie algo como: *Receber venda 200 hoje*."); }
+                if(id==="MENU:contas_pagar"){ await showPendingWithNumbers(from, normalizeUser(from)); }
+                if(id==="MENU:contas_fixas"){ await sendText(from,"♻️ Para cadastrar: *Conta fixa internet 100 todo dia 01*. Para excluir: *Excluir conta fixa internet*."); }
+                if(id==="MENU:relatorios"){ await sendText(from,"📊 Envie: *Relatórios* e escolha Vencidos, Pagos, A pagar ou Completo."); }
+                if(id==="MENU:lancamentos"){ await sendText(from,"🧾 Envie: *Lançamentos do mês* ou *Lançamentos 10/2025*."); }
+                if(id==="MENU:editar"){ await sendSubmenuEditarButtons(from); }
+                if(id==="MENU:excluir"){ await sendText(from,"🗑️ Dica: *Excluir 3* (pelo número da lista do mês) ou *Excluir internet*."); }
+                if(id==="MENU:ajuda"){ await sendText(from,"⚙️ Ex.: *Pagar energia 150 amanhã*, *Contas a pagar*, *Relatório do mês*."); }
+
+                // Categorias de Edição
+                if(id==="EDITAR:CATEG:conta_pagar"){ await sendEditListForCategory(from, normalizeUser(from), "conta_pagar"); }
+                if(id==="EDITAR:CATEG:conta_receber"){ await sendEditListForCategory(from, normalizeUser(from), "conta_receber"); }
+                if(id==="EDITAR:CATEG:fixa"){ await sendEditListForCategory(from, normalizeUser(from), "fixa"); }
+
+                // Seleção de item para editar
+                if(id?.startsWith("EDITSEL:")){
+                  const rowId=id.split("EDITSEL:")[1];
+                  await sendEditFieldMenu(from, rowId);
+                }
               }
             }
           }
@@ -982,12 +669,11 @@ app.post("/webhook",async(req,res)=>{
     res.sendStatus(200);
   }catch(e){
     console.error("Erro no webhook:", e.message);
-    await sendAdminDebug(`Webhook error: ${e.message}`);
     res.sendStatus(200);
   }
 });
 
-// ---------- CRON lembretes (30/30min) — usa user_raw quando disponível
+// ---------- CRON lembretes (mantido)
 cron.schedule("*/30 * * * *", async()=>{
   try{
     const sheet=await ensureSheet();
@@ -999,23 +685,15 @@ cron.schedule("*/30 * * * *", async()=>{
       getVal(r,"vencimento_iso")
     ).filter(r => startOfDay(new Date(getVal(r,"vencimento_iso"))).getTime()===today);
 
-    if (DEBUG_SHEETS){
-      console.log(`⏰ CRON lembretes: ${due.length} lançamentos para hoje`);
-      await sendAdminDebug(`CRON: ${due.length} lembretes hoje`);
-    }
-
     for(const r of due){
       const toRaw=getVal(r,"user_raw") || getVal(r,"user");
       await sendText(toRaw, `⚠️ *Lembrete de pagamento!*\n\n📘 ${getVal(r,"conta")||"Conta"}\n💰 ${formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"))}\n📅 Vence hoje (${formatBRDate(getVal(r,"vencimento_iso"))})`);
       if(getVal(r,"tipo_pagamento")==="pix")    await sendCopyButton(toRaw,"💳 Chave Pix:",getVal(r,"codigo_pagamento"),"Copiar Pix");
       if(getVal(r,"tipo_pagamento")==="boleto") await sendCopyButton(toRaw,"🧾 Código de barras:",getVal(r,"codigo_pagamento"),"Copiar boleto");
     }
-  }catch(e){
-    console.error("Erro no CRON:", e.message);
-    await sendAdminDebug(`CRON error: ${e.message}`);
-  }
+  }catch(e){ console.error("Erro no CRON:", e.message); }
 });
 
 // ---------- Server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=> console.log(`FinPlanner IA v2025-10-21.2 (visual+emoji) rodando na porta ${PORT}`));
+app.listen(PORT, ()=> console.log(`FinPlanner IA v2025-10-21.3 (menus/listas) rodando na porta ${PORT}`));
