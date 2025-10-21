@@ -506,25 +506,27 @@ async function listPendingPayments(userNorm){
 }
 async function showPendingWithNumbers(fromRaw, userNorm){
   const pend = await listPendingPayments(userNorm);
-  if (!pend.length){ await sendText(fromRaw,"✅ Você não tem contas a pagar no momento."); return; }
-  let msg="📋 *Suas contas a pagar:*
+  if (!pend.length){ 
+    await sendText(fromRaw,"✅ Você não tem contas a pagar no momento."); 
+    return; 
+  }
 
-";
+  let msg = `📋 *Suas contas a pagar:*\n\n`;
+
   pend.forEach((r, i)=>{
-    const n=i+1; const emoji = numberEmoji(n);
-    const nome=getVal(r,"conta")||"Conta";
-    const val=formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-    const data=dayMonth(getEffectiveDate(r));
-    msg += `${emoji} 💡 ${nome}
-💰 ${val} | 📅 ${data} | ${statusIconLabel(getVal(r,"status"))}
-${SEP}
-`;
+    const n = i + 1;
+    const emoji = numberEmoji(n);
+    const nome = getVal(r,"conta") || "Conta";
+    const val = formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
+    const data = dayMonth(getEffectiveDate(r));
+    msg += `${emoji} 💡 ${nome}\n💰 ${val} | 📅 ${data} | ${statusIconLabel(getVal(r,"status"))}\n${SEP}\n`;
   });
-  msg += `
-💡 Envie o *número* ou o *nome* para confirmar o pagamento.
-Exemplos: "2" ou "Confirmar internet"`;
+
+  msg += `\n💡 Envie o *número* ou o *nome* para confirmar o pagamento.\nExemplos: "2" ou "Confirmar internet"`;
   await sendText(fromRaw, msg.trim());
   return pend;
+}
+
 }
 
 // ---------- Sessão simples para edição (em memória)
@@ -701,4 +703,5 @@ cron.schedule("*/30 * * * *", async()=>{
 // ---------- Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=> console.log(`FinPlanner IA v2025-10-21.3 (menus/listas) rodando na porta ${PORT}`));
+
 
