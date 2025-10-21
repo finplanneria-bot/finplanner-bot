@@ -13,7 +13,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "google-auth-library": "^9.0.0",
-    "google-spreadsheet": "^4.1.1",
+    "google-spreadsheet": "4.1.1"
     "node-cron": "^3.0.3",
     "openai": "^4.60.0"
   },
@@ -23,3 +23,4 @@
   "author": "FinPlanner IA",
   "license": "MIT"
 }
+
