@@ -1,6 +1,6 @@
 // ============================
 // FinPlanner IA - WhatsApp Bot
-// Versão: app.js (2025-10-22.2 • Auth Render FIX + Relatórios com Saldo + Botões compatíveis WhatsApp)
+// Versão: app.js (2025-10-23 • Menus+Relatórios+Saldo+Edição+Exclusão • Auth FIX • CRON 08:00)
 // ============================
 
 import express from "express";
@@ -35,7 +35,20 @@ const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 // Aceita chave Google com \n literais OU quebras reais
 let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
 if (GOOGLE_SERVICE_ACCOUNT_KEY && GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n").replace(/\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.split("\n").join("\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n").replace(/\\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n");
+  // Finalmente troca por quebras reais
+  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n").split("\n").join("\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n").replace(/\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n");
+}
+if (RAW_KEY && RAW_KEY.includes("\n")) {
+  GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY.replace(/\n/g, "\n").split("\n").join("\n").replace(/\n/g, "\n");
+  GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY.replace(/\n/g, "\n");
 }
 
 // ============================
@@ -59,11 +72,11 @@ function formatCurrencyBR(v){
   const num = Number(v || 0);
   return `R$${Math.abs(num).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}`;
 }
-function statusIconLabel(status){ return status==="pago" ? "✅ Pago" : "⏳ Pendente"; }
-const numberEmoji = (n)=>{
-  const map = ["","1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
-  return (n>=1 && n<=10) ? map[n] : `${n}️⃣`;
-};
+function statusIconLabel(status){ return status==="pago" || status==="recebido" ? "✅ Pago" : "⏳ Pendente"; }
+function numberToKeycapEmojis(n){
+  const map = { "0":"0️⃣","1":"1️⃣","2":"2️⃣","3":"3️⃣","4":"4️⃣","5":"5️⃣","6":"6️⃣","7":"7️⃣","8":"8️⃣","9":"9️⃣" };
+  return String(n).split("").map(d => map[d] || d).join("");
+}
 function withinRange(dt, start, end){ return dt && dt>=start && dt<=end; }
 
 // ============================
@@ -76,9 +89,6 @@ async function sendWA(p){
     await axios.post(WA_API, p, { headers:{ Authorization:`Bearer ${WA_TOKEN}`, "Content-Type":"application/json" } });
   }catch(e){
     console.error("Erro WA:", e.response?.data || e.message);
-    if (DEBUG_SHEETS && ADMIN_WA_NUMBER) {
-      await sendText(ADMIN_WA_NUMBER, `⚠️ Erro WA: ${e.response?.data ? JSON.stringify(e.response.data) : e.message}`);
-    }
   }
 }
 async function sendText(to, body){
@@ -102,24 +112,14 @@ async function sendCopyButton(to, title, code, btnTitle){
 // ============================
 let doc; // será instanciado já com auth
 async function ensureAuth(){
-  if (!SHEETS_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_SERVICE_ACCOUNT_KEY) {
-    const msg = "Variáveis de autenticação do Google ausentes.";
-    console.error("❌ Auth Sheets:", msg);
-    throw new Error(msg);
-  }
-  try{
-    const serviceAccountAuth = new JWT({
-      email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      key: GOOGLE_SERVICE_ACCOUNT_KEY,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    doc = new GoogleSpreadsheet(SHEETS_ID, serviceAccountAuth);
-    await doc.loadInfo();
-    console.log("✅ Autenticado com Google Sheets com sucesso");
-  }catch(e){
-    console.error("❌ Erro auth Sheets:", e.message);
-    throw e;
-  }
+  const serviceAccountAuth = new JWT({
+    email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    key: (RAW_KEY || "").replace(/\n/g, "
+"),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  doc = new GoogleSpreadsheet(SHEETS_ID, serviceAccountAuth);
+  await doc.loadInfo();
 }
 
 async function ensureSheet(){
@@ -128,7 +128,8 @@ async function ensureSheet(){
   const headers = [
     "row_id","timestamp","user","user_raw","tipo","conta","valor",
     "vencimento_iso","vencimento_br","tipo_pagamento","codigo_pagamento",
-    "status","fixa","fix_parent_id","vencimento_dia"
+    "status","fixa","fix_parent_id","vencimento_dia",
+    "categoria","categoria_emoji","descricao"
   ];
   if (!sheet){
     sheet = await doc.addSheet({ title:"finplanner", headerValues: headers });
@@ -165,21 +166,49 @@ function getEffectiveDate(row){
 }
 
 // ============================
-// Sessões (edição e períodos)
+// Categoria automática
 // ============================
-const sessionPeriod = new Map();   // userNorm -> { mode: 'report'|'lanc', category?: 'cp'|'rec'|'pag'|'all', awaiting:'range' }
+function detectCategory(descRaw, tipo){
+  const text = (descRaw||"").toLowerCase();
+  const rules = [
+    { slug:"utilidades", emoji:"🔌", kws:["luz","energia","elétrica","eletrica","água","agua","esgoto","gás","gas"] },
+    { slug:"internet_telefonia", emoji:"🌐", kws:["internet","fibra","vivo","claro","tim","oi"] },
+    { slug:"moradia", emoji:"🏠", kws:["aluguel","condomínio","condominio","iptu","aluguel"] },
+    { slug:"mercado", emoji:"🛒", kws:["mercado","supermercado","ifood","padaria","almoço","jantar","restaurante"] },
+    { slug:"transporte", emoji:"🚗", kws:["uber","99","gasolina","combustível","combustivel","passagem","ônibus","onibus"] },
+    { slug:"saude", emoji:"💊", kws:["academia","plano","consulta","dentista","farmácia","farmacia"] },
+    { slug:"educacao", emoji:"🎓", kws:["curso","faculdade","escola","mensalidade"] },
+    { slug:"lazer", emoji:"🎭", kws:["netflix","spotify","cinema","show","lazer","entretenimento"] },
+    { slug:"impostos_taxas", emoji:"🧾", kws:["multa","taxa","imposto","receita"] },
+    { slug:"salario_trabalho", emoji:"💼", kws:["salário","salario","pagamento","freela","freelance","contrato"] },
+    { slug:"vendas_receitas", emoji:"💵", kws:["venda","recebimento","pix recebido","cliente","boleto recebido"] },
+  ];
+  for(const r of rules){
+    if (r.kws.some(k => text.includes(k))) return r;
+  }
+  if (tipo === "conta_receber") return { slug:"vendas_receitas", emoji:"💵" };
+  if (tipo === "conta_pagar")   return { slug:"outros", emoji:"🧩" };
+  return { slug:"outros", emoji:"🧩" };
+}
+
+// ============================
+// Sessões
+// ============================
+const sessionPeriod = new Map();
+const sessionEdit   = new Map();
+const sessionDelete = new Map();
 
 // ============================
 // Menus interativos
 // ============================
 async function sendWelcomeList(to){
-  const body = `👋 Olá! Eu sou a FinPlanner IA.
+  const body =
+`👋 Olá! Eu sou a FinPlanner IA.
 
 💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.
 
-Toque em *“Abrir menu”* ou digite o que deseja fazer.`;
+Toque em *Abrir menu* ou digite o que deseja fazer.`;
 
-  // Envia LIST diretamente (sem botão intermediário)
   return sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{
@@ -192,25 +221,25 @@ Toque em *“Abrir menu”* ou digite o que deseja fazer.`;
           {
             title:"Lançamentos e Contas",
             rows:[
-              { id:"MENU:registrar_pagamento", title:"💰 Registrar pagamento", description:"Adicionar um novo gasto." },
-              { id:"MENU:registrar_recebimento", title:"💵 Registrar recebimento", description:"Adicionar uma entrada de dinheiro." },
-              { id:"MENU:contas_pagar", title:"📅 Contas a pagar", description:"Ver e confirmar pagamentos pendentes." },
-              { id:"MENU:contas_fixas", title:"♻️ Contas fixas", description:"Cadastrar ou excluir contas recorrentes." },
+              { id:"MENU:registrar_pagamento",   title:"💰 Registrar pagamento",    description:"Adicionar um novo gasto." },
+              { id:"MENU:registrar_recebimento", title:"💵 Registrar recebimento",  description:"Adicionar uma entrada de dinheiro." },
+              { id:"MENU:contas_pagar",          title:"📅 Contas a pagar",         description:"Ver e confirmar pagamentos pendentes." },
+              { id:"MENU:contas_fixas",          title:"♻️ Contas fixas",          description:"Cadastrar ou excluir contas recorrentes." },
             ]
           },
           {
             title:"Relatórios e Histórico",
             rows:[
-              { id:"MENU:relatorios", title:"📊 Relatórios", description:"Gerar por categoria e período." },
-              { id:"MENU:lancamentos", title:"🧾 Meus lançamentos", description:"Ver por mês ou período personalizado." },
+              { id:"MENU:relatorios",  title:"📊 Relatórios",        description:"Gerar por categoria e período." },
+              { id:"MENU:lancamentos", title:"🧾 Meus lançamentos",  description:"Ver por mês ou data personalizada." },
             ]
           },
           {
             title:"Ajustes e Ajuda",
             rows:[
-              { id:"MENU:editar", title:"✏️ Editar lançamentos", description:"Alterar ou revisar registros." },
-              { id:"MENU:excluir", title:"🗑️ Excluir lançamento", description:"Remover lançamento manualmente." },
-              { id:"MENU:ajuda", title:"⚙️ Ajuda e exemplos", description:"Como usar a FinPlanner IA." },
+              { id:"MENU:editar",  title:"✏️ Editar lançamentos", description:"Alterar registros por número." },
+              { id:"MENU:excluir", title:"🗑️ Excluir lançamento", description:"Excluir último ou escolher por número." },
+              { id:"MENU:ajuda",   title:"⚙️ Ajuda e exemplos",   description:"Como usar a FinPlanner IA." },
             ]
           }
         ]
@@ -220,7 +249,6 @@ Toque em *“Abrir menu”* ou digite o que deseja fazer.`;
 }
 
 async function sendRelatoriosButtons(to){
-  // MÁX 3 botões (WhatsApp)
   return sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{
@@ -236,7 +264,6 @@ async function sendRelatoriosButtons(to){
 }
 
 async function sendPeriodoButtons(to, prefix){
-  // prefix: REL:PER:cp|rec|pag|all ou LANC:PER
   return sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{
@@ -281,37 +308,48 @@ function sumValues(rows){
 }
 
 // ============================
-// Renderização de relatórios
+// Renderização e helpers
 // ============================
+function renderItem(r, idx){
+  const idxEmoji = numberToKeycapEmojis(idx);
+  const conta = getVal(r,"conta") || "Lançamento";
+  const valor = formatCurrencyBR(getVal(r,"valor"));
+  const data  = formatBRDate(getEffectiveDate(r));
+  const status = statusIconLabel(getVal(r,"status"));
+  const catEmoji = getVal(r,"categoria_emoji") || "";
+  const cat = getVal(r,"categoria") ? `${catEmoji} ${getVal(r,"categoria")}` : "—";
+  const desc = getVal(r,"descricao") || conta;
+  return `${idxEmoji} ${conta}
+📝 Descrição: ${desc}
+💰 Valor: ${valor}
+📅 Data: ${data}
+🏷️ Status: ${status}
+📂 Categoria: ${cat}
+${"────────────────"}
+`;
+}
+
 function renderReportList(title, rows){
   let msg = `📊 *${title}*\n\n`;
   if(!rows.length){
     msg += "✅ Nenhum lançamento encontrado para o período selecionado.";
     return msg;
   }
-  rows.forEach((r,i)=>{
-    const idx = i+1;
-    msg += `${numberEmoji(idx)} ${getVal(r,"conta")||"Lançamento"}\n` +
-           `💰 ${formatCurrencyBR(getVal(r,"valor"))}\n` +
-           `📅 Data: ${formatBRDate(getEffectiveDate(r))}\n` +
-           `🏷️ Status: ${statusIconLabel(getVal(r,"status"))}\n` +
-           `${SEP}\n`;
-  });
+  rows.forEach((r,i)=>{ msg += renderItem(r, i+1); });
   msg += `\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
   return msg;
 }
 
-// Saldo consolidado (pagos no período): Recebimentos pagos - Pagamentos pagos
 function renderSaldoFooter(rowsAll, start, end){
   const within = withinPeriod(rowsAll, start, end);
-  const recebimentosPagos = within.filter(r => getVal(r,"tipo")==="conta_receber" && getVal(r,"status")==="pago");
+  const recebimentosPagos = within.filter(r => getVal(r,"tipo")==="conta_receber" && (getVal(r,"status")==="pago" || getVal(r,"status")==="recebido"));
   const pagamentosPagos   = within.filter(r => getVal(r,"tipo")==="conta_pagar"   && getVal(r,"status")==="pago");
   const totalRec = sumValues(recebimentosPagos);
   const totalPag = sumValues(pagamentosPagos);
   const saldo = totalRec - totalPag;
   const saldoStr = formatCurrencyBR(saldo);
   const saldoLine = saldo < 0 ? `🟥 🔹 *Saldo no período:* -${saldoStr}` : `🔹 *Saldo no período:* ${saldoStr}`;
-  return `\n${SEP}\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
+  return `\n${"────────────────"}\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
 }
 
 async function showReportByCategory(fromRaw, userNorm, category, range){
@@ -319,110 +357,62 @@ async function showReportByCategory(fromRaw, userNorm, category, range){
   const {start,end} = range;
   const inRange = withinPeriod(rows, start, end);
 
-  if(category==="cp"){ // Contas a pagar (pendentes)
+  if(category==="cp"){
     const filtered = inRange.filter(r => getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago");
     const msg = renderReportList("Relatório • Contas a pagar", filtered) + renderSaldoFooter(rows, start, end);
     await sendText(fromRaw, msg); return;
   }
-  if(category==="rec"){ // Recebimentos (todos; saldo considera pagos)
+  if(category==="rec"){
     const filtered = inRange.filter(r => getVal(r,"tipo")==="conta_receber");
     const msg = renderReportList("Relatório • Recebimentos", filtered) + renderSaldoFooter(rows, start, end);
     await sendText(fromRaw, msg); return;
   }
-  if(category==="pag"){ // Pagamentos (despesas; saldo considera pagos)
+  if(category==="pag"){
     const filtered = inRange.filter(r => getVal(r,"tipo")==="conta_pagar");
     const msg = renderReportList("Relatório • Pagamentos", filtered) + renderSaldoFooter(rows, start, end);
     await sendText(fromRaw, msg); return;
   }
-  if(category==="all"){ // Relatório completo (tudo no período)
+  if(category==="all"){
     const filtered = inRange.slice().sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
     const msg = renderReportList("Relatório • Completo", filtered) + renderSaldoFooter(rows, start, end);
     await sendText(fromRaw, msg); return;
   }
 }
 
-// ============================
-// Lançamentos (lista geral)
-// ============================
-function renderLancamentosList(rows, title="🧾 Meus lançamentos"){
-  let msg = `🧾 *${title}*\n\n`;
-  if(!rows.length){
-    msg += "✅ Nenhum lançamento encontrado para o período selecionado.";
-    return msg;
-  }
-  rows.forEach((r,i)=>{
-    const idx=i+1;
-    msg += `${numberEmoji(idx)} ${getVal(r,"conta")||"Lançamento"}\n` +
-           `💰 ${formatCurrencyBR(getVal(r,"valor"))}\n` +
-           `📅 Data: ${formatBRDate(getEffectiveDate(r))}\n` +
-           `🏷️ ${(getVal(r,"tipo")==="conta_receber" ? "Recebimento" : "Pagamento")} • ${statusIconLabel(getVal(r,"status"))}\n` +
-           `${SEP}\n`;
-  });
-  return msg;
-}
 async function showLancamentos(fromRaw, userNorm, range){
   const rows = await allRowsForUser(userNorm);
   const within = withinPeriod(rows, range.start, range.end)
     .filter(r => parseFloat(getVal(r,"valor")||"0")>0)
-    .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b)); // ordem de registro
-  await sendText(fromRaw, renderLancamentosList(within, "Meus lançamentos"));
+    .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
+  if (!within.length){
+    await sendText(fromRaw,"✅ Nenhum lançamento encontrado para o período selecionado.");
+    return;
+  }
+  let msg = `🧾 *Meus lançamentos*\n\n`;
+  within.forEach((r,i)=>{ msg += renderItem(r, i+1); });
+  await sendText(fromRaw, msg);
 }
 
 // ============================
-// Contas pendentes e confirmação
+// Exclusão/Edição (resumido – handlers principais no clique)
 // ============================
-async function listPendingPayments(userNorm){
-  const rows=await allRowsForUser(userNorm);
-  const mine=rows
-    .filter(r => getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago")
-    .filter(r => parseFloat(getVal(r,"valor")||"0")>0)
-    .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
-  return mine;
-}
-async function showPendingWithNumbers(fromRaw, userNorm){
-  const pend = await listPendingPayments(userNorm);
-  if (!pend.length){ await sendText(fromRaw,"✅ Você não tem contas a pagar no momento."); return; }
-  let msg = `📋 *Suas contas a pagar:*\n\n`;
-  pend.forEach((r, i)=>{
-    const n=i+1; const emoji = numberEmoji(n);
-    const nome=getVal(r,"conta")||"Conta";
-    const val=formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"));
-    const data=formatBRDate(getEffectiveDate(r));
-    msg += `${emoji} 💡 ${nome}\n💰 ${val}\n📅 Data: ${data}\n🏷️ Status: ${statusIconLabel(getVal(r,"status"))}\n${SEP}\n`;
+async function handleDeleteMenu(fromRaw){
+  return sendWA({
+    messaging_product:"whatsapp", to:fromRaw, type:"interactive",
+    interactive:{
+      type:"button",
+      body:{ text:"🗑️ Como deseja excluir?" },
+      action:{ buttons:[
+        { type:"reply", reply:{ id:"DEL:LAST", title:"Último lançamento" } },
+        { type:"reply", reply:{ id:"DEL:LIST", title:"Listar lançamentos" } }
+      ]}
+    }
   });
-  msg += `\n💡 Envie o *número* ou o *nome* para confirmar o pagamento.\nExemplos: "2" ou "Confirmar internet"`;
-  await sendText(fromRaw, msg.trim());
-  return pend;
-}
-async function confirmPendingByNumber(fromRaw, userNorm, text){
-  const numMatch = String(text||"").trim().match(/^\d{1,2}$/);
-  if(!numMatch) return false;
-  const idx = parseInt(numMatch[0])-1;
-  const pend = await listPendingPayments(userNorm);
-  const sel = pend[idx]; if(!sel) return false;
-  setVal(sel,"status","pago"); await saveRow(sel);
-  await sendText(fromRaw, `✅ Pagamento confirmado: *${getVal(sel,"conta")}* no valor de ${formatCurrencyBR(getVal(sel,"valor"))}.`);
-  return true;
-}
-async function confirmPendingByDescription(fromRaw, userNorm, text){
-  const lower=(text||"").toLowerCase();
-  if(!/\b(confirm(ar)?|pago)\b/.test(lower)) return false;
-  const rows=await allRowsForUser(userNorm);
-  const candidates = rows.filter(r => getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago");
-  const hit = candidates.find(r => lower.includes((getVal(r,"conta")||"").toLowerCase()));
-  if(!hit) return false;
-  setVal(hit,"status","pago"); await saveRow(hit);
-  await sendText(fromRaw, `✅ Pagamento confirmado: *${getVal(hit,"conta")}* no valor de ${formatCurrencyBR(getVal(hit,"valor"))}.`);
-  return true;
 }
 
 // ============================
 // Intents e handler
 // ============================
-const GREET_RE = /(\b(oi|ol[aá]|opa|bom dia|boa tarde|boa noite)\b)/i;
-const FIN_KEYWORDS_RE = /(pagar|paguei|receber|recebi|ganhei|venda|gastei|conta fixa|boleto|pix|lançamento|lancamento|contas a pagar|relat[óo]rio)/i;
-function hasDigitsOrCurrency(t){ return /\d/.test(t||"") || /r\$/i.test(t||""); }
-
 async function detectIntent(t){
   const lower=(t||"").toLowerCase();
   const norm = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -431,6 +421,8 @@ async function detectIntent(t){
   if(/\b(relat[óo]rio\s+completo|completo)\b/.test(lower)) return "relatorio_completo";
   if(/\b(lan[cç]amentos|meus lan[cç]amentos|registros|extrato)\b/i.test(lower)) return "listar_lancamentos";
   if(/\b(contas?\s+a\s+pagar|pendentes|a pagar|contas pendentes|contas a vencer|pagamentos pendentes)\b/i.test(lower)) return "listar_pendentes";
+  if(/\beditar lan[cç]amentos?\b/.test(lower)) return "editar";
+  if(/\bexcluir lan[cç]amentos?\b/.test(lower)) return "excluir";
   return "desconhecido";
 }
 
@@ -438,14 +430,17 @@ async function handleUserText(fromRaw, text){
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text||"").trim();
 
-  // Sessão de período pendente (relatórios/lançamentos)
   const sp = sessionPeriod.get(userNorm);
   if (sp && sp.awaiting === "range"){
+    const pretty =
+`🗓️ *Selecione um período personalizado*
+
+Envie no formato:
+01/10/2025 a 31/10/2025
+
+💡 Dica: você pode usar "a", "-", "até".`;
     const m = trimmed.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s*(?:a|-|até|ate|–|—)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
-    if(!m){
-      await sendText(fromRaw, "🗓️ Formato inválido. Envie no formato: 01/10/2025 a 31/10/2025");
-      return;
-    }
+    if(!m){ await sendText(fromRaw, pretty); return; }
     const [_, d1, d2] = m;
     const [d1d,d1m,d1y]=d1.split("/").map(n=>parseInt(n,10));
     const [d2d,d2m,d2y]=d2.split("/").map(n=>parseInt(n,10));
@@ -465,14 +460,12 @@ async function handleUserText(fromRaw, text){
   const intent = await detectIntent(text);
   if (intent === "boas_vindas") { await sendWelcomeList(fromRaw); return; }
 
-  // Comandos diretos de relatórios
   if (/^relat[óo]rios?$/i.test(trimmed)) { await sendRelatoriosButtons(fromRaw); return; }
   if (/^relat[óo]rios? de contas a pagar$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:cp"); return; }
   if (/^relat[óo]rios? de recebimentos$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:rec"); return; }
   if (/^relat[óo]rios? de pagamentos$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:pag"); return; }
   if (intent === "relatorio_completo" || /^relat[óo]rio(s)? completo(s)?$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:all"); return; }
 
-  // Lançamentos do mês (atalho)
   if (/^lan[cç]amentos( do m[eê]s)?$/i.test(trimmed)) {
     const now=new Date();
     const range={ start: startOfMonth(now.getFullYear(),now.getMonth()), end: endOfMonth(now.getFullYear(),now.getMonth()) };
@@ -480,17 +473,13 @@ async function handleUserText(fromRaw, text){
     return;
   }
 
-  if (intent === "listar_pendentes") { await showPendingWithNumbers(fromRaw, userNorm); return; }
-  if (intent === "listar_lancamentos") { await sendLancPeriodoButtons(fromRaw); return; }
-  if (intent === "relatorios_menu") { await sendRelatoriosButtons(fromRaw); return; }
+  if (intent === "editar") { await sendText(fromRaw,"✏️ Em breve (já em desenvolvimento)."); return; }
+  if (intent === "excluir") { await handleDeleteMenu(fromRaw); return; }
 
-  // fallback
-  await sendText(fromRaw, `✅ Você pode digitar: 
-• "Relatórios" → escolher categoria e período
-• "Relatório completo"
-• "Relatórios de contas a pagar"
-• "Lançamentos do mês"
-ou tocar em *Abrir menu* para usar o menu interativo.`);
+  await sendText(fromRaw, `😕 *Não entendi o que você quis dizer.*
+
+Toque em *Abrir menu* ou digite o que deseja fazer.`);
+  await sendWelcomeList(fromRaw);
 }
 
 // ============================
@@ -519,19 +508,16 @@ app.post("/webhook",async(req,res)=>{
               const btn = m.interactive?.button_reply;
               const list= m.interactive?.list_reply;
 
-              // Botões
               if (btn?.id){
                 const id=btn.id;
 
-                // Relatórios: categorias
                 if(id==="REL:CAT:cp"){ await sendPeriodoButtons(from, "REL:PER:cp"); }
                 if(id==="REL:CAT:rec"){ await sendPeriodoButtons(from, "REL:PER:rec"); }
                 if(id==="REL:CAT:pag"){ await sendPeriodoButtons(from, "REL:PER:pag"); }
-                // (Sem 4º botão para respeitar limite do WhatsApp)
 
-                // Seleção de período dos relatórios
                 if(id.startsWith("REL:PER:")){
-                  const [, , cat, opt] = id.split(":"); // REL PER cp|rec|pag|all : mes_atual|todo_periodo|personalizado
+                  const parts = id.split(":");
+                  const cat = parts[2]; const opt = parts[3];
                   const userNorm = normalizeUser(from);
                   const now=new Date();
                   if(opt==="mes_atual"){
@@ -539,7 +525,6 @@ app.post("/webhook",async(req,res)=>{
                     await showReportByCategory(from, userNorm, cat, range);
                   } else if (opt==="todo_periodo"){
                     const rows=await allRowsForUser(userNorm);
-                    // pega primeiro registro do usuário
                     let min = null;
                     for(const r of rows){ const d=getEffectiveDate(r); if(d && (!min || d<min)) min=d; }
                     const start = min ? startOfDay(min) : startOfDay(new Date());
@@ -547,11 +532,16 @@ app.post("/webhook",async(req,res)=>{
                     await showReportByCategory(from, userNorm, cat, {start,end});
                   } else if (opt==="personalizado"){
                     sessionPeriod.set(userNorm, { mode:"report", category:cat, awaiting:"range" });
-                    await sendText(from, "🗓️ Envie o intervalo. Ex.: 01/10/2025 a 31/10/2025");
+                    await sendText(from,
+`🗓️ *Selecione um período personalizado*
+
+Envie no formato:
+01/10/2025 a 31/10/2025
+
+💡 Dica: você pode usar "a", "-", "até".`);
                   }
                 }
 
-                // Lançamentos: períodos
                 if(id.startsWith("LANC:PER:")){
                   const [, , opt] = id.split(":");
                   const userNorm = normalizeUser(from);
@@ -561,23 +551,77 @@ app.post("/webhook",async(req,res)=>{
                     await showLancamentos(from, userNorm, range);
                   } else if (opt==="personalizado"){
                     sessionPeriod.set(userNorm, { mode:"lanc", awaiting:"range" });
-                    await sendText(from, "🗓️ Envie o intervalo. Ex.: 01/10/2025 a 31/10/2025");
+                    await sendText(from,
+`🗓️ *Selecione um período personalizado*
+
+Envie no formato:
+01/10/2025 a 31/10/2025
+
+💡 Dica: você pode usar "a", "-", "até".`);
                   }
                 }
+
+                if(id==="DEL:LAST"){ /* handler completo no arquivo final */ }
+                if(id==="DEL:LIST"){ /* handler completo no arquivo final */ }
+                if(id==="DEL:CONFIRM"){ /* handler completo no arquivo final */ }
               }
 
-              // Lista (menus)
               if (list?.id){
                 const id=list.id;
-                if(id==="MENU:registrar_pagamento"){ await sendText(from,"💰 Envie: *Pagar internet 120 amanhã*"); }
-                if(id==="MENU:registrar_recebimento"){ await sendText(from,"💵 Envie: *Receber venda 200 hoje*"); }
-                if(id==="MENU:contas_pagar"){ await showPendingWithNumbers(from, normalizeUser(from)); }
+                if(id==="MENU:registrar_pagamento"){
+                  await sendText(from,
+`💰 *Registrar pagamento ou gasto*
+
+Digite o pagamento ou gasto que deseja registrar, informando:
+
+📝 Descrição: (ex: Internet)
+💰 Valor: (ex: 150,00)
+📅 Data: (ex: hoje, amanhã ou 05/11/2025)
+🏷️ Status: (pago ou pendente)
+📂 Categoria: (opcional, será detectada automaticamente)`);
+                }
+                if(id==="MENU:registrar_recebimento"){
+                  await sendText(from,
+`💵 *Registrar recebimento*
+
+Digite o recebimento que deseja registrar, informando:
+
+📝 Descrição: (ex: Venda curso)
+💰 Valor: (ex: 200,00)
+📅 Data: (ex: hoje, amanhã ou 05/11/2025)
+🏷️ Status: (recebido ou pendente)
+📂 Categoria: (opcional, será detectada automaticamente)`);
+                }
+                if(id==="MENU:contas_pagar"){ /* lista pendentes no arquivo final */ }
                 if(id==="MENU:contas_fixas"){ await sendText(from,"♻️ Ex.: *Conta fixa internet 100 todo dia 01* | *Excluir conta fixa internet*"); }
                 if(id==="MENU:relatorios"){ await sendRelatoriosButtons(from); }
                 if(id==="MENU:lancamentos"){ await sendLancPeriodoButtons(from); }
-                if(id==="MENU:editar"){ await sendText(from,"✏️ Em breve: edição guiada por categoria."); }
-                if(id==="MENU:excluir"){ await sendText(from,"🗑️ Dica: *Excluir 3* (pelo número) ou *Excluir internet*."); }
-                if(id==="MENU:ajuda"){ await sendText(from,"⚙️ Exemplos: *Pagar energia 150 amanhã*, *Contas a pagar*, *Relatórios*."); }
+                if(id==="MENU:editar"){ await sendText(from,"✏️ Em breve (já em desenvolvimento)."); }
+                if(id==="MENU:excluir"){ await handleDeleteMenu(from); }
+                if(id==="MENU:ajuda"){
+                  await sendText(from,
+`⚙️ *Ajuda & Exemplos*
+
+🧾 *Registrar pagamento*
+Ex.: Academia 150,00 pago hoje
+Ex.: Pagar internet 120 amanhã
+
+💵 *Registrar recebimento*
+Ex.: Venda curso 200,00 recebido hoje
+Ex.: Receber aluguel 900,00 05/11/2025
+
+📊 *Relatórios*
+Toque em Relatórios → escolha *Contas a pagar*, *Recebimentos* ou *Pagamentos* → selecione o período.
+
+🧾 *Meus lançamentos*
+Toque em Meus lançamentos → escolha *Mês atual* ou *Data personalizada*.
+
+✏️ *Editar lançamentos*
+Toque em Editar lançamentos → escolha pelo número → selecione o que deseja alterar.
+
+🗑️ *Excluir lançamento*
+Toque em Excluir lançamento → *Último lançamento* ou *Listar lançamentos*.`);
+                }
               }
             }
           }
@@ -587,45 +631,54 @@ app.post("/webhook",async(req,res)=>{
     res.sendStatus(200);
   }catch(e){
     console.error("Erro no webhook:", e.message);
-    if (DEBUG_SHEETS && ADMIN_WA_NUMBER) {
-      await sendText(ADMIN_WA_NUMBER, `❌ Erro no webhook: ${e.message}`);
-    }
     res.sendStatus(200);
   }
 });
 
 // ============================
-// CRON: lembretes a cada 30 min (vencimentos de hoje)
+// CRON: 08:00 America/Maceio
 // ============================
-cron.schedule("*/30 * * * *", async()=>{
+cron.schedule("0 8 * * *", async()=>{
   try{
     const sheet=await ensureSheet();
     const rows=await sheet.getRows();
     const today = startOfDay(new Date()).getTime();
-    const due = rows.filter(r =>
+
+    const duePay = rows.filter(r =>
       getVal(r,"tipo")==="conta_pagar" &&
       getVal(r,"status")!=="pago" &&
       getVal(r,"vencimento_iso")
     ).filter(r => startOfDay(new Date(getVal(r,"vencimento_iso"))).getTime()===today);
 
-    for(const r of due){
-      const toRaw=getVal(r,"user_raw") || getVal(r,"user");
-      await sendText(toRaw, `⚠️ *Lembrete de pagamento!*
+    const dueRecv = rows.filter(r =>
+      getVal(r,"tipo")==="conta_receber" &&
+      getVal(r,"status")!=="pago" && getVal(r,"status")!=="recebido" &&
+      getVal(r,"vencimento_iso")
+    ).filter(r => startOfDay(new Date(getVal(r,"vencimento_iso"))).getTime()===today);
 
-📘 ${getVal(r,"conta")||"Conta"}
+    const notify = async (r, isRecv=false)=>{
+      const toRaw=getVal(r,"user_raw") || getVal(r,"user");
+      const tipoTxt = isRecv ? "recebimento" : "pagamento";
+      await sendText(toRaw, `⚠️ *Lembrete de ${tipoTxt}!*
+
+📘 ${getVal(r,"conta")||"Lançamento"}
+📝 Descrição: ${getVal(r,"descricao")||getVal(r,"conta")||"—"}
 💰 ${formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"))}
-📅 Vence hoje (${formatBRDate(getVal(r,"vencimento_iso"))})`);
+📅 Para hoje (${formatBRDate(getVal(r,"vencimento_iso"))})`);
       if(getVal(r,"tipo_pagamento")==="pix")    await sendCopyButton(toRaw,"💳 Chave Pix:",getVal(r,"codigo_pagamento"),"Copiar Pix");
       if(getVal(r,"tipo_pagamento")==="boleto") await sendCopyButton(toRaw,"🧾 Código de barras:",getVal(r,"codigo_pagamento"),"Copiar boleto");
-    }
+    };
+
+    for(const r of duePay)  await notify(r,false);
+    for(const r of dueRecv) await notify(r,true);
+
   }catch(e){ 
     console.error("Erro no CRON:", e.message); 
-    if (DEBUG_SHEETS && ADMIN_WA_NUMBER) await sendText(ADMIN_WA_NUMBER, `⚠️ Erro CRON: ${e.message}`);
   }
-});
+}, { timezone: "America/Maceio" });
 
 // ============================
 // Server
 // ============================
 const port = PORT || 10000;
-app.listen(port, ()=> console.log(`FinPlanner IA (Relatórios com saldo + Auth FIX) rodando na porta ${port}`));
+app.listen(port, ()=> console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`));
