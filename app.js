@@ -417,14 +417,20 @@ const sendRelatoriosButtons = (to) =>
     to,
     type: "interactive",
     interactive: {
-      type: "button",
+      type: "list",
       body: { text: "📊 Qual relatório você deseja gerar?" },
       action: {
-        buttons: [
-          { type: "reply", reply: { id: "REL:CAT:cp", title: "Contas a pagar" } },
-          { type: "reply", reply: { id: "REL:CAT:rec", title: "Recebimentos" } },
-          { type: "reply", reply: { id: "REL:CAT:pag", title: "Pagamentos" } },
-          { type: "reply", reply: { id: "REL:CAT:all", title: "Completo" } },
+        button: "Abrir opções",
+        sections: [
+          {
+            title: "Tipos de relatório",
+            rows: [
+              { id: "REL:CAT:cp", title: "Contas a pagar", description: "Pagamentos pendentes e quitados." },
+              { id: "REL:CAT:rec", title: "Recebimentos", description: "Entradas registradas." },
+              { id: "REL:CAT:pag", title: "Pagamentos", description: "Todos os gastos registrados." },
+              { id: "REL:CAT:all", title: "Completo", description: "Visão geral de tudo." },
+            ],
+          },
         ],
       },
     },
@@ -554,6 +560,11 @@ const sessionEdit = new Map();
 const sessionDelete = new Map();
 const sessionRegister = new Map();
 const sessionFixedDelete = new Map();
+
+const startReportCategoryFlow = async (to, userNorm, category) => {
+  sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
+  await sendPeriodoButtons(to, `REL:PER:${category}`);
+};
 
 const resetSession = (userNorm) => {
   sessionPeriod.delete(userNorm);
@@ -945,8 +956,7 @@ async function handleInteractiveMessage(from, payload) {
     }
     if (id.startsWith("REL:CAT:")) {
       const [, , cat] = id.split(":");
-      sessionPeriod.set(userNorm, { mode: "report", category: cat, awaiting: null });
-      await sendPeriodoButtons(from, `REL:PER:${cat}`);
+      await startReportCategoryFlow(from, userNorm, cat);
       return;
     }
     if (id.startsWith("REL:PER:")) {
@@ -1026,6 +1036,11 @@ async function handleInteractiveMessage(from, payload) {
 
   if (type === "list_reply") {
     const id = payload.list_reply.id;
+    if (id.startsWith("REL:CAT:")) {
+      const [, , cat] = id.split(":");
+      await startReportCategoryFlow(from, userNorm, cat);
+      return;
+    }
     if (id === "MENU:registrar_pagamento") {
       sessionRegister.set(userNorm, { tipo: "conta_pagar" });
       await sendText(
