@@ -163,6 +163,20 @@ const detectCategory = (description, tipo) => {
   return { slug: "outros", emoji: "🧩" };
 };
 
+const formatCategoryLabel = (slug, emoji) => {
+  const raw = (slug || "").toString().trim();
+  if (!raw) return emoji ? `${emoji} —` : "—";
+  const normalized = raw.replace(/[_-]+/g, " ");
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const friendly =
+    words.length === 0
+      ? raw
+      : words
+          .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(" ");
+  return emoji ? `${emoji} ${friendly}` : friendly;
+};
+
 // ============================
 // WhatsApp helpers
 // ============================
@@ -305,6 +319,15 @@ const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row,
 // ============================
 // Rendering helpers
 // ============================
+const formatEntrySummary = (row) => {
+  const descricao = getVal(row, "descricao") || getVal(row, "conta") || "Lançamento";
+  const valor = formatCurrencyBR(getVal(row, "valor"));
+  const data = formatBRDate(getEffectiveDate(row)) || "—";
+  const status = (getVal(row, "status") || "pendente").toString();
+  const categoriaLabel = formatCategoryLabel(getVal(row, "categoria"), getVal(row, "categoria_emoji"));
+  return `📝 Descrição: ${descricao}\n💰 Valor: ${valor}\n📅 Data: ${data}\n🏷 Status: ${status}\n📂 Categoria: ${categoriaLabel}`;
+};
+
 const renderItem = (row, idx) => {
   const idxEmoji = numberToKeycapEmojis(idx);
   const conta = getVal(row, "conta") || "Lançamento";
@@ -353,7 +376,6 @@ const sendWelcomeList = (to) =>
     type: "interactive",
     interactive: {
       type: "list",
-      header: { type: "text", text: "Abrir menu" },
       body: {
         text: `👋 Olá! Eu sou a FinPlanner IA.\n\n💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.\n\nToque em *Abrir menu* ou digite o que deseja fazer.`,
       },
@@ -460,6 +482,70 @@ const sendDeleteMenu = (to) =>
     },
   });
 
+const sendContasFixasMenu = (to) =>
+  sendWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: "Escolha uma opção:" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "CFIX:CAD", title: "Cadastrar conta fixa" } },
+          { type: "reply", reply: { id: "CFIX:DEL", title: "Excluir contas" } },
+        ],
+      },
+    },
+  });
+
+const sendCadastrarContaFixaMessage = (to) =>
+  sendText(
+    to,
+    `♻ Cadastro de conta fixa\n\nUse este formato para registrar contas que se repetem todo mês automaticamente:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n📅 Dia de vencimento: Data que vence todo mês\n(ex: todo dia 05)\n\n💡 Exemplo pronto:\n➡ Conta fixa internet 120,00 todo dia 05\n\n🔔 A FinPlanner IA lançará esta conta automaticamente todo mês e te avisará no dia do vencimento.`
+  );
+
+const buildFixedAccountList = (rows) =>
+  rows
+    .map((row, index) => {
+      const conta = getVal(row, "conta") || getVal(row, "descricao") || "Conta fixa";
+      const valor = formatCurrencyBR(getVal(row, "valor"));
+      const dia = getVal(row, "vencimento_dia");
+      const dueDate = dia ? `Dia ${String(dia).padStart(2, "0")}` : formatBRDate(getEffectiveDate(row)) || "—";
+      return `${numberToKeycapEmojis(index + 1)} ${conta}\n💰 ${valor}\n📅 Vencimento: ${dueDate}\n${SEP}`;
+    })
+    .join("\n");
+
+const isFixedAccount = (row) => String(getVal(row, "fixa") || "").toLowerCase() === "sim";
+
+const getFixedAccounts = async (userNorm) => {
+  const rows = await allRowsForUser(userNorm);
+  return rows.filter((row) => isFixedAccount(row));
+};
+
+async function sendExcluirContaFixaMessage(to, userNorm) {
+  const fixed = await getFixedAccounts(userNorm);
+  if (!fixed.length) {
+    sessionFixedDelete.delete(userNorm);
+    await sendText(to, "Você ainda não possui contas fixas cadastradas.");
+    return;
+  }
+  const sorted = fixed.slice().sort((a, b) => {
+    const diaA = Number(getVal(a, "vencimento_dia")) || 0;
+    const diaB = Number(getVal(b, "vencimento_dia")) || 0;
+    if (diaA && diaB) return diaA - diaB;
+    if (diaA) return -1;
+    if (diaB) return 1;
+    const contaA = (getVal(a, "conta") || "").toString().toLowerCase();
+    const contaB = (getVal(b, "conta") || "").toString().toLowerCase();
+    return contaA.localeCompare(contaB);
+  });
+  sessionFixedDelete.set(userNorm, { awaiting: "index", rows: sorted });
+  const list = buildFixedAccountList(sorted);
+  const message = `🗑 Excluir conta fixa\n\nPara remover uma conta recorrente, digite o número de qual deseja excluir:\n\n${list}\nEnvie o número da conta fixa que deseja excluir.`;
+  await sendText(to, message);
+}
+
 // ============================
 // Sessões (estado do usuário)
 // ============================
@@ -467,12 +553,14 @@ const sessionPeriod = new Map();
 const sessionEdit = new Map();
 const sessionDelete = new Map();
 const sessionRegister = new Map();
+const sessionFixedDelete = new Map();
 
 const resetSession = (userNorm) => {
   sessionPeriod.delete(userNorm);
   sessionEdit.delete(userNorm);
   sessionDelete.delete(userNorm);
   sessionRegister.delete(userNorm);
+  sessionFixedDelete.delete(userNorm);
 };
 
 // ============================
@@ -626,16 +714,25 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
 
 async function confirmDeleteRow(fromRaw, userNorm, row) {
   sessionDelete.set(userNorm, { awaiting: "confirm", row });
-  await sendText(
-    fromRaw,
-    `⚠️ Tem certeza que deseja excluir este lançamento?\n\n${renderItem(row, 1)}\nResponda com *SIM* para confirmar ou qualquer outra coisa para cancelar.`
-  );
+  const summary = formatEntrySummary(row);
+  await sendWA({
+    messaging_product: "whatsapp",
+    to: fromRaw,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: `${summary}\n\nDeseja excluir este lançamento?` },
+      action: {
+        buttons: [{ type: "reply", reply: { id: "DEL:CONFIRM", title: "Sim" } }],
+      },
+    },
+  });
 }
 
-async function handleDeleteConfirmation(fromRaw, userNorm, text) {
+async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   const state = sessionDelete.get(userNorm);
   if (!state || state.awaiting !== "confirm") return false;
-  if (/^sim$/i.test(text.trim())) {
+  if (confirmed) {
     await deleteRow(state.row);
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "✅ Lançamento excluído com sucesso!");
@@ -644,6 +741,11 @@ async function handleDeleteConfirmation(fromRaw, userNorm, text) {
     await sendText(fromRaw, "Operação cancelada.");
   }
   return true;
+}
+
+async function handleDeleteConfirmation(fromRaw, userNorm, text) {
+  const trimmed = text.trim().toLowerCase();
+  return finalizeDeleteConfirmation(fromRaw, userNorm, trimmed === "sim");
 }
 
 async function handleEditFlow(fromRaw, userNorm, text) {
@@ -659,7 +761,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
     sessionEdit.set(userNorm, { awaiting: "field", row });
     await sendText(
       fromRaw,
-      `✏️ O que deseja editar? Digite uma das opções:\nconta, descricao, valor, data, status, categoria.`
+      `✏️ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
     );
     return true;
   }
@@ -710,6 +812,20 @@ async function handleEditFlow(fromRaw, userNorm, text) {
     return true;
   }
   return false;
+}
+
+async function handleFixedDeleteFlow(fromRaw, userNorm, text) {
+  const state = sessionFixedDelete.get(userNorm);
+  if (!state || state.awaiting !== "index") return false;
+  const idx = Number(text.trim());
+  if (!idx || idx < 1 || idx > state.rows.length) {
+    await sendText(fromRaw, "Número inválido. Tente novamente.");
+    return true;
+  }
+  const row = state.rows[idx - 1];
+  sessionFixedDelete.delete(userNorm);
+  await confirmDeleteRow(fromRaw, userNorm, row);
+  return true;
 }
 
 async function handleDeleteFlow(fromRaw, userNorm, text) {
@@ -765,10 +881,23 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     descricao: parsed.descricao,
   };
   await createRow(payload);
-  await sendText(
-    fromRaw,
-    `✅ Lançamento registrado!\n\n${formatBRDate(data)} • ${formatCurrencyBR(parsed.valor)}\n${categoria.emoji} ${parsed.descricao}`
-  );
+  const categoriaLabel = formatCategoryLabel(payload.categoria, categoria.emoji);
+  const valorFormatado = formatCurrencyBR(parsed.valor);
+  const dataFormatada = formatBRDate(data);
+  const statusFormatado = parsed.status || "pendente";
+  const resumo = `📘 Resumo do lançamento:\n📝 Descrição: ${parsed.descricao}\n💰 Valor: ${valorFormatado}\n📅 Data: ${dataFormatada}\n🏷 Status: ${statusFormatado}\n📂 Categoria: ${categoriaLabel}`;
+  if (payload.tipo === "conta_receber") {
+    await sendText(
+      fromRaw,
+      `💵 Recebimento registrado com sucesso!\n\n${resumo}\n\n🎯 O saldo foi atualizado automaticamente, refletindo sua nova entrada.`
+    );
+  } else {
+    await sendText(
+      fromRaw,
+      `✅ Pagamento registrado com sucesso!\n\n${resumo}\n\n💡 A FinPlanner IA já atualizou seu saldo e adicionou este pagamento ao relatório do período.`
+    );
+  }
+  await sendWelcomeList(fromRaw);
 }
 
 // ============================
@@ -807,17 +936,17 @@ async function handleInteractiveMessage(from, payload) {
   const userNorm = normalizeUser(from);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
+    if (id === "DEL:CONFIRM") {
+      const handled = await finalizeDeleteConfirmation(from, userNorm, true);
+      if (!handled) {
+        await sendText(from, "Nenhum lançamento selecionado para excluir.");
+      }
+      return;
+    }
     if (id.startsWith("REL:CAT:")) {
       const [, , cat] = id.split(":");
-      const now = new Date();
-      const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
-      };
-      if (cat === "all") {
-        sessionPeriod.set(userNorm, { mode: "report", category: "all", awaiting: null });
-      }
-      await showReportByCategory(from, userNorm, cat, range);
+      sessionPeriod.set(userNorm, { mode: "report", category: cat, awaiting: null });
+      await sendPeriodoButtons(from, `REL:PER:${cat}`);
       return;
     }
     if (id.startsWith("REL:PER:")) {
@@ -829,6 +958,7 @@ async function handleInteractiveMessage(from, payload) {
           end: endOfMonth(now.getFullYear(), now.getMonth()),
         };
         await showReportByCategory(from, userNorm, cat, range);
+        sessionPeriod.delete(userNorm);
       }
       if (opt === "todo_periodo") {
         const rows = await allRowsForUser(userNorm);
@@ -840,36 +970,9 @@ async function handleInteractiveMessage(from, payload) {
         const start = min ? startOfDay(min) : startOfDay(new Date());
         const end = endOfDay(new Date());
         await showReportByCategory(from, userNorm, cat, { start, end });
+        sessionPeriod.delete(userNorm);
       }
       if (opt === "personalizado") {
-        sessionPeriod.set(userNorm, { mode: "report", category: cat, awaiting: "range" });
-        await sendText(
-          from,
-          `🗓️ *Selecione um período personalizado*\n\nEnvie no formato:\n01/10/2025 a 31/10/2025\n\n💡 Dica: você pode usar "a", "-", "até".`
-        );
-      }
-      return;
-    }
-    if (id.startsWith("PER:REL:")) {
-      const [, , opt, cat] = id.split(":");
-      const now = new Date();
-      if (opt === "mes_atual") {
-        const range = {
-          start: startOfMonth(now.getFullYear(), now.getMonth()),
-          end: endOfMonth(now.getFullYear(), now.getMonth()),
-        };
-        await showReportByCategory(from, userNorm, cat, range);
-      } else if (opt === "todo_periodo") {
-        const rows = await allRowsForUser(userNorm);
-        let min = null;
-        rows.forEach((row) => {
-          const dt = getEffectiveDate(row);
-          if (dt && (!min || dt < min)) min = dt;
-        });
-        const start = min ? startOfDay(min) : startOfDay(new Date());
-        const end = endOfDay(new Date());
-        await showReportByCategory(from, userNorm, cat, { start, end });
-      } else if (opt === "personalizado") {
         sessionPeriod.set(userNorm, { mode: "report", category: cat, awaiting: "range" });
         await sendText(
           from,
@@ -911,6 +1014,14 @@ async function handleInteractiveMessage(from, payload) {
       await listRowsForSelection(from, userNorm, "delete");
       return;
     }
+    if (id === "CFIX:CAD") {
+      await sendCadastrarContaFixaMessage(from);
+      return;
+    }
+    if (id === "CFIX:DEL") {
+      await sendExcluirContaFixaMessage(from, userNorm);
+      return;
+    }
   }
 
   if (type === "list_reply") {
@@ -919,7 +1030,7 @@ async function handleInteractiveMessage(from, payload) {
       sessionRegister.set(userNorm, { tipo: "conta_pagar" });
       await sendText(
         from,
-        `💰 *Registrar pagamento ou gasto*\n\nDigite o pagamento que deseja registrar, informando:\n📝 Descrição\n💰 Valor (ex: 150,00)\n📅 Data (ex: hoje, amanhã ou 05/11/2025)\n🏷️ Status (pago ou pendente)\n📂 Categoria (opcional)`
+        `💰 Novo lançamento de pagamento ou gasto\n\nInforme os detalhes abaixo para registrar corretamente:\n\n📝 Descrição: O que foi pago?\n(ex: Conta de luz, Internet, Academia)\n\n💰 Valor: Quanto custou?\n(ex: 120,00)\n\n📅 Data: Quando foi pago ou deve ser pago?\n(ex: hoje, amanhã ou 25/10/2025)\n\n🏷 Status: Já foi pago ou ainda está pendente?\n(ex: pago / pendente)\n\n📂 Categoria: (opcional)\nA FinPlanner identifica automaticamente, mas você pode informar (ex: Internet, Energia, Alimentação).\n\n💡 Dica: Você também pode escrever tudo em uma linha!\nExemplo:\n➡ Pagar internet 120 amanhã\n➡ Academia 80,00 pago hoje`
       );
       return;
     }
@@ -927,7 +1038,7 @@ async function handleInteractiveMessage(from, payload) {
       sessionRegister.set(userNorm, { tipo: "conta_receber" });
       await sendText(
         from,
-        `💵 *Registrar recebimento*\n\nDigite o recebimento que deseja registrar, informando:\n📝 Descrição\n💰 Valor (ex: 200,00)\n📅 Data (ex: hoje, amanhã ou 05/11/2025)\n🏷️ Status (recebido ou pendente)\n📂 Categoria (opcional)`
+        `💵 Novo lançamento de recebimento\n\nInforme os detalhes abaixo para registrar sua entrada de dinheiro:\n\n📝 Descrição: O que você recebeu?\n(ex: Venda de peças, Salário, Reembolso)\n\n💰 Valor: Quanto foi recebido?\n(ex: 300,00)\n\n📅 Data: Quando foi ou será recebido?\n(ex: hoje, amanhã ou 30/10/2025)\n\n🏷 Status: Já recebeu ou ainda está pendente?\n(ex: recebido / pendente)\n\n📂 Categoria: (opcional)\nA FinPlanner identifica automaticamente (ex: Venda, Salário, Transferência).\n\n💡 Dica: Você pode enviar tudo de uma vez!\nExemplo:\n➡ Receber venda 300 amanhã\n➡ Pix recebido cliente 150 hoje`
       );
       return;
     }
@@ -936,7 +1047,7 @@ async function handleInteractiveMessage(from, payload) {
       return;
     }
     if (id === "MENU:contas_fixas") {
-      await sendText(from, "♻️ Ex.: *Conta fixa internet 100 todo dia 01* | *Excluir conta fixa internet*");
+      await sendContasFixasMenu(from);
       return;
     }
     if (id === "MENU:relatorios") {
@@ -978,9 +1089,9 @@ async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text || "").trim();
 
+  if (await handleFixedDeleteFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleEditFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleDeleteFlow(fromRaw, userNorm, trimmed)) return;
-  if (await handleDeleteConfirmation(fromRaw, userNorm, trimmed)) return;
 
   const regState = sessionRegister.get(userNorm);
   if (regState) {
