@@ -113,12 +113,11 @@ async function sendCopyButton(to, title, code, btnTitle){
 let doc; // será instanciado já com auth
 async function ensureAuth(){
   const serviceAccountAuth = new JWT({
-    email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    key: (RAW_KEY || "").replace(/\n/g, "
-"),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-  doc = new GoogleSpreadsheet(SHEETS_ID, serviceAccountAuth);
+  email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  key: GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n"),
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+ doc = new GoogleSpreadsheet(SHEETS_ID, serviceAccountAuth);
   await doc.loadInfo();
 }
 
@@ -682,3 +681,4 @@ cron.schedule("0 8 * * *", async()=>{
 // ============================
 const port = PORT || 10000;
 app.listen(port, ()=> console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`));
+
