@@ -1,6 +1,6 @@
 // ============================
 // FinPlanner IA - WhatsApp Bot
-// Versão: app.js (2025-10-22.1 • Auth Render FIX + Relatórios com Saldo por Período + Relatório Completo)
+// Versão: app.js (2025-10-22.2 • Auth Render FIX + Relatórios com Saldo + Botões compatíveis WhatsApp)
 // ============================
 
 import express from "express";
@@ -10,7 +10,6 @@ import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import cron from "node-cron";
-import crypto from "crypto";
 
 dotenv.config();
 
@@ -65,7 +64,6 @@ const numberEmoji = (n)=>{
   const map = ["","1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
   return (n>=1 && n<=10) ? map[n] : `${n}️⃣`;
 };
-const capitalize = s => (s||"").replace(/\b\w/g, c => c.toUpperCase());
 function withinRange(dt, start, end){ return dt && dt>=start && dt<=end; }
 
 // ============================
@@ -169,7 +167,6 @@ function getEffectiveDate(row){
 // ============================
 // Sessões (edição e períodos)
 // ============================
-const sessionEdit = new Map();     // userNorm -> { editRowId, field }
 const sessionPeriod = new Map();   // userNorm -> { mode: 'report'|'lanc', category?: 'cp'|'rec'|'pag'|'all', awaiting:'range' }
 
 // ============================
@@ -223,16 +220,16 @@ Toque em *“Abrir menu”* ou digite o que deseja fazer.`;
 }
 
 async function sendRelatoriosButtons(to){
+  // MÁX 3 botões (WhatsApp)
   return sendWA({
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{
       type:"button",
       body:{ text:"📊 Qual relatório você deseja gerar?" },
       action:{ buttons:[
-        { type:"reply", reply:{ id:"REL:CAT:cp",   title:"Contas a pagar" } },
-        { type:"reply", reply:{ id:"REL:CAT:rec",  title:"Recebimentos" } },
-        { type:"reply", reply:{ id:"REL:CAT:pag",  title:"Pagamentos" } },
-        { type:"reply", reply:{ id:"REL:CAT:all",  title:"Relatório completo" } },
+        { type:"reply", reply:{ id:"REL:CAT:cp",  title:"Contas a pagar" } },
+        { type:"reply", reply:{ id:"REL:CAT:rec", title:"Recebimentos" } },
+        { type:"reply", reply:{ id:"REL:CAT:pag", title:"Pagamentos" } }
       ]}
     }
   });
@@ -244,11 +241,11 @@ async function sendPeriodoButtons(to, prefix){
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{
       type:"button",
-      body:{ text:"🗓️ Selecione o período do relatório" },
+      body:{ text:"🗓️ Escolha o período:" },
       action:{ buttons:[
         { type:"reply", reply:{ id:`${prefix}:mes_atual`,        title:"Mês atual" } },
-        { type:"reply", reply:{ id:`${prefix}:todo_periodo`,     title:"Todo o período" } },
-        { type:"reply", reply:{ id:`${prefix}:personalizado`,    title:"Período personalizado" } },
+        { type:"reply", reply:{ id:`${prefix}:todo_periodo`,     title:"Todo período" } },
+        { type:"reply", reply:{ id:`${prefix}:personalizado`,    title:"Data personalizada" } }
       ]}
     }
   });
@@ -259,10 +256,10 @@ async function sendLancPeriodoButtons(to){
     messaging_product:"whatsapp", to, type:"interactive",
     interactive:{
       type:"button",
-      body:{ text:"🧾 Selecione o período dos lançamentos" },
+      body:{ text:"🧾 Escolha o período:" },
       action:{ buttons:[
         { type:"reply", reply:{ id:`LANC:PER:mes_atual`,     title:"Mês atual" } },
-        { type:"reply", reply:{ id:`LANC:PER:personalizado`, title:"Período personalizado" } },
+        { type:"reply", reply:{ id:`LANC:PER:personalizado`, title:"Data personalizada" } }
       ]}
     }
   });
@@ -372,90 +369,6 @@ async function showLancamentos(fromRaw, userNorm, range){
 }
 
 // ============================
-// Edição (atalhos essenciais, como antes)
-// ============================
-async function sendSubmenuEditarButtons(to){
-  return sendWA({
-    messaging_product:"whatsapp", to, type:"interactive",
-    interactive:{
-      type:"button",
-      body:{ text:"✏️ O que você deseja fazer?" },
-      action:{ buttons:[
-        { type:"reply", reply:{ id:"EDITAR:ULTIMO",    title:"Alterar o último registro" } },
-        { type:"reply", reply:{ id:"EDITAR:POR_CATEG", title:"Ver lista por categoria" } },
-        { type:"reply", reply:{ id:"MENU:principal",   title:"🔙 Voltar ao menu" } },
-      ]}
-    }
-  });
-}
-
-async function sendListCategoriasEdicao(to){
-  return sendWA({
-    messaging_product:"whatsapp", to, type:"interactive",
-    interactive:{
-      type:"list",
-      header:{ type:"text", text:"Editar por categoria" },
-      body:{ text:"Escolha a categoria que deseja editar:" },
-      action:{
-        button:"Categorias",
-        sections:[{
-          title:"Categorias",
-          rows:[
-            { id:"EDITAR:CATEG:conta_pagar",   title:"💡 Contas a pagar",   description:"Editar gastos/pendentes" },
-            { id:"EDITAR:CATEG:conta_receber", title:"💸 Contas a receber", description:"Editar receitas" },
-            { id:"EDITAR:CATEG:fixa",          title:"♻️ Contas fixas",     description:"Editar recorrências" },
-            { id:"MENU:principal",             title:"🔙 Voltar ao menu",   description:"" },
-          ]
-        }]
-      }
-    }
-  });
-}
-
-// ============================
-// Menu principal (LIST)
-// ============================
-async function sendMenuPrincipalList(to){
-  return sendWA({
-    messaging_product:"whatsapp", to, type:"interactive",
-    interactive:{
-      type:"list",
-      header:{ type:"text", text:"Abrir menu" },
-      body:{ text:"Selecione uma opção:" },
-      action:{
-        button:"Abrir menu",
-        sections:[
-          {
-            title:"Lançamentos e Contas",
-            rows:[
-              { id:"MENU:registrar_pagamento", title:"💰 Registrar pagamento", description:"Adicionar um novo gasto." },
-              { id:"MENU:registrar_recebimento", title:"💵 Registrar recebimento", description:"Adicionar uma entrada de dinheiro." },
-              { id:"MENU:contas_pagar", title:"📅 Contas a pagar", description:"Ver e confirmar pagamentos pendentes." },
-              { id:"MENU:contas_fixas", title:"♻️ Contas fixas", description:"Cadastrar ou excluir contas recorrentes." },
-            ]
-          },
-          {
-            title:"Relatórios e Histórico",
-            rows:[
-              { id:"MENU:relatorios", title:"📊 Relatórios", description:"Gerar por categoria e período." },
-              { id:"MENU:lancamentos", title:"🧾 Meus lançamentos", description:"Ver por mês ou período personalizado." },
-            ]
-          },
-          {
-            title:"Ajustes e Ajuda",
-            rows:[
-              { id:"MENU:editar", title:"✏️ Editar lançamentos", description:"Alterar ou revisar registros." },
-              { id:"MENU:excluir", title:"🗑️ Excluir lançamento", description:"Remover lançamento manualmente." },
-              { id:"MENU:ajuda", title:"⚙️ Ajuda e exemplos", description:"Como usar a FinPlanner IA." },
-            ]
-          }
-        ]
-      }
-    }
-  });
-}
-
-// ============================
 // Contas pendentes e confirmação
 // ============================
 async function listPendingPayments(userNorm){
@@ -509,19 +422,11 @@ async function confirmPendingByDescription(fromRaw, userNorm, text){
 const GREET_RE = /(\b(oi|ol[aá]|opa|bom dia|boa tarde|boa noite)\b)/i;
 const FIN_KEYWORDS_RE = /(pagar|paguei|receber|recebi|ganhei|venda|gastei|conta fixa|boleto|pix|lançamento|lancamento|contas a pagar|relat[óo]rio)/i;
 function hasDigitsOrCurrency(t){ return /\d/.test(t||"") || /r\$/i.test(t||""); }
-function isIrrelevantShortMessage(t){
-  const text=(t||"").trim(); if (!text) return true;
-  const words=text.split(/\s+/);
-  if (words.length<=3 && GREET_RE.test(text)) return true;
-  if (words.length<=2 && !hasDigitsOrCurrency(text) && !FIN_KEYWORDS_RE.test(text)) return true;
-  if (/\b(menu|teste|test|help)\b/i.test(text) && !FIN_KEYWORDS_RE.test(text)) return true;
-  return false;
-}
+
 async function detectIntent(t){
   const lower=(t||"").toLowerCase();
   const norm = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if(/(oi|ola|opa|bom dia|boa tarde|boa noite)/i.test(norm)) return "boas_vindas";
-  if(/\b(funções|funcoes|ajuda|help)\b/.test(lower)) return "funcoes";
   if(/\b(relat[óo]rios?)\b/.test(lower)) return "relatorios_menu";
   if(/\b(relat[óo]rio\s+completo|completo)\b/.test(lower)) return "relatorio_completo";
   if(/\b(lan[cç]amentos|meus lan[cç]amentos|registros|extrato)\b/i.test(lower)) return "listar_lancamentos";
@@ -622,7 +527,7 @@ app.post("/webhook",async(req,res)=>{
                 if(id==="REL:CAT:cp"){ await sendPeriodoButtons(from, "REL:PER:cp"); }
                 if(id==="REL:CAT:rec"){ await sendPeriodoButtons(from, "REL:PER:rec"); }
                 if(id==="REL:CAT:pag"){ await sendPeriodoButtons(from, "REL:PER:pag"); }
-                if(id==="REL:CAT:all"){ await sendPeriodoButtons(from, "REL:PER:all"); }
+                // (Sem 4º botão para respeitar limite do WhatsApp)
 
                 // Seleção de período dos relatórios
                 if(id.startsWith("REL:PER:")){
@@ -642,7 +547,7 @@ app.post("/webhook",async(req,res)=>{
                     await showReportByCategory(from, userNorm, cat, {start,end});
                   } else if (opt==="personalizado"){
                     sessionPeriod.set(userNorm, { mode:"report", category:cat, awaiting:"range" });
-                    await sendText(from, "🗓️ Selecione o período. Ex.: 01/10/2025 a 31/10/2025");
+                    await sendText(from, "🗓️ Envie o intervalo. Ex.: 01/10/2025 a 31/10/2025");
                   }
                 }
 
@@ -656,7 +561,7 @@ app.post("/webhook",async(req,res)=>{
                     await showLancamentos(from, userNorm, range);
                   } else if (opt==="personalizado"){
                     sessionPeriod.set(userNorm, { mode:"lanc", awaiting:"range" });
-                    await sendText(from, "🗓️ Selecione o período. Ex.: 01/10/2025 a 31/10/2025");
+                    await sendText(from, "🗓️ Envie o intervalo. Ex.: 01/10/2025 a 31/10/2025");
                   }
                 }
               }
@@ -670,7 +575,7 @@ app.post("/webhook",async(req,res)=>{
                 if(id==="MENU:contas_fixas"){ await sendText(from,"♻️ Ex.: *Conta fixa internet 100 todo dia 01* | *Excluir conta fixa internet*"); }
                 if(id==="MENU:relatorios"){ await sendRelatoriosButtons(from); }
                 if(id==="MENU:lancamentos"){ await sendLancPeriodoButtons(from); }
-                if(id==="MENU:editar"){ await sendSubmenuEditarButtons(from); }
+                if(id==="MENU:editar"){ await sendText(from,"✏️ Em breve: edição guiada por categoria."); }
                 if(id==="MENU:excluir"){ await sendText(from,"🗑️ Dica: *Excluir 3* (pelo número) ou *Excluir internet*."); }
                 if(id==="MENU:ajuda"){ await sendText(from,"⚙️ Exemplos: *Pagar energia 150 amanhã*, *Contas a pagar*, *Relatórios*."); }
               }
