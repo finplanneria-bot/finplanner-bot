@@ -1,7 +1,7 @@
 {
   "name": "finplanner-bot",
-  "version": "1.0.1",
-  "description": "FinPlanner IA - Assistente financeira no WhatsApp com relatórios, saldo, lembretes e menus interativos.",
+  "version": "2025.10.23-1",
+  "description": "FinPlanner IA - Assistente financeira no WhatsApp com relatorios, saldo, edicao e exclusao de lancamentos.",
   "type": "module",
   "main": "app.js",
   "scripts": {
