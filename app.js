@@ -1,4 +1,4 @@
-/ ============================
+// ============================
 // FinPlanner IA - WhatsApp Bot
 // Versão: app.js v2025-10-23.1
 // ============================
@@ -1770,3 +1770,4 @@ const port = PORT || 10000;
 app.listen(port, () => {
   console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
 });
+
