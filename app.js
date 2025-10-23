@@ -56,11 +56,191 @@ app.get("/", (_req, res) => {
 const SEP = "────────────────";
 
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
+const NUMBER_WORDS = {
+  zero: 0,
+  um: 1,
+  uma: 1,
+  dois: 2,
+  duas: 2,
+  tres: 3,
+  três: 3,
+  quatro: 4,
+  cinco: 5,
+  seis: 6,
+  sete: 7,
+  oito: 8,
+  nove: 9,
+  dez: 10,
+  onze: 11,
+  doze: 12,
+  treze: 13,
+  quatorze: 14,
+  catorze: 14,
+  quinze: 15,
+  dezesseis: 16,
+  dezessete: 17,
+  dezoito: 18,
+  dezenove: 19,
+  vinte: 20,
+  trinta: 30,
+  quarenta: 40,
+  cinquenta: 50,
+  sessenta: 60,
+  setenta: 70,
+  oitenta: 80,
+  noventa: 90,
+  cem: 100,
+  cento: 100,
+  duzentos: 200,
+  trezentos: 300,
+  quatrocentos: 400,
+  quinhentos: 500,
+  seiscentos: 600,
+  setecentos: 700,
+  oitocentos: 800,
+  novecentos: 900,
+};
+
+const NUMBER_CONNECTORS = new Set([
+  "e",
+  "de",
+  "da",
+  "do",
+  "das",
+  "dos",
+  "reais",
+  "real",
+  "centavos",
+  "centavo",
+  "r$",
+]);
+
+const normalizeDiacritics = (text) =>
+  (text || "")
+    .toString()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+const escapeRegex = (value) => (value || "").replace(/([.*+?^${}()|\[\]\\])/g, "\\$1");
+
+const parseNumberWordsTokens = (tokens) => {
+  let total = 0;
+  let current = 0;
+  for (const token of tokens) {
+    if (!token) continue;
+    if (NUMBER_CONNECTORS.has(token)) continue;
+    if (token === "mil") {
+      total += (current || 1) * 1000;
+      current = 0;
+      continue;
+    }
+    const value = NUMBER_WORDS[token];
+    if (typeof value === "number") {
+      current += value;
+    } else {
+      return null;
+    }
+  }
+  return total + current || null;
+};
+
+const extractNumberWords = (text) => {
+  const normalized = normalizeDiacritics(text).toLowerCase();
+  const tokens = normalized.split(/[^a-z$]+/).filter(Boolean);
+  let sequence = [];
+  for (const token of tokens) {
+    if (NUMBER_CONNECTORS.has(token) || NUMBER_WORDS[token] !== undefined || token === "mil") {
+      sequence.push(token);
+    } else if (sequence.length) {
+      break;
+    }
+  }
+  if (!sequence.length) return null;
+  const parsed = parseNumberWordsTokens(sequence);
+  if (!parsed) return null;
+  return { amount: parsed, raw: sequence.join(" ") };
+};
+
+const parseNumericToken = (rawToken) => {
+  if (rawToken === undefined || rawToken === null) return null;
+  let token = rawToken.toString().trim().toLowerCase();
+  if (!token) return null;
+
+  token = token.replace(/^r\$/i, "");
+
+  if (token.endsWith("mil")) {
+    const baseToken = token.slice(0, -3).trim();
+    const baseValue = baseToken ? parseNumericToken(baseToken) : 1;
+    return baseValue ? baseValue * 1000 : null;
+  }
+
+  let multiplier = 1;
+  if (token.endsWith("k")) {
+    multiplier = 1000;
+    token = token.slice(0, -1);
+  }
+
+  token = token.replace(/^r\$/i, "").replace(/\s+/g, "");
+  token = token.replace(/[^0-9.,-]/g, "");
+  if (!token) return null;
+
+  if (token.includes(".") && token.includes(",")) {
+    const lastDot = token.lastIndexOf(".");
+    const lastComma = token.lastIndexOf(",");
+    const decimalSep = lastDot > lastComma ? "." : ",";
+    const thousandsSep = decimalSep === "." ? "," : ".";
+    const thousandsRegex = new RegExp(`\\${thousandsSep}`, "g");
+    token = token.replace(thousandsRegex, "");
+    const decimalRegex = new RegExp(`\\${decimalSep}`, "g");
+    token = token.replace(decimalRegex, ".");
+  } else if (token.includes(",")) {
+    const lastComma = token.lastIndexOf(",");
+    const decimals = token.length - lastComma - 1;
+    if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
+      token = token.replace(/,/g, "");
+    } else {
+      token = token.replace(/,/g, ".");
+    }
+  } else if (token.includes(".")) {
+    const lastDot = token.lastIndexOf(".");
+    const decimals = token.length - lastDot - 1;
+    if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
+      token = token.replace(/\./g, "");
+    }
+  }
+
+  const parsed = parseFloat(token);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed * multiplier;
+};
+
+const extractAmountFromText = (text) => {
+  if (!text) return { amount: 0 };
+  const numericPattern = /(?:r\$\s*)?([0-9]+(?:[.,\s][0-9]+)*(?:k)?|[0-9]+\s?mil)/gi;
+  let match;
+  while ((match = numericPattern.exec(text)) !== null) {
+    const raw = match[0];
+    const value = parseNumericToken(raw);
+    if (value) return { amount: value, raw };
+  }
+
+  const words = extractNumberWords(text);
+  if (words) return words;
+
+  const fallbackMatch = text.toString().match(/\d+/);
+  if (fallbackMatch) {
+    const value = parseNumericToken(fallbackMatch[0]);
+    if (value) return { amount: value, raw: fallbackMatch[0] };
+  }
+
+  return { amount: 0 };
+};
+
 const toNumber = (value) => {
-  if (!value) return 0;
-  const normalized = String(value).replace(/[^0-9,-.]/g, "").replace(/,/g, ".");
-  const parsed = parseFloat(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+  if (value === undefined || value === null) return 0;
+  if (typeof value === "number") return value;
+  const result = extractAmountFromText(String(value));
+  return Number.isFinite(result.amount) ? result.amount : 0;
 };
 const formatCurrencyBR = (value) => {
   const num = Number(value || 0);
@@ -69,8 +249,12 @@ const formatCurrencyBR = (value) => {
     maximumFractionDigits: 2,
   })}`;
 };
-const statusIconLabel = (status) =>
-  status === "pago" || status === "recebido" ? "✅ Pago" : "⏳ Pendente";
+const statusIconLabel = (status) => {
+  const normalized = (status || "").toString().toLowerCase();
+  if (normalized === "pago") return "✅ Pago";
+  if (normalized === "recebido") return "✅ Recebido";
+  return "⏳ Pendente";
+};
 
 const startOfDay = (d) => {
   const tmp = new Date(d);
@@ -128,6 +312,11 @@ const parseDateToken = (token) => {
     d.setDate(d.getDate() + 1);
     return d;
   }
+  if (lower === "ontem") {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d;
+  }
   const match = token.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
   if (match) {
     const day = Number(match[1]);
@@ -166,14 +355,13 @@ const detectCategory = (description, tipo) => {
 const formatCategoryLabel = (slug, emoji) => {
   const raw = (slug || "").toString().trim();
   if (!raw) return emoji ? `${emoji} —` : "—";
-  const normalized = raw.replace(/[_-]+/g, " ");
-  const words = normalized.split(/\s+/).filter(Boolean);
+  const parts = raw.split(/[_-]+/).filter(Boolean);
   const friendly =
-    words.length === 0
+    parts.length === 0
       ? raw
-      : words
+      : parts
           .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-          .join(" ");
+          .join(" / ");
   return emoji ? `${emoji} ${friendly}` : friendly;
 };
 
@@ -319,36 +507,33 @@ const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row,
 // ============================
 // Rendering helpers
 // ============================
-const formatEntrySummary = (row) => {
-  const descricao = getVal(row, "descricao") || getVal(row, "conta") || "Lançamento";
-  const valor = formatCurrencyBR(getVal(row, "valor"));
-  const data = formatBRDate(getEffectiveDate(row)) || "—";
-  const status = (getVal(row, "status") || "pendente").toString();
+const formatEntryBlock = (row, options = {}) => {
+  const { index, headerLabel, dateText } = options;
+  const header =
+    headerLabel ||
+    (typeof index === "number" ? `${numberToKeycapEmojis(index)} Número ${index}` : "📘 Lançamento");
+  const descricao = (getVal(row, "descricao") || getVal(row, "conta") || "Lançamento").toString().trim();
   const categoriaLabel = formatCategoryLabel(getVal(row, "categoria"), getVal(row, "categoria_emoji"));
-  return `📝 Descrição: ${descricao}\n💰 Valor: ${valor}\n📅 Data: ${data}\n🏷 Status: ${status}\n📂 Categoria: ${categoriaLabel}`;
+  const valor = formatCurrencyBR(toNumber(getVal(row, "valor")));
+  const data = dateText || formatBRDate(getEffectiveDate(row)) || "—";
+  const statusRaw = (getVal(row, "status") || "pendente").toString().toLowerCase();
+  const statusLabel = statusRaw === "recebido" ? "✅ Recebido" : statusRaw === "pago" ? "✅ Pago" : "⏳ Pendente";
+  const tipoRaw = (getVal(row, "tipo") || "conta_pagar").toString();
+  const tipoLabel = tipoRaw === "conta_receber" ? "💵 Receita" : "💸 Despesa";
+  return `${header}\n📝 Descrição: ${descricao}\n📂 Categoria: ${categoriaLabel}\n💰 Valor: ${valor}\n📅 Data: ${data}\n🏷 Status: ${statusLabel}\n🔁 Tipo: ${tipoLabel}`;
 };
 
-const renderItem = (row, idx) => {
-  const idxEmoji = numberToKeycapEmojis(idx);
-  const conta = getVal(row, "conta") || "Lançamento";
-  const valor = formatCurrencyBR(getVal(row, "valor"));
-  const data = formatBRDate(getEffectiveDate(row));
-  const status = statusIconLabel(getVal(row, "status"));
-  const categoriaEmoji = getVal(row, "categoria_emoji") || "";
-  const categoria = getVal(row, "categoria") || "—";
-  const descricao = getVal(row, "descricao") || conta;
-  return `${idxEmoji} ${conta}\n📝 ${descricao}\n💰 ${valor}\n📅 ${data}\n🏷️ ${status}\n📂 ${categoriaEmoji} ${categoria}\n${SEP}\n`;
-};
+const formatEntrySummary = (row, options = {}) =>
+  formatEntryBlock(row, { ...options, headerLabel: options.headerLabel || "📘 Resumo do lançamento" });
 
 const renderReportList = (title, rows) => {
   let message = `📊 *${title}*\n\n`;
   if (!rows.length) {
     return `${message}✅ Nenhum lançamento encontrado para o período selecionado.`;
   }
-  rows.forEach((row, index) => {
-    message += renderItem(row, index + 1);
-  });
-  message += `\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
+  const blocks = rows.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  message += blocks.join(`\n${SEP}\n\n`);
+  message += `\n${SEP}\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
   return message;
 };
 
@@ -369,7 +554,34 @@ const renderSaldoFooter = (rowsAll, start, end) => {
 // ============================
 // Menus interativos
 // ============================
-const sendWelcomeList = (to) =>
+const MAIN_MENU_SECTIONS = [
+  {
+    title: "Lançamentos e Contas",
+    rows: [
+      { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
+      { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
+      { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
+      { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Cadastrar ou excluir contas recorrentes." },
+    ],
+  },
+  {
+    title: "Relatórios e Histórico",
+    rows: [
+      { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gerar por categoria e período." },
+      { id: "MENU:lancamentos", title: "🧾 Meus lançamentos", description: "Ver por mês ou período personalizado." },
+    ],
+  },
+  {
+    title: "Ajustes e Ajuda",
+    rows: [
+      { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
+      { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
+      { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar a FinPlanner IA." },
+    ],
+  },
+];
+
+const sendMainMenu = (to, { greeting = false } = {}) =>
   sendWA({
     messaging_product: "whatsapp",
     to,
@@ -377,39 +589,18 @@ const sendWelcomeList = (to) =>
     interactive: {
       type: "list",
       body: {
-        text: `👋 Olá! Eu sou a FinPlanner IA.\n\n💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.\n\nToque em *Abrir menu* ou digite o que deseja fazer.`,
+        text: greeting
+          ? `👋 Olá! Eu sou a FinPlanner IA.\n\n💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.\n\nToque em *Abrir menu* ou digite o que deseja fazer.`
+          : "Toque em *Abrir menu* ou digite o que deseja fazer.",
       },
       action: {
         button: "Abrir menu",
-        sections: [
-          {
-            title: "Lançamentos e Contas",
-            rows: [
-              { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
-              { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
-              { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
-              { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Cadastrar ou excluir contas recorrentes." },
-            ],
-          },
-          {
-            title: "Relatórios e Histórico",
-            rows: [
-              { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gerar por categoria e período." },
-              { id: "MENU:lancamentos", title: "🧾 Meus lançamentos", description: "Ver por mês ou período personalizado." },
-            ],
-          },
-          {
-            title: "Ajustes e Ajuda",
-            rows: [
-              { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
-              { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
-              { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar a FinPlanner IA." },
-            ],
-          },
-        ],
+        sections: MAIN_MENU_SECTIONS,
       },
     },
   });
+
+const sendWelcomeList = (to) => sendMainMenu(to, { greeting: true });
 
 const sendRelatoriosButtons = (to) =>
   sendWA({
@@ -514,13 +705,14 @@ const sendCadastrarContaFixaMessage = (to) =>
 const buildFixedAccountList = (rows) =>
   rows
     .map((row, index) => {
-      const conta = getVal(row, "conta") || getVal(row, "descricao") || "Conta fixa";
-      const valor = formatCurrencyBR(getVal(row, "valor"));
-      const dia = getVal(row, "vencimento_dia");
-      const dueDate = dia ? `Dia ${String(dia).padStart(2, "0")}` : formatBRDate(getEffectiveDate(row)) || "—";
-      return `${numberToKeycapEmojis(index + 1)} ${conta}\n💰 ${valor}\n📅 Vencimento: ${dueDate}\n${SEP}`;
+      const dia = Number(getVal(row, "vencimento_dia"));
+      const dateText = Number.isFinite(dia) && dia > 0 ? `Dia ${String(dia).padStart(2, "0")}` : undefined;
+      return formatEntryBlock(row, {
+        index: index + 1,
+        dateText,
+      });
     })
-    .join("\n");
+    .join(`\n${SEP}\n\n`);
 
 const isFixedAccount = (row) => String(getVal(row, "fixa") || "").toLowerCase() === "sim";
 
@@ -548,7 +740,7 @@ async function sendExcluirContaFixaMessage(to, userNorm) {
   });
   sessionFixedDelete.set(userNorm, { awaiting: "index", rows: sorted });
   const list = buildFixedAccountList(sorted);
-  const message = `🗑 Excluir conta fixa\n\nPara remover uma conta recorrente, digite o número de qual deseja excluir:\n\n${list}\nEnvie o número da conta fixa que deseja excluir.`;
+  const message = `🗑 Excluir conta fixa\n\nPara remover uma conta recorrente, digite o número de qual deseja excluir:\n\n${list}\n\nEnvie o número da conta fixa que deseja excluir.`;
   await sendText(to, message);
 }
 
@@ -595,41 +787,75 @@ const generateRowId = () => `${Date.now()}-${Math.random().toString(36).slice(2,
 // Parse de lançamento
 // ============================
 const parseRegisterText = (text) => {
-  const lower = (text || "").toLowerCase();
-  const tipo = /receb/i.test(lower) ? "conta_receber" : "conta_pagar";
-  const status = /pendente|a pagar|a receber/.test(lower)
-    ? tipo === "conta_receber"
-      ? "pendente"
-      : "pendente"
-    : tipo === "conta_receber"
-    ? /recebid[oa]/.test(lower)
-      ? "recebido"
-      : "pendente"
-    : /pag[ou]/.test(lower)
-    ? "pago"
-    : "pendente";
+  const original = (text || "").toString();
+  const normalized = normalizeDiacritics(original).toLowerCase();
+  const isReceber = /\b(receb|receita|entrada|venda|vendi|ganhei)\b/.test(normalized);
+  const tipo = isReceber ? "conta_receber" : "conta_pagar";
 
-  let valor = 0;
-  const valorMatch = text.match(/(\d+[\.,]\d{2})/);
-  if (valorMatch) valor = toNumber(valorMatch[1]);
+  let status = "pendente";
+  if (/\b(recebid[oa]?|recebi|recebemos|creditad[oa]|caiu|confirmad[oa])\b/.test(normalized)) {
+    status = "recebido";
+  } else if (/\b(pag[ouei]|paguei|quitad[oa]|liquidad[oa]|transferi|transferido)\b/.test(normalized)) {
+    status = "pago";
+  } else if (/\b(pendente|a pagar|a receber|aguardando|em aberto)\b/.test(normalized)) {
+    status = "pendente";
+  }
+  if (tipo === "conta_receber" && status === "pago") status = "recebido";
+  if (tipo === "conta_pagar" && status === "recebido") status = "pago";
+
+  const amountInfo = extractAmountFromText(original);
+  const valor = amountInfo.amount || 0;
 
   let data = null;
-  const dateMatch = text.match(/(hoje|amanh[ãa]|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/i);
+  const dateMatch = original.match(/(hoje|amanh[ãa]|ontem|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/i);
   if (dateMatch) data = parseDateToken(dateMatch[1]);
 
-  const descricao = text
-    .replace(/(hoje|amanh[ãa]|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/gi, "")
-    .replace(/(recebimento|receber|recebido|pagamento|pagar|pago|pendente)/gi, "")
-    .replace(/(r\$|valor|de)/gi, "")
+  let descricao = original;
+  if (amountInfo.raw) {
+    const rawEscaped = escapeRegex(amountInfo.raw);
+    descricao = descricao.replace(new RegExp(rawEscaped, "i"), "");
+  }
+  descricao = descricao
+    .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
+    .replace(/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/gi, "")
+    .replace(/\b(recebimento|receber|recebido|recebi|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
+    .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
+    .replace(/r\$/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+
+  if (descricao) {
+    const tokens = descricao.split(/\s+/);
+    const filtered = tokens.filter((token) => {
+      const normalizedToken = normalizeDiacritics(token).toLowerCase();
+      if (NUMBER_CONNECTORS.has(normalizedToken)) return false;
+      if (NUMBER_WORDS[normalizedToken] !== undefined) return false;
+      if (normalizedToken === "mil") return false;
+      return true;
+    });
+    descricao = filtered.join(" ");
+  }
+
+  descricao = descricao.trim();
+  if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
+
+  let tipoPagamento = "";
+  if (/\bpix\b/.test(normalized)) tipoPagamento = "pix";
+  else if (/\bboleto\b/.test(normalized)) tipoPagamento = "boleto";
+  else if (/\b(cart[aã]o\s*de\s*cr[eé]dito|cart[aã]o\s*cr[eé]dito|cr[eé]dito\s*no?\s*cart[aã]o|credito\b.*cartao)\b/.test(normalized))
+    tipoPagamento = "cartao_credito";
+  else if (/\b(cart[aã]o\s*de\s*d[eé]bito|cart[aã]o\s*d[eé]bito|d[eé]bito\s*no?\s*cart[aã]o|debito\b.*cartao)\b/.test(normalized))
+    tipoPagamento = "cartao_debito";
+  else if (/\bdinheiro\b/.test(normalized)) tipoPagamento = "dinheiro";
+  else if (/\btransfer/i.test(normalized)) tipoPagamento = "transferencia";
 
   return {
     tipo,
     valor,
     data: data || new Date(),
-    status: status === "recebido" && tipo === "conta_pagar" ? "pago" : status,
-    descricao: descricao || (tipo === "conta_receber" ? "Recebimento" : "Pagamento"),
+    status,
+    descricao,
+    tipoPagamento,
   };
 };
 
@@ -675,10 +901,8 @@ async function showLancamentos(fromRaw, userNorm, range) {
     await sendText(fromRaw, "✅ Nenhum lançamento encontrado para o período selecionado.");
     return;
   }
-  let message = "🧾 *Meus lançamentos*\n\n";
-  filtered.forEach((row, index) => {
-    message += renderItem(row, index + 1);
-  });
+  const blocks = filtered.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  const message = `🧾 *Meus lançamentos*\n\n${blocks.join(`\n${SEP}\n\n`)}`;
   await sendText(fromRaw, message);
 }
 
@@ -689,10 +913,8 @@ async function listPendingPayments(fromRaw, userNorm) {
     await sendText(fromRaw, "🎉 Você não possui contas pendentes no momento!");
     return;
   }
-  let message = "📅 *Contas a pagar pendentes*\n\n";
-  pending.forEach((row, index) => {
-    message += renderItem(row, index + 1);
-  });
+  const blocks = pending.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  const message = `📅 *Contas a pagar pendentes*\n\n${blocks.join(`\n${SEP}\n\n`)}`;
   await sendText(fromRaw, message);
 }
 
@@ -706,15 +928,15 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
     await sendText(fromRaw, "Não encontrei lançamentos recentes.");
     return;
   }
-  let message = mode === "edit" ? "✏️ *Escolha o lançamento para editar*\n\n" : "🗑️ *Escolha o lançamento para excluir*\n\n";
-  sorted.forEach((row, index) => {
-    const idx = index + 1;
-    const conta = getVal(row, "conta") || getVal(row, "descricao") || "Lançamento";
-    message += `${numberToKeycapEmojis(idx)} ${conta} • ${formatCurrencyBR(getVal(row, "valor"))} • ${formatBRDate(
-      getEffectiveDate(row)
-    )}\n`;
-  });
-  message += `\nDigite o número (1-${sorted.length}).`;
+  const header = mode === "edit" ? "✏️ *Escolha o lançamento para editar*" : "🗑️ *Escolha o lançamento para excluir*";
+  const blocks = sorted.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  let footer;
+  if (mode === "edit") {
+    footer = `Envie o número (1-${sorted.length}) do lançamento que deseja editar.`;
+  } else {
+    footer = `Envie o número ou números (ex.: 1 ou 1,3,4) dos lançamentos que deseja excluir.`;
+  }
+  const message = `${header}\n\n${blocks.join(`\n${SEP}\n\n`)}\n${footer}`;
   if (mode === "edit") {
     sessionEdit.set(userNorm, { awaiting: "index", rows: sorted });
   } else {
@@ -723,16 +945,28 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
   await sendText(fromRaw, message);
 }
 
-async function confirmDeleteRow(fromRaw, userNorm, row) {
-  sessionDelete.set(userNorm, { awaiting: "confirm", row });
-  const summary = formatEntrySummary(row);
+async function confirmDeleteRows(fromRaw, userNorm, selections) {
+  const validSelections = (selections || []).filter((item) => item && item.row);
+  if (!validSelections.length) return;
+  sessionDelete.set(userNorm, { awaiting: "confirm", selections: validSelections });
+  let body;
+  if (validSelections.length === 1) {
+    const selection = validSelections[0];
+    const summary = formatEntryBlock(selection.row, { index: selection.displayIndex });
+    body = `${summary}\n\nDeseja excluir este lançamento?`;
+  } else {
+    const details = validSelections
+      .map((item) => formatEntryBlock(item.row, { index: item.displayIndex }))
+      .join(`\n${SEP}\n\n`);
+    body = `Você selecionou ${validSelections.length} lançamentos:\n\n${details}\n\nDeseja excluir todos esses lançamentos?`;
+  }
   await sendWA({
     messaging_product: "whatsapp",
     to: fromRaw,
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: `${summary}\n\nDeseja excluir este lançamento?` },
+      body: { text: body },
       action: {
         buttons: [{ type: "reply", reply: { id: "DEL:CONFIRM", title: "Sim" } }],
       },
@@ -744,9 +978,13 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   const state = sessionDelete.get(userNorm);
   if (!state || state.awaiting !== "confirm") return false;
   if (confirmed) {
-    await deleteRow(state.row);
+    const selections = state.selections || [];
+    for (const item of selections) {
+      await deleteRow(item.row);
+    }
     sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "✅ Lançamento excluído com sucesso!");
+    const message = selections.length > 1 ? "✅ Lançamentos excluídos com sucesso!" : "✅ Lançamento excluído com sucesso!";
+    await sendText(fromRaw, message);
   } else {
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada.");
@@ -835,7 +1073,7 @@ async function handleFixedDeleteFlow(fromRaw, userNorm, text) {
   }
   const row = state.rows[idx - 1];
   sessionFixedDelete.delete(userNorm);
-  await confirmDeleteRow(fromRaw, userNorm, row);
+  await confirmDeleteRows(fromRaw, userNorm, [{ row, displayIndex: idx }]);
   return true;
 }
 
@@ -843,13 +1081,18 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
   const state = sessionDelete.get(userNorm);
   if (!state) return false;
   if (state.awaiting === "index") {
-    const idx = Number(text.trim());
-    if (!idx || idx < 1 || idx > state.rows.length) {
+    const matches = (text.match(/\d+/g) || []).map((n) => Number(n));
+    if (!matches.length) {
       await sendText(fromRaw, "Número inválido. Tente novamente.");
       return true;
     }
-    const row = state.rows[idx - 1];
-    await confirmDeleteRow(fromRaw, userNorm, row);
+    const unique = [...new Set(matches)];
+    if (unique.some((idx) => !Number.isFinite(idx) || idx < 1 || idx > state.rows.length)) {
+      await sendText(fromRaw, `Informe números entre 1 e ${state.rows.length}.`);
+      return true;
+    }
+    const selections = unique.map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }));
+    await confirmDeleteRows(fromRaw, userNorm, selections);
     return true;
   }
   if (state.awaiting === "confirm") {
@@ -865,7 +1108,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   const parsed = parseRegisterText(text);
   if (tipoPreferencial) parsed.tipo = tipoPreferencial;
   if (!parsed.valor) {
-    await sendText(fromRaw, "Não consegui identificar o valor. Informe algo como 150,00.");
+    await sendText(fromRaw, "Não consegui identificar o valor. Informe algo como 150, R$150,00 ou \"cem reais\".");
     return;
   }
   const data = parsed.data || new Date();
@@ -881,9 +1124,9 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     valor: parsed.valor,
     vencimento_iso: iso,
     vencimento_br: formatBRDate(data),
-    tipo_pagamento: "",
+    tipo_pagamento: parsed.tipoPagamento || "",
     codigo_pagamento: "",
-    status: parsed.status,
+    status: parsed.status || "pendente",
     fixa: "nao",
     fix_parent_id: "",
     vencimento_dia: data.getDate(),
@@ -892,11 +1135,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     descricao: parsed.descricao,
   };
   await createRow(payload);
-  const categoriaLabel = formatCategoryLabel(payload.categoria, categoria.emoji);
-  const valorFormatado = formatCurrencyBR(parsed.valor);
-  const dataFormatada = formatBRDate(data);
-  const statusFormatado = parsed.status || "pendente";
-  const resumo = `📘 Resumo do lançamento:\n📝 Descrição: ${parsed.descricao}\n💰 Valor: ${valorFormatado}\n📅 Data: ${dataFormatada}\n🏷 Status: ${statusFormatado}\n📂 Categoria: ${categoriaLabel}`;
+  const resumo = formatEntrySummary(payload);
   if (payload.tipo === "conta_receber") {
     await sendText(
       fromRaw,
@@ -908,7 +1147,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
       `✅ Pagamento registrado com sucesso!\n\n${resumo}\n\n💡 A FinPlanner IA já atualizou seu saldo e adicionou este pagamento ao relatório do período.`
     );
   }
-  await sendWelcomeList(fromRaw);
+  await sendMainMenu(fromRaw);
 }
 
 // ============================
@@ -1017,7 +1256,7 @@ async function handleInteractiveMessage(from, payload) {
         await sendText(from, "Não há lançamentos para excluir.");
         return;
       }
-      await confirmDeleteRow(from, userNorm, last);
+      await confirmDeleteRows(from, userNorm, [{ row: last, displayIndex: 1 }]);
       return;
     }
     if (id === "DEL:LIST") {
@@ -1167,7 +1406,11 @@ async function handleUserText(fromRaw, text) {
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
       break;
     default:
-      await sendWelcomeList(fromRaw);
+      if (extractAmountFromText(trimmed).amount) {
+        await registerEntry(fromRaw, userNorm, text);
+      } else {
+        await sendMainMenu(fromRaw);
+      }
       break;
   }
 }
