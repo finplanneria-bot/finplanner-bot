@@ -1,4 +1,4 @@
-// ============================
+/ ============================
 // FinPlanner IA - WhatsApp Bot
 // Versão: app.js v2025-10-23.1
 // ============================
@@ -700,7 +700,7 @@ const sendContasFixasMenu = (to) =>
       body: { text: "Escolha uma opção:" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "CFIX:CAD", title: "Cadastrar contas fixas" } },
+          { type: "reply", reply: { id: "CFIX:CAD", title: "Cadastrar conta fixa" } },
           { type: "reply", reply: { id: "CFIX:LIST", title: "Listar contas fixas" } },
           { type: "reply", reply: { id: "CFIX:DEL", title: "Excluir contas fixas" } },
         ],
