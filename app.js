@@ -458,9 +458,13 @@ async function ensureSheet() {
   } else {
     await sheet.loadHeaderRow();
     const current = sheet.headerValues || [];
-    const missing = SHEET_HEADERS.filter((header) => !current.includes(header));
-    if (missing.length) {
-      await sheet.setHeaderRow([...current, ...missing]);
+    const normalized = current.map((header) => (header || "").trim());
+    const hasDuplicate = new Set(normalized.filter(Boolean)).size !== normalized.filter(Boolean).length;
+    const missing = SHEET_HEADERS.filter((header) => !normalized.includes(header));
+    const orderMismatch = SHEET_HEADERS.some((header, index) => normalized[index] !== header);
+
+    if (hasDuplicate || missing.length || orderMismatch || normalized.length !== SHEET_HEADERS.length) {
+      await sheet.setHeaderRow(SHEET_HEADERS);
     }
   }
   return sheet;
