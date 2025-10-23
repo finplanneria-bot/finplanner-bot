@@ -53,8 +53,6 @@ app.get("/", (_req, res) => {
 // ============================
 // Utils
 // ============================
-const SEP = "────────────────";
-
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
 const NUMBER_WORDS = {
   zero: 0,
@@ -509,9 +507,6 @@ const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row,
 // ============================
 const formatEntryBlock = (row, options = {}) => {
   const { index, headerLabel, dateText } = options;
-  const header =
-    headerLabel ||
-    (typeof index === "number" ? `${numberToKeycapEmojis(index)} Número ${index}` : "📘 Lançamento");
   const descricao = (getVal(row, "descricao") || getVal(row, "conta") || "Lançamento").toString().trim();
   const categoriaLabel = formatCategoryLabel(getVal(row, "categoria"), getVal(row, "categoria_emoji"));
   const valor = formatCurrencyBR(toNumber(getVal(row, "valor")));
@@ -520,11 +515,27 @@ const formatEntryBlock = (row, options = {}) => {
   const statusLabel = statusRaw === "recebido" ? "✅ Recebido" : statusRaw === "pago" ? "✅ Pago" : "⏳ Pendente";
   const tipoRaw = (getVal(row, "tipo") || "conta_pagar").toString();
   const tipoLabel = tipoRaw === "conta_receber" ? "💵 Receita" : "💸 Despesa";
-  return `${header}\n📝 Descrição: ${descricao}\n📂 Categoria: ${categoriaLabel}\n💰 Valor: ${valor}\n📅 Data: ${data}\n🏷 Status: ${statusLabel}\n🔁 Tipo: ${tipoLabel}`;
+  const fields = [
+    `📝 Descrição: ${descricao}`,
+    `📂 Categoria: ${categoriaLabel}`,
+    `💰 Valor: ${valor}`,
+    `📅 Data: ${data}`,
+    `🏷 Status: ${statusLabel}`,
+    `🔁 Tipo: ${tipoLabel}`,
+  ];
+  if (headerLabel) {
+    return `${headerLabel}\n\n${fields.join("\n")}`;
+  }
+  if (typeof index === "number") {
+    const [first, ...rest] = fields;
+    const prefix = `${numberToKeycapEmojis(index)} ${first}`;
+    return [prefix, ...rest].join("\n");
+  }
+  return `📘 Lançamento\n\n${fields.join("\n")}`;
 };
 
 const formatEntrySummary = (row, options = {}) =>
-  formatEntryBlock(row, { ...options, headerLabel: options.headerLabel || "📘 Resumo do lançamento" });
+  formatEntryBlock(row, { ...options, headerLabel: options.headerLabel || "📘 *Resumo do lançamento*" });
 
 const renderReportList = (title, rows) => {
   let message = `📊 *${title}*\n\n`;
@@ -532,8 +543,8 @@ const renderReportList = (title, rows) => {
     return `${message}✅ Nenhum lançamento encontrado para o período selecionado.`;
   }
   const blocks = rows.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  message += blocks.join(`\n${SEP}\n\n`);
-  message += `\n${SEP}\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
+  message += blocks.join("\n\n");
+  message += `\n\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
   return message;
 };
 
@@ -548,7 +559,7 @@ const renderSaldoFooter = (rowsAll, start, end) => {
   const saldo = totalRec - totalPag;
   const saldoStr = formatCurrencyBR(saldo);
   const saldoLine = saldo < 0 ? `🟥 🔹 *Saldo no período:* -${saldoStr}` : `🔹 *Saldo no período:* ${saldoStr}`;
-  return `\n${SEP}\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
+  return `\n\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
 };
 
 // ============================
@@ -689,8 +700,9 @@ const sendContasFixasMenu = (to) =>
       body: { text: "Escolha uma opção:" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "CFIX:CAD", title: "Cadastrar conta fixa" } },
-          { type: "reply", reply: { id: "CFIX:DEL", title: "Excluir contas" } },
+          { type: "reply", reply: { id: "CFIX:CAD", title: "Cadastrar contas fixas" } },
+          { type: "reply", reply: { id: "CFIX:LIST", title: "Listar contas fixas" } },
+          { type: "reply", reply: { id: "CFIX:DEL", title: "Excluir contas fixas" } },
         ],
       },
     },
@@ -702,6 +714,16 @@ const sendCadastrarContaFixaMessage = (to) =>
     `♻ Cadastro de conta fixa\n\nUse este formato para registrar contas que se repetem todo mês automaticamente:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n📅 Dia de vencimento: Data que vence todo mês\n(ex: todo dia 05)\n\n💡 Exemplo pronto:\n➡ Conta fixa internet 120,00 todo dia 05\n\n🔔 A FinPlanner IA lançará esta conta automaticamente todo mês e te avisará no dia do vencimento.`
   );
 
+const sendListarContasFixasMessage = async (to, userNorm) => {
+  const fixed = await getFixedAccounts(userNorm);
+  if (!fixed.length) {
+    await sendText(to, "Você ainda não possui contas fixas cadastradas.");
+    return;
+  }
+  const list = buildFixedAccountList(fixed);
+  await sendText(to, `♻️ *Contas fixas cadastradas*\n\n${list}`);
+};
+
 const buildFixedAccountList = (rows) =>
   rows
     .map((row, index) => {
@@ -712,7 +734,7 @@ const buildFixedAccountList = (rows) =>
         dateText,
       });
     })
-    .join(`\n${SEP}\n\n`);
+    .join("\n\n");
 
 const isFixedAccount = (row) => String(getVal(row, "fixa") || "").toLowerCase() === "sim";
 
@@ -902,7 +924,7 @@ async function showLancamentos(fromRaw, userNorm, range) {
     return;
   }
   const blocks = filtered.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  const message = `🧾 *Meus lançamentos*\n\n${blocks.join(`\n${SEP}\n\n`)}`;
+  const message = `🧾 *Meus lançamentos*\n\n${blocks.join("\n\n")}`;
   await sendText(fromRaw, message);
 }
 
@@ -914,7 +936,7 @@ async function listPendingPayments(fromRaw, userNorm) {
     return;
   }
   const blocks = pending.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  const message = `📅 *Contas a pagar pendentes*\n\n${blocks.join(`\n${SEP}\n\n`)}`;
+  const message = `📅 *Contas a pagar pendentes*\n\n${blocks.join("\n\n")}`;
   await sendText(fromRaw, message);
 }
 
@@ -928,104 +950,304 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
     await sendText(fromRaw, "Não encontrei lançamentos recentes.");
     return;
   }
-  const header = mode === "edit" ? "✏️ *Escolha o lançamento para editar*" : "🗑️ *Escolha o lançamento para excluir*";
   const blocks = sorted.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  let footer;
   if (mode === "edit") {
-    footer = `Envie o número (1-${sorted.length}) do lançamento que deseja editar.`;
+    const message = `✏️ Selecione o lançamento que deseja editar:\n\n${blocks.join("\n\n")}\n\nEnvie o número correspondente (1-${sorted.length}).`;
+    sessionEdit.set(userNorm, { awaiting: "index", rows: sorted, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+    await sendText(fromRaw, message);
   } else {
-    footer = `Envie o número ou números (ex.: 1 ou 1,3,4) dos lançamentos que deseja excluir.`;
+    const message =
+      "📋 Selecione o lançamento que deseja excluir:\n\n" +
+      `${blocks.join("\n\n")}\n\n📋 Selecione os lançamentos que deseja excluir:\n\nEnvie os números separados por vírgula ou espaço.\nExemplo: 1, 3, 5 ou 2 4 6`;
+    sessionDelete.set(userNorm, { awaiting: "index", rows: sorted, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+    await sendText(fromRaw, message);
   }
-  const message = `${header}\n\n${blocks.join(`\n${SEP}\n\n`)}\n${footer}`;
-  if (mode === "edit") {
-    sessionEdit.set(userNorm, { awaiting: "index", rows: sorted });
-  } else {
-    sessionDelete.set(userNorm, { awaiting: "index", rows: sorted });
-  }
-  await sendText(fromRaw, message);
 }
 
-async function confirmDeleteRows(fromRaw, userNorm, selections) {
-  const validSelections = (selections || []).filter((item) => item && item.row);
-  if (!validSelections.length) return;
-  sessionDelete.set(userNorm, { awaiting: "confirm", selections: validSelections });
-  let body;
-  if (validSelections.length === 1) {
-    const selection = validSelections[0];
-    const summary = formatEntryBlock(selection.row, { index: selection.displayIndex });
-    body = `${summary}\n\nDeseja excluir este lançamento?`;
-  } else {
-    const details = validSelections
-      .map((item) => formatEntryBlock(item.row, { index: item.displayIndex }))
-      .join(`\n${SEP}\n\n`);
-    body = `Você selecionou ${validSelections.length} lançamentos:\n\n${details}\n\nDeseja excluir todos esses lançamentos?`;
+const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
+
+const selectionStopWords = new Set(
+  [
+    "excluir",
+    "exclua",
+    "remover",
+    "remova",
+    "apagar",
+    "apague",
+    "deletar",
+    "delete",
+    "editar",
+    "edita",
+    "lancamento",
+    "lancamentos",
+    "numero",
+    "numeros",
+    "número",
+    "números",
+    "item",
+    "itens",
+    "selecionar",
+    "selecione",
+    "selecao",
+    "escolher",
+    "escolha",
+    "quero",
+    "para",
+    "pra",
+    "de",
+    "do",
+    "da",
+    "dos",
+    "das",
+    "o",
+    "a",
+    "os",
+    "as",
+    "um",
+    "uma",
+  ].map((word) => normalizeDiacritics(word))
+);
+
+const cleanSelectionTerms = (normalizedText) =>
+  normalizedText
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .filter((token) => !selectionStopWords.has(token))
+    .join(" ");
+
+const parseSelectionIndexes = (text, max) => {
+  const normalized = normalizeDiacritics(text).toLowerCase();
+  const indexes = new Set();
+  const rangeRegex = /(\d+)\s*(?:a|ate|até|ate|ao|à|\-|–|—)\s*(\d+)/g;
+  let rangeMatch;
+  while ((rangeMatch = rangeRegex.exec(normalized))) {
+    const start = Number(rangeMatch[1]);
+    const end = Number(rangeMatch[2]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    const from = Math.min(start, end);
+    const to = Math.max(start, end);
+    for (let i = from; i <= to; i += 1) {
+      indexes.add(i);
+    }
   }
+  const numberRegex = /\b\d+\b/g;
+  let match;
+  while ((match = numberRegex.exec(normalized))) {
+    indexes.add(Number(match[0]));
+  }
+  const filtered = [...indexes].filter((idx) => Number.isFinite(idx) && idx >= 1 && idx <= max);
+  filtered.sort((a, b) => a - b);
+  return filtered;
+};
+
+const parseSelectionByDescription = (text, rows) => {
+  const normalized = normalizeDiacritics(text).toLowerCase();
+  const cleaned = cleanSelectionTerms(normalized).replace(/\d+/g, " ").trim();
+  if (!cleaned) return [];
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const matches = [];
+  rows.forEach((row, idx) => {
+    const base = normalizeDiacritics(
+      `${getVal(row, "descricao") || ""} ${getVal(row, "conta") || ""}`
+    )
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    if (words.every((word) => base.includes(word))) {
+      matches.push(idx + 1);
+    }
+  });
+  return matches;
+};
+
+const resolveSelectionIndexes = (text, rows) => {
+  const indexes = parseSelectionIndexes(text, rows.length);
+  if (indexes.length) return indexes;
+  const byDescription = parseSelectionByDescription(text, rows);
+  return byDescription;
+};
+
+const uniqueSelections = (selections) => {
+  const seen = new Set();
+  const list = [];
+  for (const item of selections) {
+    if (!item || !item.row) continue;
+    const rowId = getVal(item.row, "row_id") || getVal(item.row, "timestamp") || `${item.displayIndex}-${Math.random()}`;
+    if (seen.has(rowId)) continue;
+    seen.add(rowId);
+    list.push(item);
+  }
+  return list;
+};
+
+const setDeleteState = (userNorm, state) => {
+  const current = sessionDelete.get(userNorm) || {};
+  sessionDelete.set(userNorm, { ...current, ...state });
+};
+
+const resetDeleteTimeout = (state) => ({ ...state, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+
+const deleteStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
+
+async function promptNextDeleteConfirmation(to, userNorm) {
+  const state = sessionDelete.get(userNorm);
+  if (!state || !Array.isArray(state.queue) || !state.queue.length) return;
+  const currentIndex = state.currentIndex || 0;
+  const currentItem = state.queue[currentIndex];
+  if (!currentItem || !currentItem.row) {
+    sessionDelete.delete(userNorm);
+    return;
+  }
+  const summary = formatEntrySummary(currentItem.row, { headerLabel: "🧾 Lançamento selecionado:" });
+  const body = `⚠ Confirmar exclusão do lançamento:\n\n${summary}\n\nDeseja realmente excluir este lançamento?`;
+  const nextState = resetDeleteTimeout({ ...state, awaiting: "confirm", currentIndex });
+  sessionDelete.set(userNorm, nextState);
   await sendWA({
     messaging_product: "whatsapp",
-    to: fromRaw,
+    to,
     type: "interactive",
     interactive: {
       type: "button",
       body: { text: body },
       action: {
-        buttons: [{ type: "reply", reply: { id: "DEL:CONFIRM", title: "Sim" } }],
+        buttons: [
+          { type: "reply", reply: { id: "DEL:CONFIRM:YES", title: "✅ Sim, excluir" } },
+          { type: "reply", reply: { id: "DEL:CONFIRM:NO", title: "❌ Cancelar" } },
+        ],
       },
     },
   });
 }
 
+async function confirmDeleteRows(fromRaw, userNorm, selections) {
+  const validSelections = uniqueSelections(selections || []);
+  if (!validSelections.length) return;
+  setDeleteState(userNorm, {
+    awaiting: "confirm",
+    queue: validSelections,
+    currentIndex: 0,
+    expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+  });
+  await promptNextDeleteConfirmation(fromRaw, userNorm);
+}
+
 async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   const state = sessionDelete.get(userNorm);
   if (!state || state.awaiting !== "confirm") return false;
-  if (confirmed) {
-    const selections = state.selections || [];
-    for (const item of selections) {
-      await deleteRow(item.row);
-    }
+  if (deleteStateExpired(state)) {
     sessionDelete.delete(userNorm);
-    const message = selections.length > 1 ? "✅ Lançamentos excluídos com sucesso!" : "✅ Lançamento excluído com sucesso!";
-    await sendText(fromRaw, message);
-  } else {
+    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    return true;
+  }
+  if (!confirmed) {
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada.");
+    return true;
   }
+  const currentIndex = state.currentIndex || 0;
+  const currentItem = state.queue?.[currentIndex];
+  if (!currentItem || !currentItem.row) {
+    sessionDelete.delete(userNorm);
+    await sendText(fromRaw, "Nenhum lançamento selecionado para excluir.");
+    return true;
+  }
+  await deleteRow(currentItem.row);
+  await sendText(
+    fromRaw,
+    "🗑 Lançamento excluído com sucesso!\n\n💡 Dica: envie *Meus lançamentos* para visualizar sua lista atualizada."
+  );
+  const nextIndex = currentIndex + 1;
+  if (!state.queue || nextIndex >= state.queue.length) {
+    sessionDelete.delete(userNorm);
+    return true;
+  }
+  setDeleteState(userNorm, {
+    queue: state.queue,
+    currentIndex: nextIndex,
+    awaiting: "confirm",
+    expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+  });
+  await promptNextDeleteConfirmation(fromRaw, userNorm);
   return true;
 }
 
 async function handleDeleteConfirmation(fromRaw, userNorm, text) {
-  const trimmed = text.trim().toLowerCase();
-  return finalizeDeleteConfirmation(fromRaw, userNorm, trimmed === "sim");
+  const normalized = normalizeDiacritics(text).toLowerCase().trim();
+  if (!normalized) return false;
+  if (/^(s|sim)(\b|\s)/.test(normalized) || /excluir/.test(normalized) || /confirm/.test(normalized)) {
+    return finalizeDeleteConfirmation(fromRaw, userNorm, true);
+  }
+  if (/^(nao|não|n)(\b|\s)/.test(normalized) || /cancel/.test(normalized) || /parar/.test(normalized)) {
+    return finalizeDeleteConfirmation(fromRaw, userNorm, false);
+  }
+  return false;
 }
 
 async function handleEditFlow(fromRaw, userNorm, text) {
   const state = sessionEdit.get(userNorm);
   if (!state) return false;
+  if (state.expiresAt && Date.now() > state.expiresAt) {
+    sessionEdit.delete(userNorm);
+    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    return true;
+  }
   if (state.awaiting === "index") {
-    const idx = Number(text.trim());
-    if (!idx || idx < 1 || idx > state.rows.length) {
-      await sendText(fromRaw, "Número inválido. Tente novamente.");
+    const indexes = resolveSelectionIndexes(text, state.rows || []);
+    if (!indexes.length) {
+      await sendText(fromRaw, "Não entendi qual lançamento deseja editar. Informe o número ou o nome.");
       return true;
     }
-    const row = state.rows[idx - 1];
-    sessionEdit.set(userNorm, { awaiting: "field", row });
+    const selections = indexes
+      .map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }))
+      .filter((item) => item.row);
+    if (!selections.length) {
+      await sendText(fromRaw, "Não encontrei os lançamentos informados. Tente novamente.");
+      return true;
+    }
+    const first = selections[0];
+    sessionEdit.set(userNorm, {
+      awaiting: "field",
+      rows: state.rows,
+      queue: selections,
+      currentIndex: 0,
+      row: first.row,
+      displayIndex: first.displayIndex,
+      expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+    });
+    const summary = formatEntrySummary(first.row, { headerLabel: "🧾 Lançamento selecionado:" });
     await sendText(
       fromRaw,
-      `✏️ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
+      `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
     );
     return true;
   }
   if (state.awaiting === "field") {
     const field = text.trim().toLowerCase();
+    if (/^cancelar/.test(field)) {
+      sessionEdit.delete(userNorm);
+      await sendText(fromRaw, "Operação cancelada.");
+      return true;
+    }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
     if (!valid.includes(field)) {
       await sendText(fromRaw, "Campo inválido. Tente novamente.");
       return true;
     }
-    sessionEdit.set(userNorm, { awaiting: "value", row: state.row, field });
+    sessionEdit.set(userNorm, {
+      ...state,
+      awaiting: "value",
+      field,
+      expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+    });
     await sendText(fromRaw, `Digite o novo valor para *${field}*.`);
     return true;
   }
   if (state.awaiting === "value") {
+    if (/^cancelar/i.test(text.trim())) {
+      sessionEdit.delete(userNorm);
+      await sendText(fromRaw, "Operação cancelada.");
+      return true;
+    }
     const { row, field } = state;
     if (field === "valor") {
       setVal(row, "valor", toNumber(text));
@@ -1056,8 +1278,28 @@ async function handleEditFlow(fromRaw, userNorm, text) {
       setVal(row, field === "conta" ? "conta" : "descricao", text.trim());
     }
     await saveRow(row);
-    sessionEdit.delete(userNorm);
     await sendText(fromRaw, "✅ Lançamento atualizado com sucesso!");
+    const queue = state.queue || [];
+    const nextIndex = (state.currentIndex || 0) + 1;
+    if (queue.length && nextIndex < queue.length) {
+      const next = queue[nextIndex];
+      sessionEdit.set(userNorm, {
+        ...state,
+        awaiting: "field",
+        currentIndex: nextIndex,
+        row: next.row,
+        displayIndex: next.displayIndex,
+        field: undefined,
+        expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+      });
+      const summary = formatEntrySummary(next.row, { headerLabel: "🧾 Lançamento selecionado:" });
+      await sendText(
+        fromRaw,
+        `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
+      );
+    } else {
+      sessionEdit.delete(userNorm);
+    }
     return true;
   }
   return false;
@@ -1080,18 +1322,24 @@ async function handleFixedDeleteFlow(fromRaw, userNorm, text) {
 async function handleDeleteFlow(fromRaw, userNorm, text) {
   const state = sessionDelete.get(userNorm);
   if (!state) return false;
+  if (deleteStateExpired(state)) {
+    sessionDelete.delete(userNorm);
+    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    return true;
+  }
   if (state.awaiting === "index") {
-    const matches = (text.match(/\d+/g) || []).map((n) => Number(n));
-    if (!matches.length) {
-      await sendText(fromRaw, "Número inválido. Tente novamente.");
+    const indexes = resolveSelectionIndexes(text, state.rows || []);
+    if (!indexes.length) {
+      await sendText(fromRaw, "Não entendi quais lançamentos você deseja excluir. Informe os números ou o nome.");
       return true;
     }
-    const unique = [...new Set(matches)];
-    if (unique.some((idx) => !Number.isFinite(idx) || idx < 1 || idx > state.rows.length)) {
-      await sendText(fromRaw, `Informe números entre 1 e ${state.rows.length}.`);
+    const selections = indexes
+      .map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }))
+      .filter((item) => item.row);
+    if (!selections.length) {
+      await sendText(fromRaw, "Não encontrei os lançamentos informados. Tente novamente.");
       return true;
     }
-    const selections = unique.map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }));
     await confirmDeleteRows(fromRaw, userNorm, selections);
     return true;
   }
@@ -1186,11 +1434,15 @@ async function handleInteractiveMessage(from, payload) {
   const userNorm = normalizeUser(from);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
-    if (id === "DEL:CONFIRM") {
+    if (id === "DEL:CONFIRM:YES") {
       const handled = await finalizeDeleteConfirmation(from, userNorm, true);
       if (!handled) {
         await sendText(from, "Nenhum lançamento selecionado para excluir.");
       }
+      return;
+    }
+    if (id === "DEL:CONFIRM:NO") {
+      await finalizeDeleteConfirmation(from, userNorm, false);
       return;
     }
     if (id.startsWith("REL:CAT:")) {
@@ -1265,6 +1517,10 @@ async function handleInteractiveMessage(from, payload) {
     }
     if (id === "CFIX:CAD") {
       await sendCadastrarContaFixaMessage(from);
+      return;
+    }
+    if (id === "CFIX:LIST") {
+      await sendListarContasFixasMessage(from, userNorm);
       return;
     }
     if (id === "CFIX:DEL") {
