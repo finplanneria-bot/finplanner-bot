@@ -1,1370 +1,686 @@
 // ============================
-// ============================
 // FinPlanner IA - WhatsApp Bot
-// FinPlanner IA - WhatsApp Bot
-// Versão: app.js (2025-10-23 • Menus+Relatórios+Saldo+Edição+Exclusão • Auth FIX • CRON 08:00)
 // Versão: app.js v2025-10-23.1
 // ============================
-// ============================
-
 
 import express from "express";
-import express from "express";
-import bodyParser from "body-parser";
 import bodyParser from "body-parser";
 import axios from "axios";
-import axios from "axios";
-import dotenv from "dotenv";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
-import { GoogleSpreadsheet } from "google-spreadsheet";
-import { JWT } from "google-auth-library";
 import { JWT } from "google-auth-library";
 import cron from "node-cron";
-import cron from "node-cron";
-
 
 dotenv.config();
-dotenv.config();
-
 
 // ============================
-// ============================
-// ENV
 // ENV
 // ============================
-// ============================
 const {
-const {
-  SHEETS_ID,
   PORT,
-  GOOGLE_SERVICE_ACCOUNT_EMAIL,
   SHEETS_ID,
-  GOOGLE_SERVICE_ACCOUNT_KEY: RAW_KEY = "",
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  WA_TOKEN,
   GOOGLE_SERVICE_ACCOUNT_KEY: RAW_KEY = "",
-  WA_PHONE_NUMBER_ID,
   WA_TOKEN,
-  PORT,
   WA_PHONE_NUMBER_ID,
-  USE_OPENAI: USE_OPENAI_RAW,
   ADMIN_WA_NUMBER,
-  DEBUG_SHEETS: DEBUG_SHEETS_RAW,
   WEBHOOK_VERIFY_TOKEN,
-  ADMIN_WA_NUMBER,
   USE_OPENAI: USE_OPENAI_RAW,
-  WEBHOOK_VERIFY_TOKEN
   DEBUG_SHEETS: DEBUG_SHEETS_RAW,
 } = process.env;
-} = process.env;
-
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
-const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
-const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 
-
-// Aceita chave Google com \n literais OU quebras reais
 // ============================
-let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
 // Google Auth fix (supports literal \n)
-if (GOOGLE_SERVICE_ACCOUNT_KEY && GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
 // ============================
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n").replace(/\n/g, "\n");
 let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n");
 if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.split("\n").join("\n");
   GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n").replace(/\\n/g, "\n");
 }
-  GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\n/g, "\n");
 
-  // Finalmente troca por quebras reais
 // ============================
-  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n").split("\n").join("\n");
 // APP
-  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n");
 // ============================
-  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n").replace(/\n/g, "\n");
 const app = express();
-  GOOGLE_SERVICE_ACCOUNT_KEY = (RAW_KEY || "").replace(/\n/g, "\n");
 app.use(bodyParser.json());
-}
 
-if (RAW_KEY && RAW_KEY.includes("\n")) {
 app.get("/", (_req, res) => {
-  GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY.replace(/\n/g, "\n").split("\n").join("\n").replace(/\n/g, "\n");
   res.send("FinPlanner IA ativo! 🚀");
-  GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY.replace(/\n/g, "\n");
 });
-}
 
-
-// ============================
 // ============================
 // Utils
-// APP
-// ============================
 // ============================
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
-const app = express();
 const NUMBER_WORDS = {
-app.use(bodyParser.json());
   zero: 0,
-
   um: 1,
-// ============================
   uma: 1,
-// Utils
   dois: 2,
-// ============================
   duas: 2,
-const normalizeUser = (num) => (num || "").replace(/\D/g, "");
   tres: 3,
-const startOfDay = d => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
   três: 3,
-const endOfDay   = d => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
   quatro: 4,
-const startOfMonth = (y,m) => new Date(y, m, 1, 0,0,0,0);
   cinco: 5,
-const endOfMonth   = (y,m) => new Date(y, m+1, 0, 23,59,59,999);
   seis: 6,
-const SEP = "────────────────";
   sete: 7,
-
   oito: 8,
-function formatBRDate(d){ return d ? new Date(d).toLocaleDateString("pt-BR") : ""; }
   nove: 9,
-function formatCurrencyBR(v){
   dez: 10,
-  const num = Number(v || 0);
   onze: 11,
-  return `R$${Math.abs(num).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}`;
   doze: 12,
-}
   treze: 13,
-function statusIconLabel(status){ return status==="pago" || status==="recebido" ? "✅ Pago" : "⏳ Pendente"; }
   quatorze: 14,
-function numberToKeycapEmojis(n){
   catorze: 14,
-  const map = { "0":"0️⃣","1":"1️⃣","2":"2️⃣","3":"3️⃣","4":"4️⃣","5":"5️⃣","6":"6️⃣","7":"7️⃣","8":"8️⃣","9":"9️⃣" };
   quinze: 15,
-  return String(n).split("").map(d => map[d] || d).join("");
   dezesseis: 16,
-}
   dezessete: 17,
-function withinRange(dt, start, end){ return dt && dt>=start && dt<=end; }
   dezoito: 18,
-
   dezenove: 19,
-// ============================
   vinte: 20,
-// WhatsApp helpers
   trinta: 30,
-// ============================
   quarenta: 40,
-const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
   cinquenta: 50,
-
   sessenta: 60,
-async function sendWA(p){
   setenta: 70,
-  try{
   oitenta: 80,
-    await axios.post(WA_API, p, { headers:{ Authorization:`Bearer ${WA_TOKEN}`, "Content-Type":"application/json" } });
   noventa: 90,
-  }catch(e){
   cem: 100,
-    console.error("Erro WA:", e.response?.data || e.message);
   cento: 100,
-  }
   duzentos: 200,
-}
   trezentos: 300,
-async function sendText(to, body){
   quatrocentos: 400,
-  return sendWA({ messaging_product:"whatsapp", to, type:"text", text:{ body } });
   quinhentos: 500,
-}
   seiscentos: 600,
-async function sendCopyButton(to, title, code, btnTitle){
   setecentos: 700,
-  if(!code) return;
   oitocentos: 800,
-  if(btnTitle.length>20) btnTitle = btnTitle.slice(0,20);
   novecentos: 900,
-  return sendWA({
 };
-    messaging_product:"whatsapp", to, type:"interactive",
 
-    interactive:{
 const NUMBER_CONNECTORS = new Set([
-      type:"button",
   "e",
-      body:{ text:title },
   "de",
-      action:{ buttons:[{ type:"copy_code", copy_code:code, title:btnTitle }] }
   "da",
-    }
   "do",
-  });
   "das",
-}
   "dos",
-
   "reais",
-// ============================
   "real",
-// Google Sheets (AUTH Render FIX)
   "centavos",
-// ============================
   "centavo",
-let doc; // será instanciado já com auth
   "r$",
-async function ensureAuth(){
 ]);
-  const serviceAccountAuth = new JWT({
 
-  email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
 const normalizeDiacritics = (text) =>
-  key: GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n"),
   (text || "")
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
     .toString()
-});
     .normalize("NFD")
- doc = new GoogleSpreadsheet(SHEETS_ID, serviceAccountAuth);
     .replace(/[\u0300-\u036f]/g, "");
-  await doc.loadInfo();
 
-}
 const escapeRegex = (value) => (value || "").replace(/([.*+?^${}()|\[\]\\])/g, "\\$1");
 
-
-async function ensureSheet(){
 const parseNumberWordsTokens = (tokens) => {
-  await ensureAuth();
   let total = 0;
-  let sheet = doc.sheetsByTitle["finplanner"];
   let current = 0;
-  const headers = [
   for (const token of tokens) {
-    "row_id","timestamp","user","user_raw","tipo","conta","valor",
     if (!token) continue;
-    "vencimento_iso","vencimento_br","tipo_pagamento","codigo_pagamento",
     if (NUMBER_CONNECTORS.has(token)) continue;
-    "status","fixa","fix_parent_id","vencimento_dia",
     if (token === "mil") {
-    "categoria","categoria_emoji","descricao"
       total += (current || 1) * 1000;
-  ];
       current = 0;
-  if (!sheet){
       continue;
-    sheet = await doc.addSheet({ title:"finplanner", headerValues: headers });
     }
-  }else{
     const value = NUMBER_WORDS[token];
-    await sheet.loadHeaderRow();
     if (typeof value === "number") {
-    const current = sheet.headerValues || [];
       current += value;
-    const missing = headers.filter(h => !current.includes(h));
     } else {
-    if (missing.length){
       return null;
-      await sheet.setHeaderRow([...current, ...missing]);
     }
-    }
-  }
   }
   return total + current || null;
-  return sheet;
 };
-}
 
-function getVal(row, key){
 const extractNumberWords = (text) => {
-  if (!row) return undefined;
   const normalized = normalizeDiacritics(text).toLowerCase();
-  if (typeof row.get === "function") return row.get(key);
   const tokens = normalized.split(/[^a-z$]+/).filter(Boolean);
-  if (key in row) return row[key];
   let sequence = [];
-  if (row._rawData && row._sheet?.headerValues){
   for (const token of tokens) {
-    const idx = row._sheet.headerValues.indexOf(key);
     if (NUMBER_CONNECTORS.has(token) || NUMBER_WORDS[token] !== undefined || token === "mil") {
-    if (idx >= 0) return row._rawData[idx];
       sequence.push(token);
-  }
     } else if (sequence.length) {
-  return undefined;
       break;
-}
     }
-function setVal(row, key, value){
   }
-  if(!row) return;
   if (!sequence.length) return null;
-  if(typeof row.set === "function") row.set(key, value);
   const parsed = parseNumberWordsTokens(sequence);
-  else row[key] = value;
   if (!parsed) return null;
-}
   return { amount: parsed, raw: sequence.join(" ") };
-function saveRow(row){ return (typeof row.save === "function") ? row.save() : Promise.resolve(); }
 };
-function getEffectiveDate(row){
 
-  const iso = getVal(row, "vencimento_iso");
 const parseNumericToken = (rawToken) => {
-  const ts  = getVal(row, "timestamp");
   if (rawToken === undefined || rawToken === null) return null;
-  return iso ? new Date(iso) : (ts ? new Date(ts) : null);
   let token = rawToken.toString().trim().toLowerCase();
-}
   if (!token) return null;
 
-
-// ============================
   token = token.replace(/^r\$/i, "");
-// Categoria automática
 
-// ============================
   if (token.endsWith("mil")) {
-function detectCategory(descRaw, tipo){
     const baseToken = token.slice(0, -3).trim();
-  const text = (descRaw||"").toLowerCase();
     const baseValue = baseToken ? parseNumericToken(baseToken) : 1;
-  const rules = [
     return baseValue ? baseValue * 1000 : null;
-    { slug:"utilidades", emoji:"🔌", kws:["luz","energia","elétrica","eletrica","água","agua","esgoto","gás","gas"] },
   }
-    { slug:"internet_telefonia", emoji:"🌐", kws:["internet","fibra","vivo","claro","tim","oi"] },
 
-    { slug:"moradia", emoji:"🏠", kws:["aluguel","condomínio","condominio","iptu","aluguel"] },
   let multiplier = 1;
-    { slug:"mercado", emoji:"🛒", kws:["mercado","supermercado","ifood","padaria","almoço","jantar","restaurante"] },
   if (token.endsWith("k")) {
-    { slug:"transporte", emoji:"🚗", kws:["uber","99","gasolina","combustível","combustivel","passagem","ônibus","onibus"] },
     multiplier = 1000;
-    { slug:"saude", emoji:"💊", kws:["academia","plano","consulta","dentista","farmácia","farmacia"] },
     token = token.slice(0, -1);
-    { slug:"educacao", emoji:"🎓", kws:["curso","faculdade","escola","mensalidade"] },
   }
-    { slug:"lazer", emoji:"🎭", kws:["netflix","spotify","cinema","show","lazer","entretenimento"] },
 
-    { slug:"impostos_taxas", emoji:"🧾", kws:["multa","taxa","imposto","receita"] },
   token = token.replace(/^r\$/i, "").replace(/\s+/g, "");
-    { slug:"salario_trabalho", emoji:"💼", kws:["salário","salario","pagamento","freela","freelance","contrato"] },
   token = token.replace(/[^0-9.,-]/g, "");
-    { slug:"vendas_receitas", emoji:"💵", kws:["venda","recebimento","pix recebido","cliente","boleto recebido"] },
   if (!token) return null;
-  ];
 
-  for(const r of rules){
   if (token.includes(".") && token.includes(",")) {
-    if (r.kws.some(k => text.includes(k))) return r;
     const lastDot = token.lastIndexOf(".");
-  }
     const lastComma = token.lastIndexOf(",");
-  if (tipo === "conta_receber") return { slug:"vendas_receitas", emoji:"💵" };
     const decimalSep = lastDot > lastComma ? "." : ",";
-  if (tipo === "conta_pagar")   return { slug:"outros", emoji:"🧩" };
     const thousandsSep = decimalSep === "." ? "," : ".";
-  return { slug:"outros", emoji:"🧩" };
     const thousandsRegex = new RegExp(`\\${thousandsSep}`, "g");
-}
     token = token.replace(thousandsRegex, "");
-
     const decimalRegex = new RegExp(`\\${decimalSep}`, "g");
-// ============================
     token = token.replace(decimalRegex, ".");
-// Sessões
   } else if (token.includes(",")) {
-// ============================
     const lastComma = token.lastIndexOf(",");
-const sessionPeriod = new Map();
     const decimals = token.length - lastComma - 1;
-const sessionEdit   = new Map();
     if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
-const sessionDelete = new Map();
       token = token.replace(/,/g, "");
-
     } else {
-// ============================
       token = token.replace(/,/g, ".");
-// Menus interativos
     }
-// ============================
   } else if (token.includes(".")) {
-async function sendWelcomeList(to){
     const lastDot = token.lastIndexOf(".");
-  const body =
     const decimals = token.length - lastDot - 1;
-`👋 Olá! Eu sou a FinPlanner IA.
     if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
-
       token = token.replace(/\./g, "");
-💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.
     }
-
   }
-Toque em *Abrir menu* ou digite o que deseja fazer.`;
-
 
   const parsed = parseFloat(token);
-  return sendWA({
   if (!Number.isFinite(parsed)) return null;
-    messaging_product:"whatsapp", to, type:"interactive",
   return parsed * multiplier;
-    interactive:{
 };
-      type:"list",
 
-      header:{ type:"text", text:"Abrir menu" },
 const extractAmountFromText = (text) => {
-      body:{ text: body },
   if (!text) return { amount: 0 };
-      action:{
   const numericPattern = /(?:r\$\s*)?([0-9]+(?:[.,\s][0-9]+)*(?:k)?|[0-9]+\s?mil)/gi;
-        button:"Abrir menu",
   let match;
-        sections:[
   while ((match = numericPattern.exec(text)) !== null) {
-          {
     const raw = match[0];
-            title:"Lançamentos e Contas",
     const value = parseNumericToken(raw);
-            rows:[
     if (value) return { amount: value, raw };
-              { id:"MENU:registrar_pagamento",   title:"💰 Registrar pagamento",    description:"Adicionar um novo gasto." },
   }
-              { id:"MENU:registrar_recebimento", title:"💵 Registrar recebimento",  description:"Adicionar uma entrada de dinheiro." },
 
-              { id:"MENU:contas_pagar",          title:"📅 Contas a pagar",         description:"Ver e confirmar pagamentos pendentes." },
   const words = extractNumberWords(text);
-              { id:"MENU:contas_fixas",          title:"♻️ Contas fixas",          description:"Cadastrar ou excluir contas recorrentes." },
   if (words) return words;
-            ]
 
-          },
   const fallbackMatch = text.toString().match(/\d+/);
-          {
   if (fallbackMatch) {
-            title:"Relatórios e Histórico",
     const value = parseNumericToken(fallbackMatch[0]);
-            rows:[
     if (value) return { amount: value, raw: fallbackMatch[0] };
-              { id:"MENU:relatorios",  title:"📊 Relatórios",        description:"Gerar por categoria e período." },
   }
-              { id:"MENU:lancamentos", title:"🧾 Meus lançamentos",  description:"Ver por mês ou data personalizada." },
 
-            ]
   return { amount: 0 };
-          },
 };
-          {
 
-            title:"Ajustes e Ajuda",
 const toNumber = (value) => {
-            rows:[
   if (value === undefined || value === null) return 0;
-              { id:"MENU:editar",  title:"✏️ Editar lançamentos", description:"Alterar registros por número." },
   if (typeof value === "number") return value;
-              { id:"MENU:excluir", title:"🗑️ Excluir lançamento", description:"Excluir último ou escolher por número." },
   const result = extractAmountFromText(String(value));
-              { id:"MENU:ajuda",   title:"⚙️ Ajuda e exemplos",   description:"Como usar a FinPlanner IA." },
   return Number.isFinite(result.amount) ? result.amount : 0;
-            ]
 };
-          }
 const formatCurrencyBR = (value) => {
-        ]
   const num = Number(value || 0);
-      }
   return `R$${Math.abs(num).toLocaleString("pt-BR", {
-    }
     minimumFractionDigits: 2,
-  });
     maximumFractionDigits: 2,
-}
   })}`;
-
 };
-async function sendRelatoriosButtons(to){
 const statusIconLabel = (status) => {
-  return sendWA({
   const normalized = (status || "").toString().toLowerCase();
-    messaging_product:"whatsapp", to, type:"interactive",
   if (normalized === "pago") return "✅ Pago";
-    interactive:{
   if (normalized === "recebido") return "✅ Recebido";
-      type:"button",
   return "⏳ Pendente";
-      body:{ text:"📊 Qual relatório você deseja gerar?" },
 };
-      action:{ buttons:[
 
-        { type:"reply", reply:{ id:"REL:CAT:cp",  title:"Contas a pagar" } },
 const startOfDay = (d) => {
-        { type:"reply", reply:{ id:"REL:CAT:rec", title:"Recebimentos" } },
   const tmp = new Date(d);
-        { type:"reply", reply:{ id:"REL:CAT:pag", title:"Pagamentos" } }
   tmp.setHours(0, 0, 0, 0);
-      ]}
   return tmp;
-    }
 };
-  });
 const endOfDay = (d) => {
-}
   const tmp = new Date(d);
-
   tmp.setHours(23, 59, 59, 999);
-async function sendPeriodoButtons(to, prefix){
   return tmp;
-  return sendWA({
 };
-    messaging_product:"whatsapp", to, type:"interactive",
 const startOfMonth = (y, m) => new Date(y, m, 1, 0, 0, 0, 0);
-    interactive:{
 const endOfMonth = (y, m) => new Date(y, m + 1, 0, 23, 59, 59, 999);
-      type:"button",
 
-      body:{ text:"🗓️ Escolha o período:" },
 const formatBRDate = (d) => {
-      action:{ buttons:[
   if (!d) return "";
-        { type:"reply", reply:{ id:`${prefix}:mes_atual`,        title:"Mês atual" } },
   try {
-        { type:"reply", reply:{ id:`${prefix}:todo_periodo`,     title:"Todo período" } },
     return new Date(d).toLocaleDateString("pt-BR");
-        { type:"reply", reply:{ id:`${prefix}:personalizado`,    title:"Data personalizada" } }
   } catch (e) {
-      ]}
     return "";
-    }
   }
-  });
 };
-}
-
 
 const numberToKeycapEmojis = (n) => {
-async function sendLancPeriodoButtons(to){
   const map = {
-  return sendWA({
     0: "0️⃣",
-    messaging_product:"whatsapp", to, type:"interactive",
     1: "1️⃣",
-    interactive:{
     2: "2️⃣",
-      type:"button",
     3: "3️⃣",
-      body:{ text:"🧾 Escolha o período:" },
     4: "4️⃣",
-      action:{ buttons:[
     5: "5️⃣",
-        { type:"reply", reply:{ id:`LANC:PER:mes_atual`,     title:"Mês atual" } },
     6: "6️⃣",
-        { type:"reply", reply:{ id:`LANC:PER:personalizado`, title:"Data personalizada" } }
     7: "7️⃣",
-      ]}
     8: "8️⃣",
-    }
     9: "9️⃣",
-  });
   };
-}
   return String(n)
-
     .split("")
-// ============================
     .map((d) => map[d] || d)
-// Acesso aos dados
     .join("");
-// ============================
 };
-async function allRowsForUser(userNorm){
 
-  const sheet=await ensureSheet();
 const withinRange = (dt, start, end) => {
-  const rows=await sheet.getRows();
   if (!dt) return false;
-  return rows.filter(r => (getVal(r,"user")||"").replace(/\D/g,"")===userNorm);
   const time = new Date(dt).getTime();
-}
   return time >= start.getTime() && time <= end.getTime();
-function withinPeriod(rows, start, end){
 };
-  return rows.filter(r => withinRange(getEffectiveDate(r), start, end));
 
-}
 const parseDateToken = (token) => {
-function sumValues(rows){
   if (!token) return null;
-  return rows.reduce((acc,r)=> acc + (parseFloat(getVal(r,"valor")||"0")||0), 0);
   const lower = token.toLowerCase();
-}
   if (lower === "hoje") return new Date();
-
   if (lower === "amanha" || lower === "amanhã") {
-// ============================
     const d = new Date();
-// Renderização e helpers
     d.setDate(d.getDate() + 1);
-// ============================
     return d;
-function renderItem(r, idx){
   }
-  const idxEmoji = numberToKeycapEmojis(idx);
   if (lower === "ontem") {
-  const conta = getVal(r,"conta") || "Lançamento";
     const d = new Date();
-  const valor = formatCurrencyBR(getVal(r,"valor"));
     d.setDate(d.getDate() - 1);
-  const data  = formatBRDate(getEffectiveDate(r));
     return d;
-  const status = statusIconLabel(getVal(r,"status"));
   }
-  const catEmoji = getVal(r,"categoria_emoji") || "";
   const match = token.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
-  const cat = getVal(r,"categoria") ? `${catEmoji} ${getVal(r,"categoria")}` : "—";
   if (match) {
-  const desc = getVal(r,"descricao") || conta;
     const day = Number(match[1]);
-  return `${idxEmoji} ${conta}
     const month = Number(match[2]) - 1;
-📝 Descrição: ${desc}
     const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
-💰 Valor: ${valor}
     const d = new Date(year, month, day);
-📅 Data: ${data}
     if (!Number.isNaN(d.getTime())) return d;
-🏷️ Status: ${status}
   }
-📂 Categoria: ${cat}
   return null;
-${"────────────────"}
 };
-`;
 
-}
 const detectCategory = (description, tipo) => {
-
   const text = (description || "").toLowerCase();
-function renderReportList(title, rows){
   const rules = [
-  let msg = `📊 *${title}*\n\n`;
     { slug: "utilidades", emoji: "🔌", kws: ["luz", "energia", "água", "agua", "gás", "gas"] },
-  if(!rows.length){
     { slug: "internet_telefonia", emoji: "🌐", kws: ["internet", "fibra", "vivo", "claro", "tim", "oi"] },
-    msg += "✅ Nenhum lançamento encontrado para o período selecionado.";
     { slug: "moradia", emoji: "🏠", kws: ["aluguel", "condomínio", "condominio", "iptu"] },
-    return msg;
     {
-  }
       slug: "mercado",
-  rows.forEach((r,i)=>{ msg += renderItem(r, i+1); });
       emoji: "🛒",
-  msg += `\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
       kws: ["mercado", "supermercado", "ifood", "padaria", "almoço", "jantar", "restaurante", "lanche", "espetinho"],
-  return msg;
     },
-}
     { slug: "transporte", emoji: "🚗", kws: ["uber", "99", "gasolina", "combustível", "combustivel", "passagem", "ônibus", "onibus"] },
-
     { slug: "saude", emoji: "💊", kws: ["academia", "plano", "consulta", "dentista", "farmácia", "farmacia"] },
-function renderSaldoFooter(rowsAll, start, end){
     { slug: "educacao", emoji: "🎓", kws: ["curso", "faculdade", "escola", "mensalidade"] },
-  const within = withinPeriod(rowsAll, start, end);
     { slug: "lazer", emoji: "🎭", kws: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento"] },
-  const recebimentosPagos = within.filter(r => getVal(r,"tipo")==="conta_receber" && (getVal(r,"status")==="pago" || getVal(r,"status")==="recebido"));
     { slug: "impostos_taxas", emoji: "🧾", kws: ["multa", "taxa", "imposto", "receita"] },
-  const pagamentosPagos   = within.filter(r => getVal(r,"tipo")==="conta_pagar"   && getVal(r,"status")==="pago");
     { slug: "salario_trabalho", emoji: "💼", kws: ["salário", "salario", "pagamento", "freela", "freelance", "contrato"] },
-  const totalRec = sumValues(recebimentosPagos);
     { slug: "vendas_receitas", emoji: "💵", kws: ["venda", "recebimento", "pix recebido", "cliente", "boleto recebido"] },
-  const totalPag = sumValues(pagamentosPagos);
   ];
-  const saldo = totalRec - totalPag;
   for (const rule of rules) {
-  const saldoStr = formatCurrencyBR(saldo);
     if (rule.kws.some((kw) => text.includes(kw))) {
-  const saldoLine = saldo < 0 ? `🟥 🔹 *Saldo no período:* -${saldoStr}` : `🔹 *Saldo no período:* ${saldoStr}`;
       return { slug: rule.slug, emoji: rule.emoji };
-  return `\n${"────────────────"}\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
     }
-}
   }
-
   if (tipo === "conta_receber") return { slug: "vendas_receitas", emoji: "💵" };
-async function showReportByCategory(fromRaw, userNorm, category, range){
   return { slug: "outros", emoji: "🧩" };
-  const rows = await allRowsForUser(userNorm);
 };
-  const {start,end} = range;
 
-  const inRange = withinPeriod(rows, start, end);
 const formatCategoryLabel = (slug, emoji) => {
-
   const raw = (slug || "").toString().trim();
-  if(category==="cp"){
   if (!raw) return emoji ? `${emoji} —` : "—";
-    const filtered = inRange.filter(r => getVal(r,"tipo")==="conta_pagar" && getVal(r,"status")!=="pago");
   const parts = raw.split(/[_-]+/).filter(Boolean);
-    const msg = renderReportList("Relatório • Contas a pagar", filtered) + renderSaldoFooter(rows, start, end);
   const friendly =
-    await sendText(fromRaw, msg); return;
     parts.length === 0
-  }
       ? raw
-  if(category==="rec"){
       : parts
-    const filtered = inRange.filter(r => getVal(r,"tipo")==="conta_receber");
           .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    const msg = renderReportList("Relatório • Recebimentos", filtered) + renderSaldoFooter(rows, start, end);
           .join(" / ");
-    await sendText(fromRaw, msg); return;
   return emoji ? `${emoji} ${friendly}` : friendly;
-  }
 };
-  if(category==="pag"){
 
-    const filtered = inRange.filter(r => getVal(r,"tipo")==="conta_pagar");
 // ============================
-    const msg = renderReportList("Relatório • Pagamentos", filtered) + renderSaldoFooter(rows, start, end);
 // WhatsApp helpers
-    await sendText(fromRaw, msg); return;
 // ============================
-  }
 const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
-  if(category==="all"){
 
-    const filtered = inRange.slice().sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
 async function sendWA(payload) {
-    const msg = renderReportList("Relatório • Completo", filtered) + renderSaldoFooter(rows, start, end);
   try {
-    await sendText(fromRaw, msg); return;
     await axios.post(WA_API, payload, {
-  }
       headers: {
-}
         Authorization: `Bearer ${WA_TOKEN}`,
-
         "Content-Type": "application/json",
-async function showLancamentos(fromRaw, userNorm, range){
       },
-  const rows = await allRowsForUser(userNorm);
     });
-  const within = withinPeriod(rows, range.start, range.end)
   } catch (error) {
-    .filter(r => parseFloat(getVal(r,"valor")||"0")>0)
     console.error("Erro WA:", error.response?.data || error.message);
-    .sort((a,b)=> getEffectiveDate(a) - getEffectiveDate(b));
   }
-  if (!within.length){
 }
-    await sendText(fromRaw,"✅ Nenhum lançamento encontrado para o período selecionado.");
 
-    return;
 const sendText = (to, body) =>
-  }
   sendWA({
-  let msg = `🧾 *Meus lançamentos*\n\n`;
     messaging_product: "whatsapp",
-  within.forEach((r,i)=>{ msg += renderItem(r, i+1); });
     to,
-  await sendText(fromRaw, msg);
     type: "text",
-}
     text: { body },
-
   });
-// ============================
 
-// Exclusão/Edição (resumido – handlers principais no clique)
 const sendCopyButton = (to, title, code, btnTitle) => {
-// ============================
   if (!code) return;
-async function handleDeleteMenu(fromRaw){
   const safeTitle = btnTitle.length > 20 ? `${btnTitle.slice(0, 17)}...` : btnTitle;
   return sendWA({
-  return sendWA({
-    messaging_product:"whatsapp", to:fromRaw, type:"interactive",
     messaging_product: "whatsapp",
-    interactive:{
     to,
-      type:"button",
     type: "interactive",
-      body:{ text:"🗑️ Como deseja excluir?" },
     interactive: {
-      action:{ buttons:[
       type: "button",
-        { type:"reply", reply:{ id:"DEL:LAST", title:"Último lançamento" } },
       body: { text: title },
-        { type:"reply", reply:{ id:"DEL:LIST", title:"Listar lançamentos" } }
       action: {
-      ]}
         buttons: [
-    }
           {
-  });
             type: "copy_code",
-}
             copy_code: code,
-
             title: safeTitle,
-// ============================
           },
-// Intents e handler
         ],
-// ============================
       },
-async function detectIntent(t){
     },
-  const lower=(t||"").toLowerCase();
   });
-  const norm = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 };
-  if(/(oi|ola|opa|bom dia|boa tarde|boa noite)/i.test(norm)) return "boas_vindas";
 
-  if(/\b(relat[óo]rios?)\b/.test(lower)) return "relatorios_menu";
 // ============================
-  if(/\b(relat[óo]rio\s+completo|completo)\b/.test(lower)) return "relatorio_completo";
 // Google Sheets helpers
-  if(/\b(lan[cç]amentos|meus lan[cç]amentos|registros|extrato)\b/i.test(lower)) return "listar_lancamentos";
 // ============================
-  if(/\b(contas?\s+a\s+pagar|pendentes|a pagar|contas pendentes|contas a vencer|pagamentos pendentes)\b/i.test(lower)) return "listar_pendentes";
 const SHEET_HEADERS = [
-  if(/\beditar lan[cç]amentos?\b/.test(lower)) return "editar";
   "row_id",
-  if(/\bexcluir lan[cç]amentos?\b/.test(lower)) return "excluir";
   "timestamp",
-  return "desconhecido";
   "user",
-}
   "user_raw",
-
   "tipo",
-async function handleUserText(fromRaw, text){
   "conta",
-  const userNorm = normalizeUser(fromRaw);
   "valor",
-  const trimmed = (text||"").trim();
   "vencimento_iso",
-
   "vencimento_br",
-  const sp = sessionPeriod.get(userNorm);
   "tipo_pagamento",
-  if (sp && sp.awaiting === "range"){
   "codigo_pagamento",
-    const pretty =
   "status",
-`🗓️ *Selecione um período personalizado*
   "fixa",
-
   "fix_parent_id",
-Envie no formato:
   "vencimento_dia",
-01/10/2025 a 31/10/2025
   "categoria",
-
   "categoria_emoji",
-💡 Dica: você pode usar "a", "-", "até".`;
   "descricao",
-    const m = trimmed.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s*(?:a|-|até|ate|–|—)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
 ];
-    if(!m){ await sendText(fromRaw, pretty); return; }
 
-    const [_, d1, d2] = m;
 let doc;
-    const [d1d,d1m,d1y]=d1.split("/").map(n=>parseInt(n,10));
 
-    const [d2d,d2m,d2y]=d2.split("/").map(n=>parseInt(n,10));
 async function ensureAuth() {
-    let start = startOfDay(new Date(d1y, d1m-1, d1d));
   if (doc) return doc;
-    let end   = endOfDay(new Date(d2y, d2m-1, d2d));
   const auth = new JWT({
-    if (start > end){ const t=start; start=end; end=t; }
     email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    sessionPeriod.delete(userNorm);
     key: GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n"),
-    if (sp.mode === "report"){
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-      await showReportByCategory(fromRaw, userNorm, sp.category, {start,end});
   });
-      return;
   doc = new GoogleSpreadsheet(SHEETS_ID, auth);
-    } else if (sp.mode === "lanc"){
   await doc.loadInfo();
-      await showLancamentos(fromRaw, userNorm, {start,end});
   return doc;
-      return;
 }
-    }
 
-  }
 async function ensureSheet() {
-
   await ensureAuth();
-  const intent = await detectIntent(text);
   let sheet = doc.sheetsByTitle["finplanner"];
-  if (intent === "boas_vindas") { await sendWelcomeList(fromRaw); return; }
   if (!sheet) {
-
     sheet = await doc.addSheet({ title: "finplanner", headerValues: SHEET_HEADERS });
-  if (/^relat[óo]rios?$/i.test(trimmed)) { await sendRelatoriosButtons(fromRaw); return; }
   } else {
-  if (/^relat[óo]rios? de contas a pagar$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:cp"); return; }
     await sheet.loadHeaderRow();
-  if (/^relat[óo]rios? de recebimentos$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:rec"); return; }
     const current = sheet.headerValues || [];
-  if (/^relat[óo]rios? de pagamentos$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:pag"); return; }
     const normalized = current.map((header) => (header || "").trim());
-  if (intent === "relatorio_completo" || /^relat[óo]rio(s)? completo(s)?$/i.test(trimmed)) { await sendPeriodoButtons(fromRaw, "REL:PER:all"); return; }
     const hasDuplicate = new Set(normalized.filter(Boolean)).size !== normalized.filter(Boolean).length;
-
     const missing = SHEET_HEADERS.filter((header) => !normalized.includes(header));
-  if (/^lan[cç]amentos( do m[eê]s)?$/i.test(trimmed)) {
     const orderMismatch = SHEET_HEADERS.some((header, index) => normalized[index] !== header);
-    const now=new Date();
 
-    const range={ start: startOfMonth(now.getFullYear(),now.getMonth()), end: endOfMonth(now.getFullYear(),now.getMonth()) };
     if (hasDuplicate || missing.length || orderMismatch || normalized.length !== SHEET_HEADERS.length) {
-    await showLancamentos(fromRaw, userNorm, range);
       await sheet.setHeaderRow(SHEET_HEADERS);
-    return;
     }
   }
-  }
-
   return sheet;
-  if (intent === "editar") { await sendText(fromRaw,"✏️ Em breve (já em desenvolvimento)."); return; }
 }
-  if (intent === "excluir") { await handleDeleteMenu(fromRaw); return; }
-
 
 const getVal = (row, key) => {
-  await sendText(fromRaw, `😕 *Não entendi o que você quis dizer.*
   if (!row) return undefined;
-
   if (typeof row.get === "function") return row.get(key);
-Toque em *Abrir menu* ou digite o que deseja fazer.`);
   if (key in row) return row[key];
-  await sendWelcomeList(fromRaw);
   if (row._rawData && row._sheet?.headerValues) {
-}
     const index = row._sheet.headerValues.indexOf(key);
-
     if (index >= 0) return row._rawData[index];
-// ============================
   }
-// Webhook
   return undefined;
-// ============================
 };
-app.get("/webhook",(req,res)=>{
 
-  const token=WEBHOOK_VERIFY_TOKEN || "verify_token";
 const setVal = (row, key, value) => {
-  if(req.query["hub.mode"]==="subscribe"&&req.query["hub.verify_token"]===token)
   if (!row) return;
-    return res.status(200).send(req.query["hub.challenge"]);
   if (typeof row.set === "function") row.set(key, value);
-  res.sendStatus(403);
   else row[key] = value;
-});
 };
 
-
-app.post("/webhook",async(req,res)=>{
 const saveRow = (row) => (typeof row.save === "function" ? row.save() : Promise.resolve());
-  try{
 
-    const body=req.body;
 const getEffectiveDate = (row) => {
-    if(body.object&&body.entry){
   const iso = getVal(row, "vencimento_iso");
-      for(const e of body.entry){
   const ts = getVal(row, "timestamp");
-        for(const c of e.changes||[]){
   if (iso) return new Date(iso);
-          const messages = c.value?.messages || [];
   if (ts) return new Date(ts);
-          for(const m of messages){
   return null;
-            const from=m.from;
 };
 
-
-            if(m.type==="text") await handleUserText(from, m.text?.body || "");
 const getRowIdentifier = (row) => (getVal(row, "row_id") || getVal(row, "timestamp") || "").toString();
 
-
-            if(m.type==="interactive"){
 async function allRowsForUser(userNorm) {
-              const btn = m.interactive?.button_reply;
   const sheet = await ensureSheet();
-              const list= m.interactive?.list_reply;
   const rows = await sheet.getRows();
-
   return rows.filter((row) => normalizeUser(getVal(row, "user")) === userNorm);
-              if (btn?.id){
 }
-                const id=btn.id;
-
 
 const findRowById = async (userNorm, rowId) => {
-                if(id==="REL:CAT:cp"){ await sendPeriodoButtons(from, "REL:PER:cp"); }
   if (!rowId) return null;
-                if(id==="REL:CAT:rec"){ await sendPeriodoButtons(from, "REL:PER:rec"); }
   const rows = await allRowsForUser(userNorm);
-                if(id==="REL:CAT:pag"){ await sendPeriodoButtons(from, "REL:PER:pag"); }
   const target = rowId.toString();
-
   return rows.find((row) => getRowIdentifier(row) === target);
-                if(id.startsWith("REL:PER:")){
 };
-                  const parts = id.split(":");
 
-                  const cat = parts[2]; const opt = parts[3];
 const withinPeriod = (rows, start, end) => rows.filter((row) => withinRange(getEffectiveDate(row), start, end));
-                  const userNorm = normalizeUser(from);
 const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row, "valor")), 0);
-                  const now=new Date();
 
-                  if(opt==="mes_atual"){
 // ============================
-                    const range={ start: startOfMonth(now.getFullYear(),now.getMonth()), end: endOfMonth(now.getFullYear(),now.getMonth()) };
 // Rendering helpers
-                    await showReportByCategory(from, userNorm, cat, range);
 // ============================
-                  } else if (opt==="todo_periodo"){
 const formatEntryBlock = (row, options = {}) => {
-                    const rows=await allRowsForUser(userNorm);
   const { index, headerLabel, dateText } = options;
-                    let min = null;
   const descricao = (getVal(row, "descricao") || getVal(row, "conta") || "Lançamento").toString().trim();
-                    for(const r of rows){ const d=getEffectiveDate(r); if(d && (!min || d<min)) min=d; }
   const categoriaLabel = formatCategoryLabel(getVal(row, "categoria"), getVal(row, "categoria_emoji"));
-                    const start = min ? startOfDay(min) : startOfDay(new Date());
   const valor = formatCurrencyBR(toNumber(getVal(row, "valor")));
-                    const end   = endOfDay(new Date());
   const data = dateText || formatBRDate(getEffectiveDate(row)) || "—";
-                    await showReportByCategory(from, userNorm, cat, {start,end});
   const statusRaw = (getVal(row, "status") || "pendente").toString().toLowerCase();
-                  } else if (opt==="personalizado"){
   const statusLabel = statusRaw === "recebido" ? "✅ Recebido" : statusRaw === "pago" ? "✅ Pago" : "⏳ Pendente";
-                    sessionPeriod.set(userNorm, { mode:"report", category:cat, awaiting:"range" });
   const tipoRaw = (getVal(row, "tipo") || "conta_pagar").toString();
-                    await sendText(from,
   const tipoLabel = tipoRaw === "conta_receber" ? "💵 Receita" : "💸 Despesa";
-`🗓️ *Selecione um período personalizado*
   const fields = [
-
     `📝 Descrição: ${descricao}`,
-Envie no formato:
     `📂 Categoria: ${categoriaLabel}`,
-01/10/2025 a 31/10/2025
     `💰 Valor: ${valor}`,
-
     `📅 Data: ${data}`,
-💡 Dica: você pode usar "a", "-", "até".`);
     `🏷 Status: ${statusLabel}`,
-                  }
     `🔁 Tipo: ${tipoLabel}`,
-                }
   ];
-
   if (headerLabel) {
-                if(id.startsWith("LANC:PER:")){
     return `${headerLabel}\n\n${fields.join("\n")}`;
-                  const [, , opt] = id.split(":");
   }
-                  const userNorm = normalizeUser(from);
   if (typeof index === "number") {
-                  const now=new Date();
     const [first, ...rest] = fields;
-                  if(opt==="mes_atual"){
     const prefix = `${numberToKeycapEmojis(index)} ${first}`;
-                    const range={ start: startOfMonth(now.getFullYear(),now.getMonth()), end: endOfMonth(now.getFullYear(),now.getMonth()) };
     return [prefix, ...rest].join("\n");
-                    await showLancamentos(from, userNorm, range);
   }
-                  } else if (opt==="personalizado"){
   return `📘 Lançamento\n\n${fields.join("\n")}`;
-                    sessionPeriod.set(userNorm, { mode:"lanc", awaiting:"range" });
 };
-                    await sendText(from,
 
-`🗓️ *Selecione um período personalizado*
 const formatEntrySummary = (row, options = {}) =>
-
   formatEntryBlock(row, { ...options, headerLabel: options.headerLabel || "📘 Resumo do lançamento" });
-Envie no formato:
 
-01/10/2025 a 31/10/2025
 const renderReportList = (title, rows) => {
-
   let message = `📊 *${title}*\n\n`;
-💡 Dica: você pode usar "a", "-", "até".`);
   if (!rows.length) {
-                  }
     return `${message}✅ Nenhum lançamento encontrado para o período selecionado.`;
-                }
   }
-
   const blocks = rows.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-                if(id==="DEL:LAST"){ /* handler completo no arquivo final */ }
   message += blocks.join("\n\n");
-                if(id==="DEL:LIST"){ /* handler completo no arquivo final */ }
   message += `\n\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
-                if(id==="DEL:CONFIRM"){ /* handler completo no arquivo final */ }
   return message;
-              }
 };
 
-
-              if (list?.id){
 const renderSaldoFooter = (rowsAll, start, end) => {
-                const id=list.id;
   const within = withinPeriod(rowsAll, start, end);
-                if(id==="MENU:registrar_pagamento"){
   const recebimentosPagos = within.filter(
-                  await sendText(from,
     (row) => getVal(row, "tipo") === "conta_receber" && ["pago", "recebido"].includes((getVal(row, "status") || "").toLowerCase())
-`💰 *Registrar pagamento ou gasto*
   );
-
   const pagamentosPagos = within.filter((row) => getVal(row, "tipo") === "conta_pagar" && getVal(row, "status") === "pago");
-Digite o pagamento ou gasto que deseja registrar, informando:
   const totalRec = sumValues(recebimentosPagos);
-
   const totalPag = sumValues(pagamentosPagos);
-📝 Descrição: (ex: Internet)
   const saldo = totalRec - totalPag;
-💰 Valor: (ex: 150,00)
   const saldoStr = formatCurrencyBR(saldo);
-📅 Data: (ex: hoje, amanhã ou 05/11/2025)
   const saldoLine = saldo < 0 ? `🟥 🔹 *Saldo no período:* -${saldoStr}` : `🔹 *Saldo no período:* ${saldoStr}`;
-🏷️ Status: (pago ou pendente)
   return `\n\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
-📂 Categoria: (opcional, será detectada automaticamente)`);
 };
-                }
 
-                if(id==="MENU:registrar_recebimento"){
 // ============================
-                  await sendText(from,
 // Menus interativos
-`💵 *Registrar recebimento*
 // ============================
-
 const MAIN_MENU_SECTIONS = [
-Digite o recebimento que deseja registrar, informando:
   {
-
     title: "Lançamentos e Contas",
-📝 Descrição: (ex: Venda curso)
     rows: [
-💰 Valor: (ex: 200,00)
       { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
-📅 Data: (ex: hoje, amanhã ou 05/11/2025)
       { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
-🏷️ Status: (recebido ou pendente)
       { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
-📂 Categoria: (opcional, será detectada automaticamente)`);
       { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Cadastrar ou excluir contas recorrentes." },
-                }
     ],
-                if(id==="MENU:contas_pagar"){ /* lista pendentes no arquivo final */ }
   },
-                if(id==="MENU:contas_fixas"){ await sendText(from,"♻️ Ex.: *Conta fixa internet 100 todo dia 01* | *Excluir conta fixa internet*"); }
   {
-                if(id==="MENU:relatorios"){ await sendRelatoriosButtons(from); }
     title: "Relatórios e Histórico",
-                if(id==="MENU:lancamentos"){ await sendLancPeriodoButtons(from); }
     rows: [
-                if(id==="MENU:editar"){ await sendText(from,"✏️ Em breve (já em desenvolvimento)."); }
       { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gerar por categoria e período." },
-                if(id==="MENU:excluir"){ await handleDeleteMenu(from); }
       { id: "MENU:lancamentos", title: "🧾 Meus lançamentos", description: "Ver por mês ou período personalizado." },
-                if(id==="MENU:ajuda"){
     ],
-                  await sendText(from,
   },
-`⚙️ *Ajuda & Exemplos*
   {
-
     title: "Ajustes e Ajuda",
-🧾 *Registrar pagamento*
     rows: [
-Ex.: Academia 150,00 pago hoje
       { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
-Ex.: Pagar internet 120 amanhã
       { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
-
       { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar a FinPlanner IA." },
-💵 *Registrar recebimento*
     ],
-Ex.: Venda curso 200,00 recebido hoje
   },
-Ex.: Receber aluguel 900,00 05/11/2025
 ];
 
-
-📊 *Relatórios*
 const sendMainMenu = (to, { greeting = false } = {}) =>
-Toque em Relatórios → escolha *Contas a pagar*, *Recebimentos* ou *Pagamentos* → selecione o período.
   sendWA({
-
     messaging_product: "whatsapp",
-🧾 *Meus lançamentos*
     to,
-Toque em Meus lançamentos → escolha *Mês atual* ou *Data personalizada*.
     type: "interactive",
-
     interactive: {
-✏️ *Editar lançamentos*
       type: "list",
-Toque em Editar lançamentos → escolha pelo número → selecione o que deseja alterar.
       body: {
-
         text: greeting
-🗑️ *Excluir lançamento*
           ? `👋 Olá! Eu sou a FinPlanner IA.\n\n💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.\n\nToque em *Abrir menu* ou digite o que deseja fazer.`
-Toque em Excluir lançamento → *Último lançamento* ou *Listar lançamentos*.`);
           : "Toque em *Abrir menu* ou digite o que deseja fazer.",
-                }
       },
-              }
       action: {
-            }
         button: "Abrir menu",
-          }
         sections: MAIN_MENU_SECTIONS,
-        }
       },
-      }
     },
-    }
   });
-    res.sendStatus(200);
 
-  }catch(e){
 const sendWelcomeList = (to) => sendMainMenu(to, { greeting: true });
-    console.error("Erro no webhook:", e.message);
 
-    res.sendStatus(200);
 const sendRelatoriosButtons = (to) =>
-  }
   sendWA({
-});
     messaging_product: "whatsapp",
-
     to,
-// ============================
     type: "interactive",
-// CRON: 08:00 America/Maceio
     interactive: {
-// ============================
       type: "list",
-cron.schedule("0 8 * * *", async()=>{
       body: { text: "📊 Qual relatório você deseja gerar?" },
-  try{
       action: {
-    const sheet=await ensureSheet();
         button: "Abrir opções",
-    const rows=await sheet.getRows();
         sections: [
-    const today = startOfDay(new Date()).getTime();
           {
-
             title: "Tipos de relatório",
-    const duePay = rows.filter(r =>
             rows: [
-      getVal(r,"tipo")==="conta_pagar" &&
               { id: "REL:CAT:cp", title: "Contas a pagar", description: "Pagamentos pendentes e quitados." },
-      getVal(r,"status")!=="pago" &&
               { id: "REL:CAT:rec", title: "Recebimentos", description: "Entradas registradas." },
-      getVal(r,"vencimento_iso")
               { id: "REL:CAT:pag", title: "Pagamentos", description: "Todos os gastos registrados." },
-    ).filter(r => startOfDay(new Date(getVal(r,"vencimento_iso"))).getTime()===today);
               { id: "REL:CAT:all", title: "Completo", description: "Visão geral de tudo." },
-
             ],
-    const dueRecv = rows.filter(r =>
           },
-      getVal(r,"tipo")==="conta_receber" &&
         ],
-      getVal(r,"status")!=="pago" && getVal(r,"status")!=="recebido" &&
       },
-      getVal(r,"vencimento_iso")
     },
-    ).filter(r => startOfDay(new Date(getVal(r,"vencimento_iso"))).getTime()===today);
   });
 
-
-    const notify = async (r, isRecv=false)=>{
 const sendPeriodoButtons = (to, prefix) =>
-      const toRaw=getVal(r,"user_raw") || getVal(r,"user");
   sendWA({
-      const tipoTxt = isRecv ? "recebimento" : "pagamento";
     messaging_product: "whatsapp",
-      await sendText(toRaw, `⚠️ *Lembrete de ${tipoTxt}!*
     to,
-
     type: "interactive",
-📘 ${getVal(r,"conta")||"Lançamento"}
     interactive: {
-📝 Descrição: ${getVal(r,"descricao")||getVal(r,"conta")||"—"}
       type: "button",
-💰 ${formatCurrencyBR(parseFloat(getVal(r,"valor")||"0"))}
       body: { text: "🗓️ Escolha o período:" },
-📅 Para hoje (${formatBRDate(getVal(r,"vencimento_iso"))})`);
       action: {
-      if(getVal(r,"tipo_pagamento")==="pix")    await sendCopyButton(toRaw,"💳 Chave Pix:",getVal(r,"codigo_pagamento"),"Copiar Pix");
         buttons: [
-      if(getVal(r,"tipo_pagamento")==="boleto") await sendCopyButton(toRaw,"🧾 Código de barras:",getVal(r,"codigo_pagamento"),"Copiar boleto");
           { type: "reply", reply: { id: `${prefix}:mes_atual`, title: "Mês atual" } },
-    };
           { type: "reply", reply: { id: `${prefix}:todo_periodo`, title: "Todo período" } },
-
           { type: "reply", reply: { id: `${prefix}:personalizado`, title: "Data personalizada" } },
-    for(const r of duePay)  await notify(r,false);
         ],
-    for(const r of dueRecv) await notify(r,true);
       },
-
     },
-  }catch(e){ 
   });
-    console.error("Erro no CRON:", e.message); 
 
-  }
 const sendLancPeriodoButtons = (to) =>
-}, { timezone: "America/Maceio" });
   sendWA({
-
     messaging_product: "whatsapp",
-// ============================
     to,
-// Server
     type: "interactive",
-// ============================
     interactive: {
-const port = PORT || 10000;
       type: "button",
-app.listen(port, ()=> console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`));
       body: { text: "🧾 Escolha o período:" },
-
       action: {
         buttons: [
           { type: "reply", reply: { id: `LANC:PER:hoje`, title: "Hoje" } },
