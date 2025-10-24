@@ -267,6 +267,48 @@ const endOfDay = (d) => {
 const startOfMonth = (y, m) => new Date(y, m, 1, 0, 0, 0, 0);
 const endOfMonth = (y, m) => new Date(y, m + 1, 0, 23, 59, 59, 999);
 
+const daysInMonth = (year, monthIndex) => new Date(year, monthIndex + 1, 0).getDate();
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const addDays = (date, days) => {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+};
+
+const nextMonthlyDate = (day, referenceDate, { inclusive = false } = {}) => {
+  const reference = startOfDay(referenceDate);
+  let year = reference.getFullYear();
+  let month = reference.getMonth();
+  const buildDate = (y, m) => {
+    const safeDay = clamp(Math.round(day), 1, daysInMonth(y, m));
+    const instance = new Date(y, m, safeDay);
+    instance.setHours(0, 0, 0, 0);
+    return instance;
+  };
+  let candidate = buildDate(year, month);
+  while (inclusive ? candidate < reference : candidate <= reference) {
+    month += 1;
+    if (month > 11) {
+      month = 0;
+      year += 1;
+    }
+    candidate = buildDate(year, month);
+  }
+  return candidate;
+};
+
+const nextIntervalDate = (intervalDays, startDate, fromDate = new Date()) => {
+  const interval = Math.max(Math.round(intervalDays), 1);
+  const base = startOfDay(startDate);
+  const from = startOfDay(fromDate);
+  if (base.getTime() >= from.getTime()) return base;
+  const diffMs = from.getTime() - base.getTime();
+  const steps = Math.ceil(diffMs / (interval * 24 * 60 * 60 * 1000));
+  const candidate = addDays(base, steps * interval);
+  if (candidate.getTime() >= from.getTime()) return candidate;
+  return addDays(candidate, interval);
+};
+
 const formatBRDate = (d) => {
   if (!d) return "";
   try {
@@ -435,6 +477,8 @@ const SHEET_HEADERS = [
   "fixa",
   "fix_parent_id",
   "vencimento_dia",
+  "recorrencia_tipo",
+  "recorrencia_valor",
   "categoria",
   "categoria_emoji",
   "descricao",
@@ -522,6 +566,33 @@ const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row,
 // ============================
 // Rendering helpers
 // ============================
+const isRowFixed = (row) => String(getVal(row, "fixa") || "").toLowerCase() === "sim";
+
+const describeRecurrence = (row) => {
+  if (!isRowFixed(row)) return "";
+  const tipo = (getVal(row, "recorrencia_tipo") || "").toString().toLowerCase();
+  const valorRaw = Number(getVal(row, "recorrencia_valor"));
+  if (tipo === "monthly") {
+    const reference = getVal(row, "vencimento_iso") || getVal(row, "timestamp");
+    const baseDate = reference ? new Date(reference) : new Date();
+    const day = Number.isFinite(valorRaw) && valorRaw > 0 ? valorRaw : baseDate.getDate();
+    const safeDay = Math.min(Math.max(Math.round(day), 1), 31);
+    return `Todo dia ${String(safeDay).padStart(2, "0")} do mês`;
+  }
+  if (tipo === "interval") {
+    const days = Number.isFinite(valorRaw) && valorRaw > 0 ? Math.round(valorRaw) : 0;
+    if (!days) return "";
+    if (days === 7) return "Toda semana";
+    if (days === 15) return "A cada 15 dias";
+    if (days % 7 === 0) {
+      const weeks = days / 7;
+      return weeks === 1 ? "Toda semana" : `A cada ${weeks} semanas`;
+    }
+    return `A cada ${days} dias`;
+  }
+  return "";
+};
+
 const formatEntryBlock = (row, options = {}) => {
   const { index, headerLabel, dateText } = options;
   const descricao = (getVal(row, "descricao") || getVal(row, "conta") || "Lançamento").toString().trim();
@@ -540,6 +611,10 @@ const formatEntryBlock = (row, options = {}) => {
     `🏷 Status: ${statusLabel}`,
     `🔁 Tipo: ${tipoLabel}`,
   ];
+  if (isRowFixed(row)) {
+    const recurrenceLabel = describeRecurrence(row);
+    if (recurrenceLabel) fields.push(`🔄 Recorrência: ${recurrenceLabel}`);
+  }
   if (headerLabel) {
     return `${headerLabel}\n\n${fields.join("\n")}`;
   }
@@ -729,7 +804,7 @@ const sendContasFixasMenu = (to) =>
 const sendCadastrarContaFixaMessage = (to) =>
   sendText(
     to,
-    `♻ Cadastro de conta fixa\n\nUse este formato para registrar contas que se repetem todo mês automaticamente:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n📅 Dia de vencimento: Data que vence todo mês\n(ex: todo dia 05)\n\n💡 Exemplo pronto:\n➡ Conta fixa internet 120,00 todo dia 05\n\n🔔 A FinPlanner IA lançará esta conta automaticamente todo mês e te avisará no dia do vencimento.`
+    `♻ Cadastro de conta fixa\n\nEnvie tudo em uma única mensagem neste formato:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n🔁 Recorrência: Informe o intervalo\n(ex: todo dia 05, a cada 15 dias, semanal, quinzenal)\n\n💡 Exemplos:\n➡ Internet 120 todo dia 05\n➡ Aluguel 150 a cada 15 dias\n➡ Academia 90 semanal\n\nDigite *cancelar* para sair.`
   );
 
 const sendListarContasFixasMessage = async (to, userNorm) => {
@@ -738,46 +813,96 @@ const sendListarContasFixasMessage = async (to, userNorm) => {
     await sendText(to, "Você ainda não possui contas fixas cadastradas.");
     return;
   }
-  const list = buildFixedAccountList(fixed);
-  await sendText(to, `♻️ *Contas fixas cadastradas*\n\n${list}`);
+  const deduped = dedupeFixedAccounts(fixed);
+  const pending = deduped
+    .filter((row) => (getVal(row, "status") || "").toString().toLowerCase() !== "pago")
+    .sort((a, b) => getEffectiveDate(a) - getEffectiveDate(b));
+  if (!pending.length) {
+    await sendText(to, "🎉 Todas as suas contas fixas estão em dia no momento!");
+    return;
+  }
+  const list = buildFixedAccountList(pending);
+  sessionPayConfirm.delete(userNorm);
+  setPayState(userNorm, {
+    awaiting: "index",
+    rows: pending,
+    queue: [],
+    currentIndex: 0,
+    currentRowId: null,
+    expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+  });
+  await sendText(
+    to,
+    `♻️ *Contas fixas pendentes*\n\n${list}\n\n✅ Para confirmar pagamento, envie o número da conta.\nExemplo: Confirmar 1 ou Confirmar 1,2,3.`
+  );
 };
 
 const buildFixedAccountList = (rows) =>
   rows
     .map((row, index) => {
-      const dia = Number(getVal(row, "vencimento_dia"));
-      const dateText = Number.isFinite(dia) && dia > 0 ? `Dia ${String(dia).padStart(2, "0")}` : undefined;
       return formatEntryBlock(row, {
         index: index + 1,
-        dateText,
       });
     })
     .join("\n\n");
 
-const isFixedAccount = (row) => String(getVal(row, "fixa") || "").toLowerCase() === "sim";
+const isFixedAccount = (row) => isRowFixed(row);
 
 const getFixedAccounts = async (userNorm) => {
   const rows = await allRowsForUser(userNorm);
   return rows.filter((row) => isFixedAccount(row));
 };
 
+const dedupeFixedAccounts = (rows) => {
+  const byParent = new Map();
+  const priority = (row) => {
+    const status = (getVal(row, "status") || "").toString().toLowerCase();
+    return status === "pago" || status === "recebido" ? 1 : 0;
+  };
+  rows.forEach((row) => {
+    const parent = getVal(row, "fix_parent_id") || getVal(row, "row_id") || getRowIdentifier(row);
+    if (!parent) return;
+    const existing = byParent.get(parent);
+    if (!existing) {
+      byParent.set(parent, row);
+      return;
+    }
+    const currentPriority = priority(row);
+    const existingPriority = priority(existing);
+    if (currentPriority < existingPriority) {
+      byParent.set(parent, row);
+      return;
+    }
+    if (currentPriority === existingPriority) {
+      const existingDate = getEffectiveDate(existing);
+      const candidateDate = getEffectiveDate(row);
+      if (!existingDate || (candidateDate && candidateDate < existingDate)) {
+        byParent.set(parent, row);
+      }
+    }
+  });
+  return [...byParent.values()];
+};
+
 async function sendExcluirContaFixaMessage(to, userNorm) {
-  const fixed = await getFixedAccounts(userNorm);
+  const fixed = dedupeFixedAccounts(await getFixedAccounts(userNorm));
   if (!fixed.length) {
     sessionFixedDelete.delete(userNorm);
     await sendText(to, "Você ainda não possui contas fixas cadastradas.");
     return;
   }
-  const sorted = fixed.slice().sort((a, b) => {
-    const diaA = Number(getVal(a, "vencimento_dia")) || 0;
-    const diaB = Number(getVal(b, "vencimento_dia")) || 0;
-    if (diaA && diaB) return diaA - diaB;
-    if (diaA) return -1;
-    if (diaB) return 1;
-    const contaA = (getVal(a, "conta") || "").toString().toLowerCase();
-    const contaB = (getVal(b, "conta") || "").toString().toLowerCase();
-    return contaA.localeCompare(contaB);
-  });
+  const sorted = fixed
+    .slice()
+    .sort((a, b) => {
+      const dateA = getEffectiveDate(a);
+      const dateB = getEffectiveDate(b);
+      if (dateA && dateB) return dateA - dateB;
+      if (dateA) return -1;
+      if (dateB) return 1;
+      const contaA = (getVal(a, "conta") || "").toString().toLowerCase();
+      const contaB = (getVal(b, "conta") || "").toString().toLowerCase();
+      return contaA.localeCompare(contaB);
+    });
   sessionFixedDelete.set(userNorm, { awaiting: "index", rows: sorted });
   const list = buildFixedAccountList(sorted);
   const message = `🗑 Excluir conta fixa\n\nPara remover uma conta recorrente, digite o número de qual deseja excluir:\n\n${list}\n\nEnvie o número da conta fixa que deseja excluir.`;
@@ -791,6 +916,7 @@ const sessionPeriod = new Map();
 const sessionEdit = new Map();
 const sessionDelete = new Map();
 const sessionRegister = new Map();
+const sessionFixedRegister = new Map();
 const sessionFixedDelete = new Map();
 const sessionStatusConfirm = new Map();
 const sessionPaymentCode = new Map();
@@ -806,6 +932,7 @@ const resetSession = (userNorm) => {
   sessionEdit.delete(userNorm);
   sessionDelete.delete(userNorm);
   sessionRegister.delete(userNorm);
+  sessionFixedRegister.delete(userNorm);
   sessionFixedDelete.delete(userNorm);
   sessionStatusConfirm.delete(userNorm);
   sessionPaymentCode.delete(userNorm);
@@ -971,7 +1098,15 @@ async function listPendingPayments(fromRaw, userNorm) {
   const message =
     `📅 *Contas a pagar pendentes*\n\n${blocks.join("\n\n")}` +
     `\n\n✅ Para confirmar pagamento, envie o número da conta.\nExemplo: Confirmar 1 ou Confirmar 1,2,3.`;
-  setPayState(userNorm, { awaiting: "index", rows: pending, queue: [], currentIndex: 0, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+  sessionPayConfirm.delete(userNorm);
+  setPayState(userNorm, {
+    awaiting: "index",
+    rows: pending,
+    queue: [],
+    currentIndex: 0,
+    currentRowId: null,
+    expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+  });
   await sendText(fromRaw, message);
 }
 
@@ -1356,7 +1491,49 @@ async function handleFixedDeleteFlow(fromRaw, userNorm, text) {
   }
   const row = state.rows[idx - 1];
   sessionFixedDelete.delete(userNorm);
-  await confirmDeleteRows(fromRaw, userNorm, [{ row, displayIndex: idx }]);
+  const parentId = getVal(row, "fix_parent_id") || getVal(row, "row_id");
+  const allRows = await allRowsForUser(userNorm);
+  const related = allRows.filter(
+    (candidate) =>
+      isFixedAccount(candidate) && (getVal(candidate, "fix_parent_id") || getVal(candidate, "row_id")) === parentId
+  );
+  if (related.length > 1) {
+    await sendText(fromRaw, "A exclusão removerá todas as recorrências desta conta fixa.");
+  }
+  const selections = related.map((item) => ({ row: item, displayIndex: idx }));
+  await confirmDeleteRows(fromRaw, userNorm, selections);
+  return true;
+}
+
+async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
+  const state = sessionFixedRegister.get(userNorm);
+  if (!state) return false;
+  if (state.expiresAt && Date.now() > state.expiresAt) {
+    sessionFixedRegister.delete(userNorm);
+    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    return true;
+  }
+  const trimmed = (text || "").trim();
+  if (!trimmed) {
+    await sendText(fromRaw, "Envie os detalhes da conta fixa ou escreva cancelar.");
+    return true;
+  }
+  if (/^cancelar/i.test(trimmed)) {
+    sessionFixedRegister.delete(userNorm);
+    await sendText(fromRaw, "Operação cancelada.");
+    return true;
+  }
+  const parsed = parseFixedAccountCommand(text);
+  if (!parsed) {
+    await sendText(
+      fromRaw,
+      "Não consegui entender. Informe algo como \"Internet 120 todo dia 05\" ou \"Aluguel 150 a cada 15 dias\"."
+    );
+    sessionFixedRegister.set(userNorm, { expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+    return true;
+  }
+  sessionFixedRegister.delete(userNorm);
+  await registerFixedAccount(fromRaw, userNorm, parsed);
   return true;
 }
 
@@ -1470,6 +1647,66 @@ const promptAttachPaymentCode = async (to, userNorm, entry, statusSource) => {
     },
   });
 };
+
+async function scheduleNextFixedOccurrence(row) {
+  if (!isRowFixed(row)) return;
+  const recType = (getVal(row, "recorrencia_tipo") || "").toString().toLowerCase();
+  if (!recType) return;
+  const userRaw = getVal(row, "user_raw") || getVal(row, "user");
+  const userNorm = normalizeUser(getVal(row, "user"));
+  if (!userRaw || !userNorm) return;
+  const currentDueIso = getVal(row, "vencimento_iso");
+  const currentDue = currentDueIso ? new Date(currentDueIso) : new Date();
+  let nextDue = null;
+  if (recType === "monthly") {
+    const storedDay = Number(getVal(row, "recorrencia_valor"));
+    const day = Number.isFinite(storedDay) && storedDay > 0 ? storedDay : currentDue.getDate();
+    nextDue = nextMonthlyDate(day, addDays(currentDue, 1), { inclusive: true });
+  } else if (recType === "interval") {
+    const stored = Number(getVal(row, "recorrencia_valor"));
+    const days = Number.isFinite(stored) && stored > 0 ? Math.round(stored) : 0;
+    if (days > 0) nextDue = addDays(startOfDay(currentDue), days);
+  }
+  if (!nextDue) return;
+
+  let categoriaSlug = getVal(row, "categoria");
+  let categoriaEmoji = getVal(row, "categoria_emoji");
+  if (!categoriaSlug) {
+    const detected = detectCategory(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo") || "conta_pagar");
+    categoriaSlug = detected.slug;
+    categoriaEmoji = detected.emoji;
+  }
+
+  const parentId = getVal(row, "fix_parent_id") || getVal(row, "row_id");
+  const newRow = {
+    row_id: generateRowId(),
+    timestamp: new Date().toISOString(),
+    user: getVal(row, "user"),
+    user_raw: userRaw,
+    tipo: getVal(row, "tipo") || "conta_pagar",
+    conta: getVal(row, "conta"),
+    valor: getVal(row, "valor"),
+    vencimento_iso: nextDue.toISOString(),
+    vencimento_br: formatBRDate(nextDue),
+    tipo_pagamento: getVal(row, "tipo_pagamento") || "",
+    codigo_pagamento: "",
+    status: "pendente",
+    fixa: "sim",
+    fix_parent_id: parentId,
+    vencimento_dia: nextDue.getDate(),
+    categoria: categoriaSlug,
+    categoria_emoji: categoriaEmoji,
+    descricao: getVal(row, "descricao") || getVal(row, "conta") || "Conta fixa",
+    recorrencia_tipo: recType,
+    recorrencia_valor: getVal(row, "recorrencia_valor") || (recType === "monthly" ? String(nextDue.getDate()) : ""),
+  };
+  await createRow(newRow);
+  const resumo = formatEntrySummary(newRow, { headerLabel: "📘 Próximo lançamento fixo:" });
+  await sendText(userRaw, `♻ Próxima cobrança gerada automaticamente!\n\n${resumo}`);
+  if (["pix", "boleto"].includes((newRow.tipo_pagamento || "").toLowerCase())) {
+    await promptAttachPaymentCode(userRaw, userNorm, newRow, "fixed_cycle");
+  }
+}
 
 const setPayState = (userNorm, state) => {
   const current = sessionPayConfirm.get(userNorm) || {};
@@ -1721,6 +1958,7 @@ async function markPaymentAsPaid(fromRaw, userNorm, row) {
   setVal(row, "timestamp", new Date().toISOString());
   await saveRow(row);
   await sendText(fromRaw, `✅ Pagamento confirmado com sucesso!\n\n${formatEntrySummary(row)}`);
+  await scheduleNextFixedOccurrence(row);
   const state = sessionPayConfirm.get(userNorm);
   if (!state) {
     sessionPayConfirm.delete(userNorm);
@@ -1770,6 +2008,8 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     fixa: "nao",
     fix_parent_id: "",
     vencimento_dia: data.getDate(),
+    recorrencia_tipo: "",
+    recorrencia_valor: "",
     categoria: categoria.slug,
     categoria_emoji: categoria.emoji,
     descricao: parsed.descricao,
@@ -1782,6 +2022,195 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   }
 
   await finalizeRegisterEntry(fromRaw, userNorm, payload, { autoStatus: true, statusSource: "auto" });
+}
+
+const computeInitialFixedDueDate = (recurrence, startDate) => {
+  if (!recurrence) return null;
+  const now = startOfDay(new Date());
+  if (recurrence.type === "monthly") {
+    const base =
+      startDate instanceof Date && !Number.isNaN(startDate?.getTime()) && startOfDay(startDate).getTime() >= now.getTime()
+        ? startDate
+        : now;
+    return nextMonthlyDate(recurrence.value, base, { inclusive: true });
+  }
+  if (recurrence.type === "interval") {
+    if (startDate instanceof Date && !Number.isNaN(startDate?.getTime())) {
+      return nextIntervalDate(recurrence.value, startDate, now);
+    }
+    return addDays(now, recurrence.value);
+  }
+  return null;
+};
+
+const parseFixedAccountCommand = (text) => {
+  const original = (text || "").toString();
+  if (!original.trim()) return null;
+  const amountInfo = extractAmountFromText(original);
+  if (!amountInfo.amount) return null;
+  const normalized = normalizeDiacritics(original).toLowerCase();
+
+  const removalPatterns = [];
+  const addRemoval = (match) => {
+    if (match && match[0]) removalPatterns.push(match[0]);
+  };
+
+  let recurrence = null;
+  const dayMatch = normalized.match(/todo\s+dia\s+(\d{1,2})/);
+  if (dayMatch) {
+    recurrence = { type: "monthly", value: Number(dayMatch[1]) };
+    addRemoval(dayMatch);
+  }
+  if (!recurrence) {
+    const monthMatch = normalized.match(/(?:todo|cada)\s+(?:o\s+)?mes(?:\s+dia\s*(\d{1,2}))?/);
+    if (monthMatch) {
+      recurrence = { type: "monthly", value: monthMatch[1] ? Number(monthMatch[1]) : null };
+      addRemoval(monthMatch);
+    }
+  }
+  if (!recurrence && /\bmensal\b/.test(normalized)) {
+    recurrence = { type: "monthly", value: null };
+    removalPatterns.push("mensal");
+  }
+  if (!recurrence) {
+    const eachDays = normalized.match(/a\s+cada\s+(\d+)\s+dias?/);
+    if (eachDays) {
+      recurrence = { type: "interval", value: Number(eachDays[1]) };
+      addRemoval(eachDays);
+    }
+  }
+  if (!recurrence) {
+    const eachWeeks = normalized.match(/a\s+cada\s+(\d+)\s+semanas?/);
+    if (eachWeeks) {
+      recurrence = { type: "interval", value: Number(eachWeeks[1]) * 7 };
+      addRemoval(eachWeeks);
+    }
+  }
+  if (!recurrence && /\bsemanal\b/.test(normalized)) {
+    recurrence = { type: "interval", value: 7 };
+    removalPatterns.push("semanal");
+  }
+  if (!recurrence && /toda\s+semana/.test(normalized)) {
+    recurrence = { type: "interval", value: 7 };
+    removalPatterns.push("toda semana");
+  }
+  if (!recurrence && /\bquinzenal\b/.test(normalized)) {
+    recurrence = { type: "interval", value: 15 };
+    removalPatterns.push("quinzenal");
+  }
+
+  if (!recurrence) return null;
+
+  const dateMatch = original.match(/(hoje|amanh[ãa]|ontem|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/i);
+  const startDate = dateMatch ? parseDateToken(dateMatch[1]) : null;
+
+  if (recurrence.type === "monthly") {
+    let day = Number(recurrence.value);
+    if (!Number.isFinite(day) || day <= 0) {
+      if (startDate instanceof Date && !Number.isNaN(startDate?.getTime())) {
+        day = startDate.getDate();
+      } else {
+        const extra = normalized.match(/dia\s+(\d{1,2})/);
+        if (extra) day = Number(extra[1]);
+      }
+    }
+    if (!Number.isFinite(day) || day <= 0) day = new Date().getDate();
+    recurrence.value = clamp(Math.round(day), 1, 31);
+  } else if (recurrence.type === "interval") {
+    const days = Number(recurrence.value);
+    if (!Number.isFinite(days) || days <= 0) return null;
+    recurrence.value = Math.max(Math.round(days), 1);
+  }
+
+  const dueDate = computeInitialFixedDueDate(recurrence, startDate);
+  if (!dueDate) return null;
+
+  let descricao = original;
+  if (amountInfo.raw) {
+    const rawRegex = new RegExp(escapeRegex(amountInfo.raw), "i");
+    descricao = descricao.replace(rawRegex, " ");
+  }
+  if (dateMatch && dateMatch[1]) {
+    const dateRegex = new RegExp(escapeRegex(dateMatch[1]), "i");
+    descricao = descricao.replace(dateRegex, " ");
+  }
+  removalPatterns.forEach((pattern) => {
+    if (!pattern) return;
+    const regex = new RegExp(escapeRegex(pattern), "gi");
+    descricao = descricao.replace(regex, " ");
+  });
+  descricao = descricao
+    .replace(/conta\s+fixa/gi, " ")
+    .replace(/\bfixa\b/gi, " ")
+    .replace(/\brecorrente\b/gi, " ")
+    .replace(/a\s+cada\s+\d+\s+dias?/gi, " ")
+    .replace(/a\s+cada\s+\d+\s+semanas?/gi, " ")
+    .replace(/todo\s+dia\s+\d{1,2}/gi, " ")
+    .replace(/toda\s+semana/gi, " ")
+    .replace(/todo\s+mes/gi, " ")
+    .replace(/\bmensal\b/gi, " ")
+    .replace(/\bquinzenal\b/gi, " ")
+    .replace(/\bpagar\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!descricao) descricao = "Conta fixa";
+
+  let tipoPagamento = "";
+  if (/\bpix\b/.test(normalized)) tipoPagamento = "pix";
+  else if (/\bboleto\b/.test(normalized)) tipoPagamento = "boleto";
+  else if (/\b(cart[aã]o\s*de\s*cr[eé]dito|cart[aã]o\s*cr[eé]dito|cr[eé]dito\s*no?\s*cart[aã]o)\b/.test(normalized))
+    tipoPagamento = "cartao_credito";
+  else if (/\b(cart[aã]o\s*de\s*d[eé]bito|cart[aã]o\s*d[eé]bito|d[eé]bito\s*no?\s*cart[aã]o)\b/.test(normalized))
+    tipoPagamento = "cartao_debito";
+
+  return {
+    descricao,
+    valor: amountInfo.amount,
+    recurrence,
+    dueDate,
+    tipoPagamento,
+  };
+};
+
+async function registerFixedAccount(fromRaw, userNorm, parsed) {
+  if (!parsed) return;
+  const categoria = detectCategory(parsed.descricao, "conta_pagar");
+  const rowId = generateRowId();
+  const due = parsed.dueDate instanceof Date ? parsed.dueDate : new Date();
+  const payload = {
+    row_id: rowId,
+    timestamp: new Date().toISOString(),
+    user: userNorm,
+    user_raw: fromRaw,
+    tipo: "conta_pagar",
+    conta: parsed.descricao,
+    valor: parsed.valor,
+    vencimento_iso: due.toISOString(),
+    vencimento_br: formatBRDate(due),
+    tipo_pagamento: parsed.tipoPagamento || "",
+    codigo_pagamento: "",
+    status: "pendente",
+    fixa: "sim",
+    fix_parent_id: rowId,
+    vencimento_dia: due.getDate(),
+    categoria: categoria.slug,
+    categoria_emoji: categoria.emoji,
+    descricao: parsed.descricao,
+    recorrencia_tipo: parsed.recurrence.type,
+    recorrencia_valor: parsed.recurrence.value?.toString() || "",
+  };
+  await createRow(payload);
+  const resumo = formatEntrySummary(payload);
+  const recurrenceLabel = describeRecurrence(payload);
+  let message = `♻ Conta fixa cadastrada com sucesso!\n\n${resumo}`;
+  if (recurrenceLabel) message += `\n\n🔄 Recorrência: ${recurrenceLabel}`;
+  message += `\n\n📅 Próximo vencimento: ${formatBRDate(due)}.`;
+  message += `\n\n✅ Para confirmar pagamento depois, envie "Confirmar 1".`;
+  await sendText(fromRaw, message);
+  if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
+    await promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
+  }
+  await sendMainMenu(fromRaw);
 }
 
 // ============================
@@ -1985,6 +2414,7 @@ async function handleInteractiveMessage(from, payload) {
       return;
     }
     if (id === "CFIX:CAD") {
+      sessionFixedRegister.set(userNorm, { expiresAt: Date.now() + SESSION_TIMEOUT_MS });
       await sendCadastrarContaFixaMessage(from);
       return;
     }
@@ -2072,6 +2502,7 @@ async function handleUserText(fromRaw, text) {
   if (await handleStatusConfirmationFlow(fromRaw, userNorm, trimmed)) return;
   if (await handlePaymentConfirmFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleFixedDeleteFlow(fromRaw, userNorm, trimmed)) return;
+  if (await handleFixedRegisterFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleEditFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleDeleteFlow(fromRaw, userNorm, trimmed)) return;
 
@@ -2134,7 +2565,10 @@ async function handleUserText(fromRaw, text) {
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
       break;
     default:
-      if (extractAmountFromText(trimmed).amount) {
+      const fixedParsed = parseFixedAccountCommand(text);
+      if (fixedParsed) {
+        await registerFixedAccount(fromRaw, userNorm, fixedParsed);
+      } else if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
       } else {
         await sendMainMenu(fromRaw);
