@@ -5,6 +5,7 @@
 
 import express from "express";
 import bodyParser from "body-parser";
+import Stripe from "stripe";
 import axios from "axios";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
@@ -27,10 +28,13 @@ const {
   WEBHOOK_VERIFY_TOKEN,
   USE_OPENAI: USE_OPENAI_RAW,
   DEBUG_SHEETS: DEBUG_SHEETS_RAW,
+  STRIPE_SECRET_KEY,
+  STRIPE_WEBHOOK_SECRET,
 } = process.env;
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 // ============================
 // Google Auth fix (supports literal \n)
@@ -44,7 +48,14 @@ if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
 // APP
 // ============================
 const app = express();
-app.use(bodyParser.json());
+
+const jsonParser = bodyParser.json();
+app.use((req, res, next) => {
+  if (req.originalUrl.startsWith("/stripe/webhook")) {
+    return next();
+  }
+  return jsonParser(req, res, next);
+});
 
 app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
@@ -484,6 +495,14 @@ const SHEET_HEADERS = [
   "descricao",
 ];
 
+const CLIENTES_HEADERS = [
+  "user",
+  "plano",
+  "ativo",
+  "data_inicio",
+  "vencimento_plano",
+];
+
 let doc;
 
 async function ensureAuth() {
@@ -513,6 +532,25 @@ async function ensureSheet() {
 
     if (hasDuplicate || missing.length || orderMismatch || normalized.length !== SHEET_HEADERS.length) {
       await sheet.setHeaderRow(SHEET_HEADERS);
+    }
+  }
+  return sheet;
+}
+
+async function ensureSheetClientes() {
+  await ensureAuth();
+  let sheet = doc.sheetsByTitle["clientes"];
+  if (!sheet) {
+    sheet = await doc.addSheet({ title: "clientes", headerValues: CLIENTES_HEADERS });
+  } else {
+    await sheet.loadHeaderRow();
+    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const filtered = current.filter(Boolean);
+    const hasDuplicate = new Set(filtered).size !== filtered.length;
+    const missing = CLIENTES_HEADERS.filter((header) => !current.includes(header));
+    const orderMismatch = CLIENTES_HEADERS.some((header, index) => current[index] !== header);
+    if (hasDuplicate || missing.length || orderMismatch || current.length !== CLIENTES_HEADERS.length) {
+      await sheet.setHeaderRow(CLIENTES_HEADERS);
     }
   }
   return sheet;
@@ -2576,6 +2614,61 @@ async function handleUserText(fromRaw, text) {
       break;
   }
 }
+
+async function handleStripeWebhook(req, res) {
+  if (!stripe || !STRIPE_WEBHOOK_SECRET) {
+    console.error("Stripe não configurado corretamente.");
+    res.sendStatus(200);
+    return;
+  }
+
+  const sig = req.headers["stripe-signature"];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error("⚠️  Erro ao validar webhook Stripe:", err.message);
+    res.status(400).send(`Webhook error: ${err.message}`);
+    return;
+  }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const whatsapp = session.metadata?.whatsapp;
+
+    if (whatsapp) {
+      console.log("✅ Novo pagamento Stripe recebido:", whatsapp);
+      try {
+        const sheet = await ensureSheetClientes();
+        await sheet.addRow({
+          user: whatsapp,
+          plano: "Ativo",
+          ativo: "TRUE",
+          data_inicio: new Date().toISOString().split("T")[0],
+          vencimento_plano: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .split("T")[0],
+        });
+
+        await sendText(
+          whatsapp,
+          "🎉 Bem-vindo(a) à *FinPlanner IA*! Seu plano foi ativado com sucesso. Envie uma mensagem a qualquer momento para começar seu planejamento financeiro."
+        );
+      } catch (error) {
+        console.error("Erro ao registrar cliente após pagamento:", error);
+      }
+    }
+  }
+
+  res.sendStatus(200);
+}
+
+app.post(
+  "/stripe/webhook",
+  bodyParser.raw({ type: "application/json" }),
+  handleStripeWebhook
+);
 
 app.post("/webhook", async (req, res) => {
   try {
