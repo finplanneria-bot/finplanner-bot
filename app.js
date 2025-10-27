@@ -6,6 +6,7 @@
 import express from "express";
 import bodyParser from "body-parser";
 import Stripe from "stripe";
+import OpenAI from "openai";
 import axios from "axios";
 import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
@@ -27,6 +28,7 @@ const {
   ADMIN_WA_NUMBER,
   WEBHOOK_VERIFY_TOKEN,
   USE_OPENAI: USE_OPENAI_RAW,
+  OPENAI_API_KEY,
   DEBUG_SHEETS: DEBUG_SHEETS_RAW,
   STRIPE_SECRET_KEY,
   STRIPE_WEBHOOK_SECRET,
@@ -35,6 +37,12 @@ const {
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
+const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
+
+if (USE_OPENAI && !openaiClient) {
+  console.warn("OpenAI ativado, mas OPENAI_API_KEY não foi informado. Usando detecção heurística.");
+}
 
 // ============================
 // Google Auth fix (supports literal \n)
@@ -959,6 +967,24 @@ const sessionFixedDelete = new Map();
 const sessionStatusConfirm = new Map();
 const sessionPaymentCode = new Map();
 const sessionPayConfirm = new Map();
+
+const processedMessages = new Map();
+const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const isDuplicateMessage = (id) => {
+  if (!id) return false;
+  const now = Date.now();
+  for (const [storedId, ts] of processedMessages) {
+    if (now - ts > MESSAGE_CACHE_TTL_MS) {
+      processedMessages.delete(storedId);
+    }
+  }
+  if (processedMessages.has(id)) {
+    return true;
+  }
+  processedMessages.set(id, now);
+  return false;
+};
 
 const startReportCategoryFlow = async (to, userNorm, category) => {
   sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
@@ -2254,7 +2280,21 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
 // ============================
 // Intent detection
 // ============================
-const detectIntent = (text) => {
+const KNOWN_INTENTS = new Set([
+  "boas_vindas",
+  "relatorios_menu",
+  "relatorio_completo",
+  "listar_lancamentos",
+  "listar_pendentes",
+  "editar",
+  "excluir",
+  "registrar_recebimento",
+  "registrar_pagamento",
+  "contas_fixas",
+  "desconhecido",
+]);
+
+const detectIntentHeuristic = (text) => {
   const lower = (text || "").toLowerCase();
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
@@ -2262,11 +2302,67 @@ const detectIntent = (text) => {
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
   if (/contas?\s+a\s+pagar|pendentes|a pagar/.test(lower)) return "listar_pendentes";
+  if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
-  if (/registrar recebimento|recebimento/.test(lower)) return "registrar_recebimento";
-  if (/registrar pagamento|pagamento/.test(lower)) return "registrar_pagamento";
+  if (/registrar recebimento|\brecebimento\b/.test(lower)) return "registrar_recebimento";
+  if (/registrar pagamento|\bpagamento\b/.test(lower)) return "registrar_pagamento";
   return "desconhecido";
+};
+
+const normalizeIntent = (value) => {
+  if (!value) return null;
+  const formatted = value
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_{2,}/g, "_")
+    .replace(/^_|_$/g, "");
+  return KNOWN_INTENTS.has(formatted) ? formatted : null;
+};
+
+const buildIntentPrompt = (text) => {
+  const options = Array.from(KNOWN_INTENTS).join(", ");
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "Você é um classificador de intenções para um assistente financeiro no WhatsApp. Responda apenas com uma das intenções disponíveis, sem explicações.",
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Opções válidas: ${options}.\nMensagem: "${text}"\nResponda somente com uma das opções. Use "desconhecido" caso não tenha correspondência.`,
+        },
+      ],
+    },
+  ];
+};
+
+const detectIntent = async (text) => {
+  const fallback = detectIntentHeuristic(text);
+  if (!text || !openaiClient) return fallback;
+  try {
+    const response = await openaiClient.responses.create({
+      model: OPENAI_INTENT_MODEL,
+      input: buildIntentPrompt(text),
+      temperature: 0,
+      max_output_tokens: 50,
+    });
+    const predicted = normalizeIntent(response?.output_text);
+    if (predicted) return predicted;
+  } catch (error) {
+    console.error("Falha ao consultar OpenAI para intenção:", error?.message || error);
+  }
+  return fallback;
 };
 
 // ============================
@@ -2567,7 +2663,7 @@ async function handleUserText(fromRaw, text) {
     return;
   }
 
-  const intent = detectIntent(trimmed);
+  const intent = await detectIntent(trimmed);
   switch (intent) {
     case "boas_vindas":
       await sendWelcomeList(fromRaw);
@@ -2589,6 +2685,9 @@ async function handleUserText(fromRaw, text) {
       break;
     case "listar_pendentes":
       await listPendingPayments(fromRaw, userNorm);
+      break;
+    case "contas_fixas":
+      await sendContasFixasMenu(fromRaw);
       break;
     case "editar":
       await listRowsForSelection(fromRaw, userNorm, "edit");
@@ -2693,6 +2792,11 @@ app.post("/webhook", async (req, res) => {
 
           for (const message of messages) {
             const from = message.from;
+            const messageId = message.id;
+            if (isDuplicateMessage(messageId)) {
+              if (DEBUG_SHEETS) console.log(`[Webhook] Ignorando mensagem duplicada ${messageId}`);
+              continue;
+            }
             const type = message.type;
             if (type === "text") {
               await handleUserText(from, message.text?.body || "");
