@@ -294,21 +294,24 @@ const parseNumericToken = (rawToken) => {
 
 const extractAmountFromText = (text) => {
   if (!text) return { amount: 0 };
-  const numericPattern = /(?:r\$\s*)?([0-9]+(?:[.,\s][0-9]+)*(?:k)?|[0-9]+\s?mil)/gi;
+  const source = text.toString();
+  const dateSanitized = source.replace(/\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?/g, " ");
+  const numericPattern = /(?<!\d[\/.-])(?:r\$\s*)?([0-9]+(?:[.,\s][0-9]+)*(?:k)?|[0-9]+\s?mil)(?!\s*[\/-]\s*\d)/gi;
   let match;
-  while ((match = numericPattern.exec(text)) !== null) {
+  while ((match = numericPattern.exec(source)) !== null) {
     const raw = match[0];
     const value = parseNumericToken(raw);
     if (value) return { amount: value, raw };
   }
 
-  const words = extractNumberWords(text);
+  const words = extractNumberWords(source);
   if (words) return words;
 
-  const fallbackMatch = text.toString().match(/\d+/);
-  if (fallbackMatch) {
-    const value = parseNumericToken(fallbackMatch[0]);
-    if (value) return { amount: value, raw: fallbackMatch[0] };
+  const fallbackRegex = /\d+/g;
+  while ((match = fallbackRegex.exec(dateSanitized)) !== null) {
+    const raw = match[0];
+    const value = parseNumericToken(raw);
+    if (value) return { amount: value, raw };
   }
 
   return { amount: 0 };
@@ -443,11 +446,21 @@ const parseDateToken = (token) => {
     d.setDate(d.getDate() - 1);
     return d;
   }
-  const match = token.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+  const match = token.match(/(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?/);
   if (match) {
     const day = Number(match[1]);
     const month = Number(match[2]) - 1;
-    const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+    const currentYear = new Date().getFullYear();
+    let year = currentYear;
+    if (match[3]) {
+      year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+    } else {
+      const tentative = new Date(currentYear, month, day);
+      const now = new Date();
+      if (tentative < startOfDay(now)) {
+        year = currentYear + 1;
+      }
+    }
     const d = new Date(year, month, day);
     if (!Number.isNaN(d.getTime())) return d;
   }
@@ -1282,7 +1295,7 @@ const parseRegisterText = (text) => {
   const valor = amountInfo.amount || 0;
 
   let data = null;
-  const dateMatch = original.match(/(hoje|amanh[ãa]|ontem|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/i);
+  const dateMatch = original.match(/(hoje|amanh[ãa]|ontem|\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?)/i);
   if (dateMatch) data = parseDateToken(dateMatch[1]);
 
   let descricao = original;
@@ -1292,7 +1305,7 @@ const parseRegisterText = (text) => {
   }
   descricao = descricao
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
-    .replace(/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/gi, "")
+    .replace(/\b\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?\b/gi, "")
     .replace(/\b(recebimento|receber|recebido|recebi|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
     .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
     .replace(/r\$/gi, "")
