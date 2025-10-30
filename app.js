@@ -47,6 +47,64 @@ if (USE_OPENAI && !openaiClient) {
   console.warn("OpenAI ativado, mas OPENAI_API_KEY não foi informado. Usando detecção heurística.");
 }
 
+const normalizePromptMessages = (input) => {
+  if (!Array.isArray(input)) return [];
+  return input.map((message) => {
+    const parts = Array.isArray(message?.content) ? message.content : [message?.content];
+    const text = parts
+      .map((part) => {
+        if (!part) return "";
+        if (typeof part === "string") return part;
+        if (typeof part?.text === "string") return part.text;
+        return typeof part === "object" ? JSON.stringify(part) : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    return { role: message?.role || "user", content: text };
+  });
+};
+
+const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 }) => {
+  if (!openaiClient) return null;
+  const messages = normalizePromptMessages(input);
+  try {
+    if (typeof openaiClient.responses?.create === "function") {
+      const response = await openaiClient.responses.create({
+        model,
+        input,
+        temperature,
+        max_output_tokens: maxOutputTokens,
+      });
+      return response?.output_text?.trim() || null;
+    }
+    if (typeof openaiClient.chat?.completions?.create === "function") {
+      const response = await openaiClient.chat.completions.create({
+        model,
+        messages: messages.length ? messages : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }],
+        temperature,
+        max_tokens: maxOutputTokens,
+      });
+      return response?.choices?.[0]?.message?.content?.trim() || null;
+    }
+    if (typeof openaiClient.completions?.create === "function") {
+      const prompt = (messages.length ? messages : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }])
+        .map((msg) => `${msg.role.toUpperCase()}: ${msg.content}`)
+        .join("\n\n");
+      const response = await openaiClient.completions.create({
+        model,
+        prompt,
+        temperature,
+        max_tokens: maxOutputTokens,
+      });
+      return response?.choices?.[0]?.text?.trim() || null;
+    }
+    console.warn("Cliente OpenAI inicializado, mas nenhum método compatível foi encontrado.");
+  } catch (error) {
+    throw error;
+  }
+  return null;
+};
+
 // ============================
 // Google Auth fix (supports literal \n)
 // ============================
@@ -576,13 +634,13 @@ const resolveCategory = async (description, tipo) => {
   const fallback = detectCategoryHeuristic(description, tipo);
   if (!description || !description.toString().trim() || !openaiClient) return fallback;
   try {
-    const response = await openaiClient.responses.create({
+    const output = await callOpenAI({
       model: OPENAI_CATEGORY_MODEL,
       input: buildCategoryPrompt(description, tipo),
       temperature: 0,
-      max_output_tokens: 50,
+      maxOutputTokens: 50,
     });
-    const predicted = response?.output_text?.trim().toLowerCase();
+    const predicted = output?.trim().toLowerCase();
     const sanitized = predicted ? predicted.replace(/[^a-z0-9_]/g, "") : "";
     const def = getCategoryDefinition(sanitized);
     if (def) return { slug: def.slug, emoji: def.emoji };
@@ -2616,13 +2674,13 @@ const detectIntent = async (text) => {
   const fallback = detectIntentHeuristic(text);
   if (!text || !openaiClient) return fallback;
   try {
-    const response = await openaiClient.responses.create({
+    const output = await callOpenAI({
       model: OPENAI_INTENT_MODEL,
       input: buildIntentPrompt(text),
       temperature: 0,
-      max_output_tokens: 50,
+      maxOutputTokens: 50,
     });
-    const predicted = normalizeIntent(response?.output_text);
+    const predicted = normalizeIntent(output);
     if (predicted) return predicted;
   } catch (error) {
     console.error("Falha ao consultar OpenAI para intenção:", error?.message || error);
