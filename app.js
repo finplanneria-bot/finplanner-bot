@@ -39,6 +39,7 @@ const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
+const OPENAI_CATEGORY_MODEL = process.env.OPENAI_CATEGORY_MODEL || OPENAI_INTENT_MODEL;
 
 if (USE_OPENAI && !openaiClient) {
   console.warn("OpenAI ativado, mas OPENAI_API_KEY não foi informado. Usando detecção heurística.");
@@ -266,6 +267,12 @@ const formatCurrencyBR = (value) => {
     maximumFractionDigits: 2,
   })}`;
 };
+
+const formatSignedCurrencyBR = (value) => {
+  const num = Number(value || 0);
+  const formatted = formatCurrencyBR(Math.abs(num));
+  return num < 0 ? `-${formatted}` : formatted;
+};
 const statusIconLabel = (status) => {
   const normalized = (status || "").toString().toLowerCase();
   if (normalized === "pago") return "✅ Pago";
@@ -387,45 +394,200 @@ const parseDateToken = (token) => {
   return null;
 };
 
-const detectCategory = (description, tipo) => {
-  const text = (description || "").toLowerCase();
-  const rules = [
-    { slug: "utilidades", emoji: "🔌", kws: ["luz", "energia", "água", "agua", "gás", "gas"] },
-    { slug: "internet_telefonia", emoji: "🌐", kws: ["internet", "fibra", "vivo", "claro", "tim", "oi"] },
-    { slug: "moradia", emoji: "🏠", kws: ["aluguel", "condomínio", "condominio", "iptu"] },
-    {
-      slug: "mercado",
-      emoji: "🛒",
-      kws: ["mercado", "supermercado", "ifood", "padaria", "almoço", "jantar", "restaurante", "lanche", "espetinho"],
-    },
-    { slug: "transporte", emoji: "🚗", kws: ["uber", "99", "gasolina", "combustível", "combustivel", "passagem", "ônibus", "onibus"] },
-    { slug: "saude", emoji: "💊", kws: ["academia", "plano", "consulta", "dentista", "farmácia", "farmacia"] },
-    { slug: "educacao", emoji: "🎓", kws: ["curso", "faculdade", "escola", "mensalidade"] },
-    { slug: "lazer", emoji: "🎭", kws: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento"] },
-    { slug: "impostos_taxas", emoji: "🧾", kws: ["multa", "taxa", "imposto", "receita"] },
-    { slug: "salario_trabalho", emoji: "💼", kws: ["salário", "salario", "pagamento", "freela", "freelance", "contrato"] },
-    { slug: "vendas_receitas", emoji: "💵", kws: ["venda", "recebimento", "pix recebido", "cliente", "boleto recebido"] },
-  ];
-  for (const rule of rules) {
-    if (rule.kws.some((kw) => text.includes(kw))) {
-      return { slug: rule.slug, emoji: rule.emoji };
+const CATEGORY_DEFINITIONS = [
+  {
+    slug: "utilidades",
+    label: "Utilidades",
+    emoji: "🔌",
+    keywords: ["luz", "energia", "água", "agua", "gás", "gas"],
+  },
+  {
+    slug: "internet_telefonia",
+    label: "Internet / Telefonia",
+    emoji: "🌐",
+    keywords: ["internet", "fibra", "vivo", "claro", "tim", "oi", "telefonia"],
+  },
+  {
+    slug: "moradia",
+    label: "Moradia",
+    emoji: "🏠",
+    keywords: ["aluguel", "condomínio", "condominio", "iptu", "alojamento"],
+  },
+  {
+    slug: "mercado",
+    label: "Alimentação",
+    emoji: "🛒",
+    keywords: [
+      "mercado",
+      "supermercado",
+      "ifood",
+      "padaria",
+      "almoço",
+      "almoco",
+      "jantar",
+      "restaurante",
+      "lanche",
+      "espetinho",
+      "comida",
+      "bebida",
+    ],
+    aliases: ["alimentacao"],
+  },
+  {
+    slug: "transporte",
+    label: "Transporte",
+    emoji: "🚗",
+    keywords: ["uber", "99", "gasolina", "combustível", "combustivel", "passagem", "ônibus", "onibus", "transporte"],
+  },
+  {
+    slug: "saude",
+    label: "Saúde",
+    emoji: "💊",
+    keywords: ["academia", "plano", "consulta", "dentista", "farmácia", "farmacia", "remédio", "remedio"],
+  },
+  {
+    slug: "educacao",
+    label: "Educação",
+    emoji: "🎓",
+    keywords: ["curso", "faculdade", "escola", "mensalidade", "aula", "material"],
+  },
+  {
+    slug: "lazer",
+    label: "Lazer",
+    emoji: "🎭",
+    keywords: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento", "viagem"],
+  },
+  {
+    slug: "impostos_taxas",
+    label: "Impostos e Taxas",
+    emoji: "🧾",
+    keywords: ["multa", "taxa", "imposto", "receita", "darf", "alvará", "alvara"],
+  },
+  {
+    slug: "salario_trabalho",
+    label: "Salário / Trabalho",
+    emoji: "💼",
+    keywords: ["salário", "salario", "pagamento", "freela", "freelance", "contrato", "folha"],
+  },
+  {
+    slug: "vendas_receitas",
+    label: "Vendas e Receitas",
+    emoji: "💵",
+    keywords: ["venda", "recebimento", "cliente", "boleto recebido", "serviço", "servico", "entrada"],
+  },
+  {
+    slug: "investimentos",
+    label: "Investimentos",
+    emoji: "📈",
+    keywords: ["investimento", "bolsa", "renda fixa", "tesouro", "ação", "acao"],
+  },
+  {
+    slug: "outros",
+    label: "Outros",
+    emoji: "🧩",
+    keywords: [],
+  },
+];
+
+const CATEGORY_BY_SLUG = new Map();
+CATEGORY_DEFINITIONS.forEach((category) => {
+  CATEGORY_BY_SLUG.set(category.slug, category);
+  (category.aliases || []).forEach((alias) => CATEGORY_BY_SLUG.set(alias, category));
+});
+
+const getCategoryDefinition = (slug) => {
+  if (!slug) return null;
+  return CATEGORY_BY_SLUG.get(slug.toLowerCase()) || null;
+};
+
+const humanizeCategorySlug = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+  const parts = raw.split(/[_-]+/).filter(Boolean);
+  if (!parts.length) return raw;
+  return parts.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" / ");
+};
+
+const detectCategoryHeuristic = (description, tipo) => {
+  const normalized = normalizeDiacritics((description || "").toLowerCase());
+  for (const category of CATEGORY_DEFINITIONS) {
+    if (category.keywords?.some((kw) => normalized.includes(kw))) {
+      return { slug: category.slug, emoji: category.emoji };
     }
   }
-  if (tipo === "conta_receber") return { slug: "vendas_receitas", emoji: "💵" };
-  return { slug: "outros", emoji: "🧩" };
+  if (tipo === "conta_receber") {
+    const fallback = getCategoryDefinition("vendas_receitas") || getCategoryDefinition("outros");
+    return { slug: fallback.slug, emoji: fallback.emoji };
+  }
+  const fallback = getCategoryDefinition("outros");
+  return { slug: fallback.slug, emoji: fallback.emoji };
 };
 
 const formatCategoryLabel = (slug, emoji) => {
-  const raw = (slug || "").toString().trim();
-  if (!raw) return emoji ? `${emoji} —` : "—";
-  const parts = raw.split(/[_-]+/).filter(Boolean);
-  const friendly =
-    parts.length === 0
-      ? raw
-      : parts
-          .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-          .join(" / ");
-  return emoji ? `${emoji} ${friendly}` : friendly;
+  const def = getCategoryDefinition(slug);
+  const label = def?.label || humanizeCategorySlug(slug) || "—";
+  const icon = emoji || def?.emoji;
+  if (!label || label === "—") {
+    return icon ? `${icon} —` : "—";
+  }
+  return icon ? `${icon} ${label}` : label;
+};
+
+const CATEGORY_PROMPT_HINT = CATEGORY_DEFINITIONS.map((category) => {
+  const samples = (category.keywords || []).slice(0, 5);
+  const sampleText = samples.length ? ` (exemplos: ${samples.join(", ")})` : "";
+  return `${category.slug}: ${category.label}${sampleText}`;
+}).join("\n");
+
+const truncateForPrompt = (value, max = 200) => {
+  if (!value) return "";
+  const str = value.toString().trim();
+  if (str.length <= max) return str;
+  return `${str.slice(0, max - 1)}…`;
+};
+
+const buildCategoryPrompt = (description, tipo) => [
+  {
+    role: "system",
+    content: [
+      {
+        type: "text",
+        text:
+          "Você é um classificador de categorias financeiras. Responda apenas com um dos slugs informados, sem explicações.",
+      },
+    ],
+  },
+  {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `Categorias disponíveis:\n${CATEGORY_PROMPT_HINT}\n\nDescrição do lançamento: "${truncateForPrompt(
+          description,
+        )}"\nTipo do lançamento: ${tipo === "conta_receber" ? "recebimento" : "pagamento"}\nResponda apenas com o slug mais adequado.`,
+      },
+    ],
+  },
+];
+
+const resolveCategory = async (description, tipo) => {
+  const fallback = detectCategoryHeuristic(description, tipo);
+  if (!description || !description.toString().trim() || !openaiClient) return fallback;
+  try {
+    const response = await openaiClient.responses.create({
+      model: OPENAI_CATEGORY_MODEL,
+      input: buildCategoryPrompt(description, tipo),
+      temperature: 0,
+      max_output_tokens: 50,
+    });
+    const predicted = response?.output_text?.trim().toLowerCase();
+    const sanitized = predicted ? predicted.replace(/[^a-z0-9_]/g, "") : "";
+    const def = getCategoryDefinition(sanitized);
+    if (def) return { slug: def.slug, emoji: def.emoji };
+  } catch (error) {
+    console.error("Falha ao consultar OpenAI para categoria:", error?.message || error);
+  }
+  return fallback;
 };
 
 // ============================
@@ -665,9 +827,8 @@ const formatEntryBlock = (row, options = {}) => {
     return `${headerLabel}\n\n${fields.join("\n")}`;
   }
   if (typeof index === "number") {
-    const [first, ...rest] = fields;
-    const prefix = `${numberToKeycapEmojis(index)} ${first}`;
-    return [prefix, ...rest].join("\n");
+    const numberLine = numberToKeycapEmojis(index);
+    return [numberLine, "", ...fields].join("\n");
   }
   return `📘 Lançamento\n\n${fields.join("\n")}`;
 };
@@ -675,29 +836,39 @@ const formatEntryBlock = (row, options = {}) => {
 const formatEntrySummary = (row, options = {}) =>
   formatEntryBlock(row, { ...options, headerLabel: options.headerLabel || "📘 Resumo do lançamento" });
 
-const renderReportList = (title, rows) => {
-  let message = `📊 *${title}*\n\n`;
-  if (!rows.length) {
-    return `${message}✅ Nenhum lançamento encontrado para o período selecionado.`;
+const aggregateCategoryTotals = (rows) => {
+  const totals = new Map();
+  for (const row of rows) {
+    const amount = toNumber(getVal(row, "valor"));
+    if (!amount) continue;
+    let slug = (getVal(row, "categoria") || "").toString();
+    let emoji = getVal(row, "categoria_emoji");
+    if (!slug) {
+      const fallback = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo"));
+      slug = fallback.slug;
+      emoji = emoji || fallback.emoji;
+    }
+    const def = getCategoryDefinition(slug) || getCategoryDefinition("outros");
+    const key = def?.slug || slug || "outros";
+    const label = formatCategoryLabel(key, emoji || def?.emoji);
+    const entry = totals.get(key) || { key, label, total: 0 };
+    entry.total += amount;
+    entry.label = label;
+    totals.set(key, entry);
   }
-  const blocks = rows.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  message += blocks.join("\n\n");
-  message += `\n\n💰 *Total:* ${formatCurrencyBR(sumValues(rows))}`;
-  return message;
+  return Array.from(totals.values()).sort((a, b) => b.total - a.total);
 };
 
-const renderSaldoFooter = (rowsAll, start, end) => {
-  const within = withinPeriod(rowsAll, start, end);
-  const recebimentosPagos = within.filter(
-    (row) => getVal(row, "tipo") === "conta_receber" && ["pago", "recebido"].includes((getVal(row, "status") || "").toLowerCase())
-  );
-  const pagamentosPagos = within.filter((row) => getVal(row, "tipo") === "conta_pagar" && getVal(row, "status") === "pago");
-  const totalRec = sumValues(recebimentosPagos);
-  const totalPag = sumValues(pagamentosPagos);
-  const saldo = totalRec - totalPag;
-  const saldoStr = formatCurrencyBR(saldo);
-  const saldoLine = saldo < 0 ? `🟥 🔹 *Saldo no período:* -${saldoStr}` : `🔹 *Saldo no período:* ${saldoStr}`;
-  return `\n\n💰 *Total de Recebimentos:* ${formatCurrencyBR(totalRec)}\n💸 *Total de Pagamentos:* ${formatCurrencyBR(totalPag)}\n${saldoLine}`;
+const formatCategoryLines = (rows) => {
+  const aggregates = aggregateCategoryTotals(rows);
+  if (!aggregates.length) return "✅ Nenhuma categoria encontrada no período.";
+  return aggregates.map((item) => `• ${item.label}: ${formatCurrencyBR(item.total)}`).join("\n");
+};
+
+const formatSaldoLine = (recebido, pago) => {
+  const saldo = recebido - pago;
+  const saldoText = formatSignedCurrencyBR(saldo);
+  return saldo < 0 ? `🟥 🔹 Saldo no período: ${saldoText}` : `🔹 Saldo no período: ${saldoText}`;
 };
 
 // ============================
@@ -1112,27 +1283,116 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
   const { start, end } = range;
   const inRange = withinPeriod(rows, start, end);
 
+  const statusOf = (row) => (getVal(row, "status") || "").toString().toLowerCase();
+  const isPaid = (row) => statusOf(row) === "pago";
+  const isReceived = (row) => {
+    const status = statusOf(row);
+    return status === "recebido" || status === "pago";
+  };
+
   if (category === "cp") {
-    const filtered = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar" && getVal(row, "status") !== "pago");
-    const message = renderReportList("Relatório • Contas a pagar", filtered) + renderSaldoFooter(rows, start, end);
+    const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
+    const pending = expenses.filter((row) => !isPaid(row));
+    const paid = expenses.filter(isPaid);
+    const totalPending = sumValues(pending);
+    const totalPaid = sumValues(paid);
+    const totalExpenses = sumValues(expenses);
+    let message = "📊 *Relatório • Contas a pagar*";
+    if (!expenses.length) {
+      message += "\n\n✅ Nenhuma conta encontrada para o período selecionado.";
+    } else {
+      if (pending.length) {
+        message += `\n\n📂 Categorias pendentes:\n${formatCategoryLines(pending)}`;
+      }
+      if (paid.length) {
+        message += `\n\n✅ Categorias pagas:\n${formatCategoryLines(paid)}`;
+      }
+      message += `\n\n🔸 Total pendente: ${formatCurrencyBR(totalPending)}`;
+      message += `\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
+      message += `\n💰 Total geral: ${formatCurrencyBR(totalExpenses)}`;
+    }
     await sendText(fromRaw, message);
     return;
   }
+
   if (category === "rec") {
-    const filtered = inRange.filter((row) => getVal(row, "tipo") === "conta_receber");
-    const message = renderReportList("Relatório • Recebimentos", filtered) + renderSaldoFooter(rows, start, end);
+    const receipts = inRange.filter((row) => getVal(row, "tipo") === "conta_receber");
+    const confirmed = receipts.filter(isReceived);
+    const pending = receipts.filter((row) => !isReceived(row));
+    const totalReceived = sumValues(confirmed);
+    const totalPending = sumValues(pending);
+    const totalReceipts = sumValues(receipts);
+    let message = "📊 *Relatório • Recebimentos*";
+    if (!receipts.length) {
+      message += "\n\n✅ Nenhum recebimento encontrado para o período selecionado.";
+    } else {
+      message += `\n\n📂 Categorias:\n${formatCategoryLines(receipts)}`;
+      message += `\n\n💵 Total recebido: ${formatCurrencyBR(totalReceived)}`;
+      message += `\n⏳ Total pendente: ${formatCurrencyBR(totalPending)}`;
+      message += `\n💰 Total geral: ${formatCurrencyBR(totalReceipts)}`;
+    }
     await sendText(fromRaw, message);
     return;
   }
+
   if (category === "pag") {
-    const filtered = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
-    const message = renderReportList("Relatório • Pagamentos", filtered) + renderSaldoFooter(rows, start, end);
+    const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
+    const paid = expenses.filter(isPaid);
+    const pending = expenses.filter((row) => !isPaid(row));
+    const totalPaid = sumValues(paid);
+    const totalPending = sumValues(pending);
+    let message = "📊 *Relatório • Pagamentos*";
+    if (!paid.length) {
+      message += "\n\n✅ Nenhum pagamento confirmado no período.";
+      if (pending.length) {
+        message += `\n\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
+      }
+      await sendText(fromRaw, message);
+      return;
+    }
+    message += `\n\n📂 Categorias pagas:\n${formatCategoryLines(paid)}`;
+    message += `\n\n💸 Total pago: ${formatCurrencyBR(totalPaid)}`;
+    if (pending.length) {
+      message += `\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
+    }
+    message += `\n💰 Total geral: ${formatCurrencyBR(totalPaid)}`;
     await sendText(fromRaw, message);
     return;
   }
+
   if (category === "all") {
-    const sorted = inRange.slice().sort((a, b) => getEffectiveDate(a) - getEffectiveDate(b));
-    const message = renderReportList("Relatório • Completo", sorted) + renderSaldoFooter(rows, start, end);
+    const receipts = inRange.filter((row) => getVal(row, "tipo") === "conta_receber");
+    const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
+    const confirmedReceipts = receipts.filter(isReceived);
+    const pendingReceipts = receipts.filter((row) => !isReceived(row));
+    const paidExpenses = expenses.filter(isPaid);
+    const pendingExpenses = expenses.filter((row) => !isPaid(row));
+    const totalReceived = sumValues(confirmedReceipts);
+    const totalReceipts = sumValues(receipts);
+    const totalPaid = sumValues(paidExpenses);
+    const totalPendingExpenses = sumValues(pendingExpenses);
+    const totalPendingReceipts = sumValues(pendingReceipts);
+    let message = "📊 *Relatório • Completo*";
+    if (!receipts.length && !expenses.length) {
+      message += "\n\n✅ Nenhum lançamento encontrado para o período selecionado.";
+    } else {
+      if (receipts.length) {
+        message += `\n\n💵 Recebimentos:\n${formatCategoryLines(receipts)}`;
+        message += `\n\n💵 Total recebido: ${formatCurrencyBR(totalReceived)}`;
+        message += `\n⏳ Total pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
+        message += `\n💰 Total geral: ${formatCurrencyBR(totalReceipts)}`;
+      }
+      if (pendingExpenses.length) {
+        message += `\n\n⏳ Contas a pagar:\n${formatCategoryLines(pendingExpenses)}`;
+        message += `\n\n⏳ Total pendente: ${formatCurrencyBR(totalPendingExpenses)}`;
+      }
+      if (paidExpenses.length) {
+        message += `\n\n✅ Contas pagas:\n${formatCategoryLines(paidExpenses)}`;
+        message += `\n\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
+      }
+      const saldo = formatSaldoLine(totalReceived, totalPaid);
+      message += `\n\n${saldo}`;
+    }
     await sendText(fromRaw, message);
   }
 }
@@ -1511,8 +1771,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
       setVal(row, "status", lower);
     } else if (field === "categoria") {
       const categoria = text.trim();
-      const detected = detectCategory(categoria, getVal(row, "tipo"));
-      setVal(row, "categoria", categoria || detected.slug);
+      const detected = await resolveCategory(categoria, getVal(row, "tipo"));
+      setVal(row, "categoria", detected.slug);
       setVal(row, "categoria_emoji", detected.emoji);
     } else {
       setVal(row, field === "conta" ? "conta" : "descricao", text.trim());
@@ -1736,7 +1996,10 @@ async function scheduleNextFixedOccurrence(row) {
   let categoriaSlug = getVal(row, "categoria");
   let categoriaEmoji = getVal(row, "categoria_emoji");
   if (!categoriaSlug) {
-    const detected = detectCategory(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo") || "conta_pagar");
+    const detected = await resolveCategory(
+      getVal(row, "descricao") || getVal(row, "conta"),
+      getVal(row, "tipo") || "conta_pagar",
+    );
     categoriaSlug = detected.slug;
     categoriaEmoji = detected.emoji;
   }
@@ -2055,7 +2318,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   let data = parsed.data instanceof Date ? parsed.data : null;
   if (!data || Number.isNaN(data.getTime())) data = new Date();
   const iso = data.toISOString();
-  const categoria = detectCategory(parsed.descricao, parsed.tipo);
+  const categoria = await resolveCategory(parsed.descricao, parsed.tipo);
   const payload = {
     row_id: generateRowId(),
     timestamp: new Date().toISOString(),
@@ -2238,7 +2501,7 @@ const parseFixedAccountCommand = (text) => {
 
 async function registerFixedAccount(fromRaw, userNorm, parsed) {
   if (!parsed) return;
-  const categoria = detectCategory(parsed.descricao, "conta_pagar");
+  const categoria = await resolveCategory(parsed.descricao, "conta_pagar");
   const rowId = generateRowId();
   const due = parsed.dueDate instanceof Date ? parsed.dueDate : new Date();
   const payload = {
