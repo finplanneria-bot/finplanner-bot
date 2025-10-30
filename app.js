@@ -68,8 +68,9 @@ const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 
   if (!openaiClient) return null;
   const messages = normalizePromptMessages(input);
   try {
-    if (typeof openaiClient.responses?.create === "function") {
-      const response = await openaiClient.responses.create({
+    const responsesClient = openaiClient.responses;
+    if (responsesClient && typeof responsesClient.create === "function") {
+      const response = await responsesClient.create({
         model,
         input,
         temperature,
@@ -77,8 +78,9 @@ const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 
       });
       return response?.output_text?.trim() || null;
     }
-    if (typeof openaiClient.chat?.completions?.create === "function") {
-      const response = await openaiClient.chat.completions.create({
+    const chatCompletionsClient = openaiClient.chat?.completions;
+    if (chatCompletionsClient && typeof chatCompletionsClient.create === "function") {
+      const response = await chatCompletionsClient.create({
         model,
         messages: messages.length ? messages : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }],
         temperature,
@@ -86,11 +88,12 @@ const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 
       });
       return response?.choices?.[0]?.message?.content?.trim() || null;
     }
-    if (typeof openaiClient.completions?.create === "function") {
+    const completionsClient = openaiClient.completions;
+    if (completionsClient && typeof completionsClient.create === "function") {
       const prompt = (messages.length ? messages : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }])
         .map((msg) => `${msg.role.toUpperCase()}: ${msg.content}`)
         .join("\n\n");
-      const response = await openaiClient.completions.create({
+      const response = await completionsClient.create({
         model,
         prompt,
         temperature,
