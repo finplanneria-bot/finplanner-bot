@@ -18,6 +18,12 @@ dotenv.config();
 // ============================
 // ENV
 // ============================
+// 🔧 Variáveis de ambiente principais
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const USE_OPENAI_RAW = process.env.USE_OPENAI;
+const DEBUG_SHEETS_RAW = process.env.DEBUG_SHEETS;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+
 const {
   PORT,
   SHEETS_ID,
@@ -27,10 +33,6 @@ const {
   WA_PHONE_NUMBER_ID,
   ADMIN_WA_NUMBER,
   WEBHOOK_VERIFY_TOKEN,
-  USE_OPENAI: USE_OPENAI_RAW,
-  OPENAI_API_KEY,
-  DEBUG_SHEETS: DEBUG_SHEETS_RAW,
-  STRIPE_SECRET_KEY,
   STRIPE_WEBHOOK_SECRET,
 } = process.env;
 
