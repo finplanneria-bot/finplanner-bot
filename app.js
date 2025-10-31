@@ -1310,6 +1310,7 @@ const parseRegisterText = (text) => {
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
     .replace(/\b\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?\b/gi, "")
     .replace(/\b(recebimento|receber|recebido|recebi|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
+    .replace(/\b(dia|data)\b/gi, "")
     .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
     .replace(/r\$/gi, "")
     .replace(/\s+/g, " ")
@@ -2621,6 +2622,7 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
 // ============================
 const KNOWN_INTENTS = new Set([
   "boas_vindas",
+  "mostrar_menu",
   "relatorios_menu",
   "relatorio_completo",
   "listar_lancamentos",
@@ -2637,6 +2639,7 @@ const detectIntentHeuristic = (text) => {
   const lower = (text || "").toLowerCase();
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
+  if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
   if (/\brelat[óo]rios?\b/.test(lower)) return "relatorios_menu";
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
@@ -3006,6 +3009,9 @@ async function handleUserText(fromRaw, text) {
   switch (intent) {
     case "boas_vindas":
       await sendWelcomeList(fromRaw);
+      break;
+    case "mostrar_menu":
+      await sendMainMenu(fromRaw);
       break;
     case "relatorios_menu":
       await sendRelatoriosButtons(fromRaw);
