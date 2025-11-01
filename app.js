@@ -242,6 +242,9 @@ const extractNumberWords = (text) => {
   return { amount: parsed, raw: sequence.join(" ") };
 };
 
+const DATE_TOKEN_PATTERN = "\\b(\\d{1,2}[\\/-]\\d{1,2}(?:[\\/-]\\d{2,4})?)\\b";
+const VALUE_TOKEN_PATTERN = "(?:R\\$?\\s*)?(\\d{1,3}(?:[.,]\\d{3})*(?:[.,]\\d{1,2})?)(?!\\s*[\\/-]\\d)";
+
 const parseNumericToken = (rawToken) => {
   if (rawToken === undefined || rawToken === null) return null;
   let token = rawToken.toString().trim().toLowerCase();
@@ -298,10 +301,31 @@ const parseNumericToken = (rawToken) => {
 const extractAmountFromText = (text) => {
   if (!text) return { amount: 0 };
   const source = text.toString();
-  const dateSanitized = source.replace(/\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?/g, " ");
-  const numericPattern = /(?<!\d[\/.-])(?:r\$\s*)?([0-9]+(?:[.,\s][0-9]+)*(?:k)?|[0-9]+\s?mil)(?!\s*[\/-]\s*\d)/gi;
+
+  const dataRegexGlobal = new RegExp(DATE_TOKEN_PATTERN, "g");
+  const dateMatches = [...source.matchAll(dataRegexGlobal)];
+  const spans = dateMatches.map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+
+  const inlineTrailingDateRegex = /[\/-]\s*\d{1,2}(?:[\/-]\d{2,4})?/g;
+  let trailing;
+  while ((trailing = inlineTrailingDateRegex.exec(source)) !== null) {
+    const prevChar = source[trailing.index - 1];
+    if (prevChar && /\d/.test(prevChar)) {
+      spans.push({ start: trailing.index, end: trailing.index + trailing[0].length });
+    }
+  }
+
+  spans.sort((a, b) => a.start - b.start);
+
+  const valorRegexGlobal = new RegExp(VALUE_TOKEN_PATTERN, "gi");
   let match;
-  while ((match = numericPattern.exec(source)) !== null) {
+  while ((match = valorRegexGlobal.exec(source)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (spans.some((span) => start < span.end && end > span.start)) continue;
     const raw = match[0];
     const value = parseNumericToken(raw);
     if (value) return { amount: value, raw };
@@ -310,9 +334,25 @@ const extractAmountFromText = (text) => {
   const words = extractNumberWords(source);
   if (words) return words;
 
-  const fallbackRegex = /\d+/g;
-  while ((match = fallbackRegex.exec(dateSanitized)) !== null) {
+  let sanitized = source;
+  if (spans.length) {
+    const chars = Array.from(source);
+    spans.forEach(({ start, end }) => {
+      for (let i = start; i < end; i += 1) {
+        chars[i] = " ";
+      }
+    });
+    sanitized = chars.join("");
+  }
+  const fallbackRegex = /\d+(?:[.,]\d+)?k|\d+/gi;
+  while ((match = fallbackRegex.exec(sanitized)) !== null) {
     const raw = match[0];
+    const remainder = sanitized.slice(match.index + raw.length);
+    const trailingDigits = remainder.match(/^\s*[\/-]\s*\d/);
+    if (trailingDigits) continue;
+    let cursor = 0;
+    while (cursor < remainder.length && /\s/.test(remainder[cursor])) cursor += 1;
+    if (cursor < remainder.length && /\d/.test(remainder[cursor])) continue;
     const value = parseNumericToken(raw);
     if (value) return { amount: value, raw };
   }
@@ -449,7 +489,7 @@ const parseDateToken = (token) => {
     d.setDate(d.getDate() - 1);
     return d;
   }
-  const match = token.match(/(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?/);
+  const match = token.match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
   if (match) {
     const day = Number(match[1]);
     const month = Number(match[2]) - 1;
@@ -1298,8 +1338,24 @@ const parseRegisterText = (text) => {
   const valor = amountInfo.amount || 0;
 
   let data = null;
-  const dateMatch = original.match(/(hoje|amanh[ãa]|ontem|\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?)/i);
+  const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   if (dateMatch) data = parseDateToken(dateMatch[1]);
+
+  if (!data) {
+    const valueDateMatch = original.match(/(\d{3,})[\/-](\d{1,2})(?:\b|$)/);
+    if (valueDateMatch) {
+      const day = Number(valueDateMatch[2]);
+      if (day >= 1 && day <= 31) {
+        const now = new Date();
+        const candidate = new Date(now.getFullYear(), now.getMonth(), day);
+        candidate.setHours(0, 0, 0, 0);
+        if (candidate < startOfDay(now)) {
+          candidate.setMonth(candidate.getMonth() + 1, day);
+        }
+        data = candidate;
+      }
+    }
+  }
 
   let descricao = original;
   if (amountInfo.raw) {
@@ -1308,7 +1364,8 @@ const parseRegisterText = (text) => {
   }
   descricao = descricao
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
-    .replace(/\b\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{2,4})?\b/gi, "")
+    .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
+    .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
     .replace(/\b(recebimento|receber|recebido|recebi|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
     .replace(/\b(dia|data)\b/gi, "")
     .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
@@ -1351,6 +1408,58 @@ const parseRegisterText = (text) => {
     tipoPagamento,
   };
 };
+
+const runParserSelfTests = () => {
+  try {
+    const now = new Date();
+    const expectations = [
+      {
+        text: "fatura cartão 1200 04/11",
+        amount: 1200,
+        dateOk: (date) =>
+          date instanceof Date &&
+          !Number.isNaN(date?.getTime()) &&
+          date.getDate() === 4 &&
+          date.getMonth() === 10,
+      },
+      {
+        text: "energia 85,50 hoje",
+        amount: 85.5,
+        dateOk: (date) => {
+          if (!(date instanceof Date) || Number.isNaN(date?.getTime())) return false;
+          const diff = Math.abs(startOfDay(date).getTime() - startOfDay(now).getTime());
+          return diff <= 24 * 60 * 60 * 1000;
+        },
+      },
+      {
+        text: "pagar aluguel 750-10",
+        amount: 750,
+        dateOk: (date) =>
+          date instanceof Date && !Number.isNaN(date?.getTime()) && date.getDate() === 10,
+      },
+    ];
+
+    const failures = [];
+    expectations.forEach((example) => {
+      const parsed = parseRegisterText(example.text);
+      if (Math.abs((parsed.valor || 0) - example.amount) > 0.01) {
+        failures.push(`Valor incorreto para "${example.text}" (esperado ${example.amount}, obtido ${parsed.valor})`);
+      }
+      if (!example.dateOk(parsed.data)) {
+        failures.push(`Data não reconhecida corretamente para "${example.text}".`);
+      }
+    });
+
+    if (failures.length) {
+      console.error("[SelfTest] Falhas ao validar o parser:");
+      failures.forEach((failure) => console.error(` - ${failure}`));
+    }
+  } catch (error) {
+    console.error("[SelfTest] Erro ao executar testes do parser:", error);
+  }
+};
+
+runParserSelfTests();
 
 // ============================
 // Fluxos de mensagens
@@ -2505,7 +2614,7 @@ const parseFixedAccountCommand = (text) => {
 
   if (!recurrence) return null;
 
-  const dateMatch = original.match(/(hoje|amanh[ãa]|ontem|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/i);
+  const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   const startDate = dateMatch ? parseDateToken(dateMatch[1]) : null;
 
   if (recurrence.type === "monthly") {
