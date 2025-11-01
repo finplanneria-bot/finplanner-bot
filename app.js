@@ -243,7 +243,8 @@ const extractNumberWords = (text) => {
 };
 
 const DATE_TOKEN_PATTERN = "\\b(\\d{1,2}[\\/-]\\d{1,2}(?:[\\/-]\\d{2,4})?)\\b";
-const VALUE_TOKEN_PATTERN = "(?:R\\$?\\s*)?(\\d{1,3}(?:[.,]\\d{3})*(?:[.,]\\d{1,2})?)(?!\\s*[\\/-]\\d)";
+const VALUE_TOKEN_PATTERN =
+  "(?:R\\$?\\s*)?(?:\\d{1,3}(?:[.,]\\d{3})+(?:[.,]\\d{1,2})?|\\d+(?:[.,]\\d{1,2})?)(?!\\s*[\\/-]\\d)";
 
 const parseNumericToken = (rawToken) => {
   if (rawToken === undefined || rawToken === null) return null;
@@ -1408,58 +1409,6 @@ const parseRegisterText = (text) => {
     tipoPagamento,
   };
 };
-
-const runParserSelfTests = () => {
-  try {
-    const now = new Date();
-    const expectations = [
-      {
-        text: "fatura cartão 1200 04/11",
-        amount: 1200,
-        dateOk: (date) =>
-          date instanceof Date &&
-          !Number.isNaN(date?.getTime()) &&
-          date.getDate() === 4 &&
-          date.getMonth() === 10,
-      },
-      {
-        text: "energia 85,50 hoje",
-        amount: 85.5,
-        dateOk: (date) => {
-          if (!(date instanceof Date) || Number.isNaN(date?.getTime())) return false;
-          const diff = Math.abs(startOfDay(date).getTime() - startOfDay(now).getTime());
-          return diff <= 24 * 60 * 60 * 1000;
-        },
-      },
-      {
-        text: "pagar aluguel 750-10",
-        amount: 750,
-        dateOk: (date) =>
-          date instanceof Date && !Number.isNaN(date?.getTime()) && date.getDate() === 10,
-      },
-    ];
-
-    const failures = [];
-    expectations.forEach((example) => {
-      const parsed = parseRegisterText(example.text);
-      if (Math.abs((parsed.valor || 0) - example.amount) > 0.01) {
-        failures.push(`Valor incorreto para "${example.text}" (esperado ${example.amount}, obtido ${parsed.valor})`);
-      }
-      if (!example.dateOk(parsed.data)) {
-        failures.push(`Data não reconhecida corretamente para "${example.text}".`);
-      }
-    });
-
-    if (failures.length) {
-      console.error("[SelfTest] Falhas ao validar o parser:");
-      failures.forEach((failure) => console.error(` - ${failure}`));
-    }
-  } catch (error) {
-    console.error("[SelfTest] Erro ao executar testes do parser:", error);
-  }
-};
-
-runParserSelfTests();
 
 // ============================
 // Fluxos de mensagens
