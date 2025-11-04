@@ -513,108 +513,241 @@ const parseDateToken = (token) => {
 
 const CATEGORY_DEFINITIONS = [
   {
+    slug: "mercado",
+    label: "Mercado / Supermercado",
+    emoji: "🛒",
+    description: "Compras de supermercado, feira e itens de despensa para casa.",
+    keywords: [
+      "mercado",
+      "supermercado",
+      "hortifruti",
+      "atacado",
+      "atacadista",
+      "sacolao",
+      "mercearia",
+      "açougue",
+      "acougue",
+      "feira",
+      "compras do mes",
+      "cesta basica",
+    ],
+    aliases: ["supermercado", "mercado_supermercado"],
+  },
+  {
+    slug: "alimentacao",
+    label: "Alimentação",
+    emoji: "🍽️",
+    description: "Refeições prontas, lanches e alimentação fora de casa.",
+    keywords: [
+      "restaurante",
+      "lanche",
+      "lanchonete",
+      "ifood",
+      "almoço",
+      "almoco",
+      "jantar",
+      "padaria",
+      "marmita",
+      "self-service",
+      "delivery",
+      "comida pronta",
+      "quentinha",
+      "espetinho",
+    ],
+  },
+  {
+    slug: "bebidas",
+    label: "Bebidas",
+    emoji: "🍹",
+    description: "Bebidas alcoólicas ou não alcoólicas compradas separadamente da refeição.",
+    keywords: [
+      "bebida",
+      "cerveja",
+      "refrigerante",
+      "vinho",
+      "drink",
+      "drinks",
+      "bar",
+      "chopp",
+      "suco",
+      "água",
+      "agua",
+      "whisky",
+      "gin",
+      "café",
+      "cafe",
+      "energético",
+      "energetico",
+    ],
+  },
+  {
+    slug: "higiene_pessoal",
+    label: "Higiene Pessoal",
+    emoji: "🧴",
+    description: "Produtos de cuidado pessoal, higiene e cosméticos.",
+    keywords: [
+      "higiene",
+      "sabonete",
+      "shampoo",
+      "condicionador",
+      "creme",
+      "desodorante",
+      "perfume",
+      "escova",
+      "pasta",
+      "fio dental",
+      "absorvente",
+      "barbeador",
+      "cotonete",
+      "higiene pessoal",
+      "cosmetico",
+      "cosmético",
+    ],
+  },
+  {
     slug: "utilidades",
     label: "Utilidades",
     emoji: "🔌",
-    keywords: ["luz", "energia", "água", "agua", "gás", "gas"],
+    description: "Contas essenciais como luz, água e gás.",
+    keywords: ["luz", "energia", "água", "agua", "gás", "gas", "conta de luz", "conta de agua"],
   },
   {
     slug: "internet_telefonia",
     label: "Internet / Telefonia",
     emoji: "🌐",
-    keywords: ["internet", "fibra", "vivo", "claro", "tim", "oi", "telefonia"],
+    description: "Planos de internet, telefonia fixa ou celular.",
+    keywords: ["internet", "fibra", "vivo", "claro", "tim", "oi", "telefonia", "celular", "telefone"],
   },
   {
     slug: "moradia",
     label: "Moradia",
     emoji: "🏠",
-    keywords: ["aluguel", "condomínio", "condominio", "iptu", "alojamento"],
-  },
-  {
-    slug: "mercado",
-    label: "Alimentação",
-    emoji: "🛒",
-    keywords: [
-      "mercado",
-      "supermercado",
-      "ifood",
-      "padaria",
-      "almoço",
-      "almoco",
-      "jantar",
-      "restaurante",
-      "lanche",
-      "espetinho",
-      "comida",
-      "bebida",
-    ],
-    aliases: ["alimentacao"],
+    description: "Custos de moradia como aluguel, condomínio e financiamentos.",
+    keywords: ["aluguel", "condomínio", "condominio", "iptu", "financiamento", "alojamento", "imovel", "imóvel"],
   },
   {
     slug: "transporte",
     label: "Transporte",
     emoji: "🚗",
-    keywords: ["uber", "99", "gasolina", "combustível", "combustivel", "passagem", "ônibus", "onibus", "transporte"],
+    description: "Deslocamentos, combustível, pedágios e manutenção de veículos.",
+    keywords: [
+      "uber",
+      "99",
+      "gasolina",
+      "combustível",
+      "combustivel",
+      "passagem",
+      "ônibus",
+      "onibus",
+      "transporte",
+      "estacionamento",
+      "pedágio",
+      "pedagio",
+      "manutenção carro",
+      "manutencao carro",
+    ],
   },
   {
     slug: "saude",
     label: "Saúde",
     emoji: "💊",
-    keywords: ["academia", "plano", "consulta", "dentista", "farmácia", "farmacia", "remédio", "remedio"],
+    description: "Cuidados com saúde, planos, exames e medicamentos.",
+    keywords: [
+      "academia",
+      "plano",
+      "consulta",
+      "dentista",
+      "farmácia",
+      "farmacia",
+      "remédio",
+      "remedio",
+      "exame",
+      "hospital",
+      "terapia",
+    ],
   },
   {
     slug: "educacao",
     label: "Educação",
     emoji: "🎓",
-    keywords: ["curso", "faculdade", "escola", "mensalidade", "aula", "material"],
+    description: "Cursos, mensalidades, materiais e formação.",
+    keywords: ["curso", "faculdade", "escola", "mensalidade", "aula", "material", "livro", "apostila"],
   },
   {
     slug: "lazer",
     label: "Lazer",
     emoji: "🎭",
-    keywords: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento", "viagem"],
+    description: "Atividades de lazer, cultura, assinaturas e viagens.",
+    keywords: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento", "viagem", "passeio", "parque"],
   },
   {
     slug: "impostos_taxas",
     label: "Impostos e Taxas",
     emoji: "🧾",
-    keywords: ["multa", "taxa", "imposto", "receita", "darf", "alvará", "alvara"],
+    description: "Tributos, licenças, multas e encargos governamentais.",
+    keywords: ["multa", "taxa", "imposto", "receita", "darf", "alvará", "alvara", "licenciamento"],
+  },
+  {
+    slug: "servicos_domesticos",
+    label: "Serviços Domésticos",
+    emoji: "🧹",
+    description: "Serviços para casa como faxina, diarista e reparos.",
+    keywords: ["faxina", "diarista", "limpeza", "serviço doméstico", "servico domestico", "manutenção", "manutencao"],
   },
   {
     slug: "salario_trabalho",
     label: "Salário / Trabalho",
     emoji: "💼",
-    keywords: ["salário", "salario", "pagamento", "freela", "freelance", "contrato", "folha"],
+    description: "Receitas de salário, folha de pagamento e pró-labore.",
+    keywords: ["salário", "salario", "pagamento", "folha", "pro labore", "adiantamento", "contrato"],
   },
   {
     slug: "vendas_receitas",
     label: "Vendas e Receitas",
     emoji: "💵",
-    keywords: ["venda", "recebimento", "cliente", "boleto recebido", "serviço", "servico", "entrada"],
+    description: "Recebimentos por vendas, serviços e entradas diversas.",
+    keywords: ["venda", "recebimento", "cliente", "boleto recebido", "serviço", "servico", "entrada", "receita"],
   },
   {
     slug: "investimentos",
     label: "Investimentos",
     emoji: "📈",
-    keywords: ["investimento", "bolsa", "renda fixa", "tesouro", "ação", "acao"],
+    description: "Aportes, resgates e movimentações financeiras de investimentos.",
+    keywords: ["investimento", "bolsa", "renda fixa", "tesouro", "ação", "acao", "cripto", "poupança", "poupanca"],
   },
   {
     slug: "outros",
     label: "Outros",
     emoji: "🧩",
+    description: "Despesas ou receitas que não se encaixam nas demais categorias.",
     keywords: [],
   },
 ];
 
+const sanitizeCategoryKey = (value) => {
+  if (!value) return "";
+  return normalizeDiacritics(value.toString().toLowerCase())
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+};
+
 const CATEGORY_BY_SLUG = new Map();
 CATEGORY_DEFINITIONS.forEach((category) => {
-  CATEGORY_BY_SLUG.set(category.slug, category);
-  (category.aliases || []).forEach((alias) => CATEGORY_BY_SLUG.set(alias, category));
+  category.normalizedKeywords = (category.keywords || []).map((kw) => normalizeDiacritics(kw));
+  const keys = new Set([
+    sanitizeCategoryKey(category.slug),
+    sanitizeCategoryKey(category.label),
+  ]);
+  (category.aliases || []).forEach((alias) => keys.add(sanitizeCategoryKey(alias)));
+  keys.forEach((key) => {
+    if (key) CATEGORY_BY_SLUG.set(key, category);
+  });
 });
 
 const getCategoryDefinition = (slug) => {
-  if (!slug) return null;
-  return CATEGORY_BY_SLUG.get(slug.toLowerCase()) || null;
+  const key = sanitizeCategoryKey(slug);
+  if (!key) return null;
+  return CATEGORY_BY_SLUG.get(key) || null;
 };
 
 const humanizeCategorySlug = (value) => {
@@ -628,7 +761,8 @@ const humanizeCategorySlug = (value) => {
 const detectCategoryHeuristic = (description, tipo) => {
   const normalized = normalizeDiacritics((description || "").toLowerCase());
   for (const category of CATEGORY_DEFINITIONS) {
-    if (category.keywords?.some((kw) => normalized.includes(kw))) {
+    const keywords = category.normalizedKeywords || [];
+    if (keywords.some((kw) => kw && normalized.includes(kw))) {
       return { slug: category.slug, emoji: category.emoji };
     }
   }
@@ -652,8 +786,9 @@ const formatCategoryLabel = (slug, emoji) => {
 
 const CATEGORY_PROMPT_HINT = CATEGORY_DEFINITIONS.map((category) => {
   const samples = (category.keywords || []).slice(0, 5);
-  const sampleText = samples.length ? ` (exemplos: ${samples.join(", ")})` : "";
-  return `${category.slug}: ${category.label}${sampleText}`;
+  const detail = category.description ? ` - ${category.description}` : "";
+  const sampleText = samples.length ? ` Exemplos: ${samples.join(", ")}.` : "";
+  return `${category.slug}: ${category.label}${detail}${sampleText}`;
 }).join("\n");
 
 const truncateForPrompt = (value, max = 200) => {
@@ -697,9 +832,17 @@ const resolveCategory = async (description, tipo) => {
       temperature: 0,
       maxOutputTokens: 50,
     });
-    const predicted = output?.trim().toLowerCase();
-    const sanitized = predicted ? predicted.replace(/[^a-z0-9_]/g, "") : "";
-    const def = getCategoryDefinition(sanitized);
+    const predicted = output?.trim();
+    const def = getCategoryDefinition(predicted);
+    if (!def && predicted) {
+      const pieces = predicted.split(/\s|,|;|\n/).filter(Boolean);
+      for (const piece of pieces) {
+        const candidate = getCategoryDefinition(piece);
+        if (candidate) {
+          return { slug: candidate.slug, emoji: candidate.emoji };
+        }
+      }
+    }
     if (def) return { slug: def.slug, emoji: def.emoji };
   } catch (error) {
     console.error("Falha ao consultar OpenAI para categoria:", error?.message || error);
