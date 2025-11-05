@@ -1401,6 +1401,19 @@ const sessionPayConfirm = new Map();
 
 const processedMessages = new Map();
 const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const lastInboundInteraction = new Map();
+const WA_SESSION_WINDOW_MS = 23.5 * 60 * 60 * 1000;
+
+const recordUserInteraction = (userNorm) => {
+  if (!userNorm) return;
+  lastInboundInteraction.set(userNorm, Date.now());
+};
+
+const hasRecentUserInteraction = (userNorm) => {
+  if (!userNorm) return false;
+  const last = lastInboundInteraction.get(userNorm);
+  return typeof last === "number" && Date.now() - last <= WA_SESSION_WINDOW_MS;
+};
 
 const isDuplicateMessage = (id) => {
   if (!id) return false;
@@ -2892,7 +2905,9 @@ const buildIntentPrompt = (text) => {
 
 const detectIntent = async (text) => {
   const fallback = detectIntentHeuristic(text);
-  if (!text || !openaiClient) return fallback;
+  if (!text) return fallback;
+  if (!openaiClient) return fallback;
+  if (fallback && fallback !== "desconhecido") return fallback;
   try {
     const output = await callOpenAI({
       model: OPENAI_INTENT_MODEL,
@@ -2924,6 +2939,7 @@ app.get("/webhook", (req, res) => {
 async function handleInteractiveMessage(from, payload) {
   const { type } = payload;
   const userNorm = normalizeUser(from);
+  recordUserInteraction(userNorm);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
     if (id === "REG:STATUS:PAGO") {
@@ -3173,6 +3189,7 @@ function parseRangeMessage(text) {
 
 async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
+  recordUserInteraction(userNorm);
   const trimmed = (text || "").trim();
 
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
@@ -3373,38 +3390,91 @@ cron.schedule(
     try {
       const sheet = await ensureSheet();
       const rows = await sheet.getRows();
-      const today = startOfDay(new Date()).getTime();
+      const today = startOfDay(new Date());
+      const todayMs = today.getTime();
 
-      const duePay = rows
-        .filter((row) => getVal(row, "tipo") === "conta_pagar" && getVal(row, "status") !== "pago" && getVal(row, "vencimento_iso"))
-        .filter((row) => startOfDay(new Date(getVal(row, "vencimento_iso"))).getTime() === today);
+      const dueByUser = new Map();
 
-      const dueRecv = rows
-        .filter(
-          (row) =>
-            getVal(row, "tipo") === "conta_receber" &&
-            !["pago", "recebido"].includes((getVal(row, "status") || "").toLowerCase()) &&
-            getVal(row, "vencimento_iso")
-        )
-        .filter((row) => startOfDay(new Date(getVal(row, "vencimento_iso"))).getTime() === today);
-
-      const notify = async (row, isReceber = false) => {
+      const enqueueReminder = (row, kind) => {
+        const dueIso = getVal(row, "vencimento_iso");
+        if (!dueIso) return;
+        const dueDate = new Date(dueIso);
+        if (Number.isNaN(dueDate.getTime())) return;
+        const dueMs = startOfDay(dueDate).getTime();
+        if (dueMs > todayMs) return;
         const toRaw = getVal(row, "user_raw") || getVal(row, "user");
-        const tipoTxt = isReceber ? "recebimento" : "pagamento";
-        await sendText(
-          toRaw,
-          `⚠️ *Lembrete de ${tipoTxt}!*\n\n📘 ${getVal(row, "conta") || "Lançamento"}\n📝 ${getVal(row, "descricao") || getVal(row, "conta") || "—"}\n💰 ${formatCurrencyBR(
-            getVal(row, "valor")
-          )}\n📅 Para hoje (${formatBRDate(getVal(row, "vencimento_iso"))})`
-        );
-        if (getVal(row, "tipo_pagamento") === "pix")
-          await sendCopyButton(toRaw, "💳 Chave Pix:", getVal(row, "codigo_pagamento"), "Copiar Pix");
-        if (getVal(row, "tipo_pagamento") === "boleto")
-          await sendCopyButton(toRaw, "🧾 Código de barras:", getVal(row, "codigo_pagamento"), "Copiar boleto");
+        const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
+        if (!toRaw || !userNorm) return;
+        const bucket = dueByUser.get(userNorm) || { to: toRaw, items: [] };
+        if (!bucket.to) bucket.to = toRaw;
+        bucket.items.push({ row, kind, dueMs });
+        dueByUser.set(userNorm, bucket);
       };
 
-      for (const row of duePay) await notify(row, false);
-      for (const row of dueRecv) await notify(row, true);
+      for (const row of rows) {
+        const tipo = (getVal(row, "tipo") || "").toString().toLowerCase();
+        const status = (getVal(row, "status") || "").toString().toLowerCase();
+        if (tipo === "conta_pagar" && status !== "pago") enqueueReminder(row, "pagar");
+        if (tipo === "conta_receber" && !["pago", "recebido"].includes(status)) enqueueReminder(row, "receber");
+      }
+
+      for (const [userNorm, bucket] of dueByUser.entries()) {
+        const { to, items } = bucket;
+        if (!items.length || !to) continue;
+
+        if (!hasRecentUserInteraction(userNorm)) {
+          if (ADMIN_WA_NUMBER) {
+            await sendText(
+              ADMIN_WA_NUMBER,
+              `⚠️ Não foi possível enviar lembrete automático para ${to}: janela de 24h expirada.`
+            );
+          }
+          continue;
+        }
+
+        const pagar = items
+          .filter((item) => item.kind === "pagar")
+          .sort((a, b) => a.dueMs - b.dueMs);
+        const receber = items
+          .filter((item) => item.kind === "receber")
+          .sort((a, b) => a.dueMs - b.dueMs);
+
+        const sections = [];
+        let counter = 1;
+
+        if (pagar.length) {
+          const blocks = pagar.map((item) => {
+            const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
+            const dueLabel = dueRaw || "—";
+            const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+            return formatEntryBlock(item.row, { index: counter++, dateText: label });
+          });
+          sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
+        }
+
+        if (receber.length) {
+          const blocks = receber.map((item) => {
+            const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
+            const dueLabel = dueRaw || "—";
+            const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+            return formatEntryBlock(item.row, { index: counter++, dateText: label });
+          });
+          sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
+        }
+
+        if (!sections.length) continue;
+
+        const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
+        await sendText(to, message);
+
+        for (const item of items) {
+          const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
+          const code = getVal(item.row, "codigo_pagamento");
+          if (!code) continue;
+          if (paymentType === "pix") await sendCopyButton(to, "💳 Chave Pix:", code, "Copiar Pix");
+          if (paymentType === "boleto") await sendCopyButton(to, "🧾 Código de barras:", code, "Copiar boleto");
+        }
+      }
     } catch (error) {
       console.error("Erro no CRON:", error.message);
     }
