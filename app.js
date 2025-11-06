@@ -1402,6 +1402,7 @@ const sessionPayConfirm = new Map();
 const processedMessages = new Map();
 const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const lastInboundInteraction = new Map();
+const reminderAdminNotice = new Map();
 const WA_SESSION_WINDOW_MS = 23.5 * 60 * 60 * 1000;
 
 const recordUserInteraction = (userNorm) => {
@@ -1413,6 +1414,15 @@ const hasRecentUserInteraction = (userNorm) => {
   if (!userNorm) return false;
   const last = lastInboundInteraction.get(userNorm);
   return typeof last === "number" && Date.now() - last <= WA_SESSION_WINDOW_MS;
+};
+
+const shouldNotifyAdminReminder = (userNorm) => {
+  if (!userNorm) return false;
+  const today = new Date().toISOString().split("T")[0];
+  const key = reminderAdminNotice.get(userNorm);
+  if (key === today) return false;
+  reminderAdminNotice.set(userNorm, today);
+  return true;
 };
 
 const isDuplicateMessage = (id) => {
@@ -3422,14 +3432,12 @@ cron.schedule(
         const { to, items } = bucket;
         if (!items.length || !to) continue;
 
-        if (!hasRecentUserInteraction(userNorm)) {
-          if (ADMIN_WA_NUMBER) {
-            await sendText(
-              ADMIN_WA_NUMBER,
-              `⚠️ Não foi possível enviar lembrete automático para ${to}: janela de 24h expirada.`
-            );
-          }
-          continue;
+        const withinWindow = hasRecentUserInteraction(userNorm);
+        if (!withinWindow && ADMIN_WA_NUMBER && shouldNotifyAdminReminder(userNorm)) {
+          await sendText(
+            ADMIN_WA_NUMBER,
+            `⚠️ Tentativa de lembrete para ${to} fora da janela de 24h. A mensagem foi enviada mesmo assim.`
+          );
         }
 
         const pagar = items
