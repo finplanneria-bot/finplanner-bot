@@ -3395,7 +3395,7 @@ app.post("/webhook", async (req, res) => {
 // CRON diário 08:00 (America/Maceio)
 // ============================
 cron.schedule(
-  "0 8 * * *",
+  "* * * * *",
   async () => {
     try {
       const sheet = await ensureSheet();
@@ -3497,3 +3497,4 @@ const port = PORT || 10000;
 app.listen(port, () => {
   console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
 });
+
