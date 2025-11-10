@@ -137,6 +137,69 @@ app.get("/", (_req, res) => {
 // Utils
 // ============================
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
+const userFirstNames = new Map();
+
+const extractFirstName = (value) => {
+  if (!value) return "";
+  const cleaned = value.toString().trim();
+  if (!cleaned) return "";
+  const parts = cleaned.split(/\s+/);
+  const first = parts[0] || "";
+  return first;
+};
+
+const rememberUserName = (userNorm, fullName) => {
+  if (!userNorm || !fullName) return;
+  const first = extractFirstName(fullName);
+  if (!first) return;
+  userFirstNames.set(userNorm, first);
+};
+
+const getStoredFirstName = (userNorm) => {
+  if (!userNorm) return "";
+  return userFirstNames.get(userNorm) || "";
+};
+
+const processedMessages = new Map();
+const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const lastInboundInteraction = new Map();
+const reminderAdminNotice = new Map();
+const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const recordUserInteraction = (userNorm) => {
+  if (!userNorm) return;
+  lastInboundInteraction.set(userNorm, Date.now());
+};
+
+function hasRecentUserInteraction(userNorm) {
+  if (!userNorm) return false;
+  const last = lastInboundInteraction.get(userNorm);
+  return typeof last === "number" && Date.now() - last <= WA_SESSION_WINDOW_MS;
+}
+
+const shouldNotifyAdminReminder = (userNorm) => {
+  if (!userNorm) return false;
+  const today = new Date().toISOString().split("T")[0];
+  const key = reminderAdminNotice.get(userNorm);
+  if (key === today) return false;
+  reminderAdminNotice.set(userNorm, today);
+  return true;
+};
+
+const isDuplicateMessage = (id) => {
+  if (!id) return false;
+  const now = Date.now();
+  for (const [storedId, ts] of processedMessages) {
+    if (now - ts > MESSAGE_CACHE_TTL_MS) {
+      processedMessages.delete(storedId);
+    }
+  }
+  if (processedMessages.has(id)) {
+    return true;
+  }
+  processedMessages.set(id, now);
+  return false;
+};
 const NUMBER_WORDS = {
   zero: 0,
   um: 1,
@@ -853,7 +916,11 @@ const resolveCategory = async (description, tipo) => {
 // ============================
 // WhatsApp helpers
 // ============================
-const WA_API = `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`;
+const WA_API_VERSION = "v17.0";
+const WA_API = `https://graph.facebook.com/${WA_API_VERSION}/${WA_PHONE_NUMBER_ID}/messages`;
+const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
+const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
+const ADMIN_NUMBER_NORM = ADMIN_WA_NUMBER ? normalizeUser(ADMIN_WA_NUMBER) : null;
 
 async function sendWA(payload) {
   try {
@@ -863,18 +930,80 @@ async function sendWA(payload) {
         "Content-Type": "application/json",
       },
     });
+    return true;
   } catch (error) {
     console.error("Erro WA:", error.response?.data || error.message);
+    return false;
   }
 }
 
-const sendText = (to, body) =>
-  sendWA({
+const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
+  const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: TEMPLATE_REMINDER_NAME,
+      language: { code: "pt_BR" },
+      components: [
+        {
+          type: "body",
+          parameters: [{ type: "text", text: firstName }],
+        },
+        {
+          type: "button",
+          sub_type: "quick_reply",
+          index: "0",
+          parameters: [{ type: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
+        },
+      ],
+    },
+  };
+  const success = await sendWA(payload);
+  if (success) {
+    console.log("✅ Template de reengajamento enviado para", to);
+    if (userNorm) {
+      lastInboundInteraction.set(userNorm, Date.now());
+    }
+  }
+  return success;
+};
+
+const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = false }) => {
+  if (!to) return false;
+  if (bypassWindow) return true;
+  if (userNorm && ADMIN_NUMBER_NORM && userNorm === ADMIN_NUMBER_NORM) {
+    return true;
+  }
+  if (hasRecentUserInteraction(userNorm)) {
+    return true;
+  }
+  return sendTemplateReminder(to, userNorm, nameHint);
+};
+
+const sendText = async (to, body, options = {}) => {
+  if (!to || !body) return false;
+  const userNorm = normalizeUser(to);
+  const nameHint = options.nameHint || getStoredFirstName(userNorm);
+  const canSend = await ensureSessionWindow({
+    to,
+    userNorm,
+    nameHint,
+    bypassWindow: options.bypassWindow || false,
+  });
+  if (!canSend) return false;
+  const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "text",
     text: { body },
   });
+  if (success) {
+    console.log("💬 Mensagem enviada normalmente para", to);
+  }
+  return success;
+};
 
 const sendCopyButton = (to, title, code, btnTitle) => {
   if (!code) return;
@@ -1398,47 +1527,6 @@ const sessionFixedDelete = new Map();
 const sessionStatusConfirm = new Map();
 const sessionPaymentCode = new Map();
 const sessionPayConfirm = new Map();
-
-const processedMessages = new Map();
-const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
-const lastInboundInteraction = new Map();
-const reminderAdminNotice = new Map();
-const WA_SESSION_WINDOW_MS = 23.5 * 60 * 60 * 1000;
-
-const recordUserInteraction = (userNorm) => {
-  if (!userNorm) return;
-  lastInboundInteraction.set(userNorm, Date.now());
-};
-
-const hasRecentUserInteraction = (userNorm) => {
-  if (!userNorm) return false;
-  const last = lastInboundInteraction.get(userNorm);
-  return typeof last === "number" && Date.now() - last <= WA_SESSION_WINDOW_MS;
-};
-
-const shouldNotifyAdminReminder = (userNorm) => {
-  if (!userNorm) return false;
-  const today = new Date().toISOString().split("T")[0];
-  const key = reminderAdminNotice.get(userNorm);
-  if (key === today) return false;
-  reminderAdminNotice.set(userNorm, today);
-  return true;
-};
-
-const isDuplicateMessage = (id) => {
-  if (!id) return false;
-  const now = Date.now();
-  for (const [storedId, ts] of processedMessages) {
-    if (now - ts > MESSAGE_CACHE_TTL_MS) {
-      processedMessages.delete(storedId);
-    }
-  }
-  if (processedMessages.has(id)) {
-    return true;
-  }
-  processedMessages.set(id, now);
-  return false;
-};
 
 const startReportCategoryFlow = async (to, userNorm, category) => {
   sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
@@ -2952,6 +3040,16 @@ async function handleInteractiveMessage(from, payload) {
   recordUserInteraction(userNorm);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
+    const payloadId = payload.button_reply?.payload;
+    const title = payload.button_reply?.title?.toLowerCase?.() || "";
+    if (
+      id === TEMPLATE_REMINDER_BUTTON_ID ||
+      payloadId === TEMPLATE_REMINDER_BUTTON_ID ||
+      title === "ver meus lembretes"
+    ) {
+      await listPendingPayments(from, userNorm);
+      return;
+    }
     if (id === "REG:STATUS:PAGO") {
       await handleStatusSelection(from, userNorm, "pago");
       return;
@@ -3233,6 +3331,16 @@ async function handleUserText(fromRaw, text) {
     return;
   }
 
+  const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
+  if (
+    normalizedMessage === "ver meus lembretes" ||
+    normalizedMessage === "meus lembretes" ||
+    normalizedMessage.startsWith("ver meus lembretes")
+  ) {
+    await listPendingPayments(fromRaw, userNorm);
+    return;
+  }
+
   const intent = await detectIntent(trimmed);
   switch (intent) {
     case "boas_vindas":
@@ -3353,6 +3461,14 @@ app.post("/webhook", async (req, res) => {
           const value = change.value || {};
           const messages = value.messages || [];
           const statuses = value.statuses || [];
+          const contacts = value.contacts || [];
+
+          for (const contact of contacts) {
+            const waId = normalizeUser(contact.wa_id || contact.waId || contact.id || contact.input);
+            const displayName =
+              contact.profile?.name || contact.profile?.pushname || contact.profile?.display_name || contact.profile?.first_name;
+            if (waId) rememberUserName(waId, displayName);
+          }
 
           for (const status of statuses) {
             if (status.status === "failed" && ADMIN_WA_NUMBER) {
@@ -3371,6 +3487,10 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
             const type = message.type;
+            const fromNorm = normalizeUser(from);
+            const profileName =
+              message.profile?.name || message.profile?.pushname || message.profile?.display_name || message.profile?.first_name;
+            if (fromNorm) rememberUserName(fromNorm, profileName);
             if (type === "text") {
               await handleUserText(from, message.text?.body || "");
             } else if (type === "interactive") {
@@ -3473,7 +3593,10 @@ cron.schedule(
         if (!sections.length) continue;
 
         const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
-        await sendText(to, message);
+        const delivered = await sendText(to, message);
+        if (!delivered) {
+          continue;
+        }
 
         for (const item of items) {
           const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
@@ -3497,5 +3620,3 @@ const port = PORT || 10000;
 app.listen(port, () => {
   console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
 });
-
-
