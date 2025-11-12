@@ -918,9 +918,45 @@ const resolveCategory = async (description, tipo) => {
 // ============================
 const WA_API_VERSION = "v17.0";
 const WA_API = `https://graph.facebook.com/${WA_API_VERSION}/${WA_PHONE_NUMBER_ID}/messages`;
+const WA_TEXT_LIMIT = 4000;
 const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const ADMIN_NUMBER_NORM = ADMIN_WA_NUMBER ? normalizeUser(ADMIN_WA_NUMBER) : null;
+
+const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
+  if (!text) return [];
+  if (text.length <= limit) return [text];
+  const parts = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let sliceIndex = remaining.lastIndexOf("\n", limit);
+    if (sliceIndex === -1 || sliceIndex < limit * 0.5) {
+      const spaceIndex = remaining.lastIndexOf(" ", limit);
+      if (spaceIndex > sliceIndex) {
+        sliceIndex = spaceIndex;
+      }
+    }
+    if (sliceIndex === -1 || sliceIndex === 0) {
+      sliceIndex = limit;
+    }
+    const chunk = remaining.slice(0, sliceIndex).trimEnd();
+    if (chunk) {
+      parts.push(chunk);
+    }
+    remaining = remaining.slice(sliceIndex).trimStart();
+    if (!remaining) {
+      break;
+    }
+    if (remaining.length <= limit) {
+      parts.push(remaining);
+      return parts;
+    }
+  }
+  if (remaining && remaining.length <= limit) {
+    parts.push(remaining);
+  }
+  return parts;
+};
 
 async function sendWA(payload) {
   try {
@@ -993,16 +1029,27 @@ const sendText = async (to, body, options = {}) => {
     bypassWindow: options.bypassWindow || false,
   });
   if (!canSend) return false;
-  const success = await sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body },
-  });
-  if (success) {
-    console.log("💬 Mensagem enviada normalmente para", to);
+  const segments = splitLongMessage(body);
+  let allDelivered = true;
+  const total = segments.length || 1;
+  if (total === 0) return false;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    const success = await sendWA({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: segment },
+    });
+    if (success) {
+      const suffix = total > 1 ? ` (parte ${index + 1}/${total})` : "";
+      console.log("💬 Mensagem enviada normalmente para", to, suffix);
+    } else {
+      allDelivered = false;
+      break;
+    }
   }
-  return success;
+  return allDelivered;
 };
 
 const sendCopyButton = (to, title, code, btnTitle) => {
