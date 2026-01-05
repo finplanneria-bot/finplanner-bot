@@ -999,9 +999,6 @@ const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
   const success = await sendWA(payload);
   if (success) {
     console.log("✅ Template de reengajamento enviado para", to);
-    if (userNorm) {
-      lastInboundInteraction.set(userNorm, Date.now());
-    }
   }
   return success;
 };
@@ -1015,7 +1012,8 @@ const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = fals
   if (hasRecentUserInteraction(userNorm)) {
     return true;
   }
-  return sendTemplateReminder(to, userNorm, nameHint);
+  await sendTemplateReminder(to, userNorm, nameHint);
+  return false;
 };
 
 const sendText = async (to, body, options = {}) => {
@@ -2365,10 +2363,7 @@ const sendRegistrationEditPrompt = async (to, rowId, statusLabel) => {
       type: "button",
       body: { text: `Status identificado automaticamente: ${statusLabel}.\n\nDeseja editar este lançamento?` },
       action: {
-        buttons: [
-          { type: "reply", reply: { id: `REG:EDIT:${rowId}`, title: "✏ Editar" } },
-          { type: "reply", reply: { id: `REG:KEEP:${rowId}`, title: "✅ Manter" } },
-        ],
+        buttons: [{ type: "reply", reply: { id: `REG:EDIT:${rowId}`, title: "✏ Editar" } }],
       },
     },
   });
@@ -2983,6 +2978,9 @@ const KNOWN_INTENTS = new Set([
   "boas_vindas",
   "mostrar_menu",
   "relatorios_menu",
+  "relatorio_pagamentos_mes",
+  "relatorio_recebimentos_mes",
+  "relatorio_contas_pagar_mes",
   "relatorio_completo",
   "listar_lancamentos",
   "listar_pendentes",
@@ -2999,6 +2997,15 @@ const detectIntentHeuristic = (text) => {
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
+  if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
+    return "relatorio_pagamentos_mes";
+  }
+  if (/quanto eu recebi|quanto recebi|recebimentos? desse mes|recebimentos? do mes/.test(normalized)) {
+    return "relatorio_recebimentos_mes";
+  }
+  if (/contas?\s+a\s+pagar.*mes|pendentes? desse mes|pendentes? do mes/.test(normalized)) {
+    return "relatorio_contas_pagar_mes";
+  }
   if (/\brelat[óo]rios?\b/.test(lower)) return "relatorios_menu";
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
@@ -3041,7 +3048,15 @@ const buildIntentPrompt = (text) => {
       content: [
         {
           type: "text",
-          text: `Opções válidas: ${options}.\nMensagem: "${text}"\nResponda somente com uma das opções. Use "desconhecido" caso não tenha correspondência.`,
+          text:
+            `Opções válidas: ${options}.\n\n` +
+            "Exemplos:\n" +
+            '- "quanto eu gastei esse mês?" -> relatorio_pagamentos_mes\n' +
+            '- "quanto recebi este mês?" -> relatorio_recebimentos_mes\n' +
+            '- "contas a pagar deste mês" -> relatorio_contas_pagar_mes\n' +
+            '- "quero relatório completo" -> relatorio_completo\n' +
+            '- "abrir menu" -> mostrar_menu\n\n' +
+            `Mensagem: "${text}"\nResponda somente com uma das opções. Use "desconhecido" caso não tenha correspondência.`,
         },
       ],
     },
@@ -3126,10 +3141,6 @@ async function handleInteractiveMessage(from, payload) {
         from,
         `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
       );
-      return;
-    }
-    if (id.startsWith("REG:KEEP:")) {
-      await sendText(from, "Perfeito! O lançamento foi mantido como está.");
       return;
     }
     if (id.startsWith("PAYCODE:ADD:")) {
@@ -3399,6 +3410,33 @@ async function handleUserText(fromRaw, text) {
     case "relatorios_menu":
       await sendRelatoriosButtons(fromRaw);
       break;
+    case "relatorio_pagamentos_mes": {
+      const now = new Date();
+      const range = {
+        start: startOfMonth(now.getFullYear(), now.getMonth()),
+        end: endOfMonth(now.getFullYear(), now.getMonth()),
+      };
+      await showReportByCategory(fromRaw, userNorm, "pag", range);
+      break;
+    }
+    case "relatorio_recebimentos_mes": {
+      const now = new Date();
+      const range = {
+        start: startOfMonth(now.getFullYear(), now.getMonth()),
+        end: endOfMonth(now.getFullYear(), now.getMonth()),
+      };
+      await showReportByCategory(fromRaw, userNorm, "rec", range);
+      break;
+    }
+    case "relatorio_contas_pagar_mes": {
+      const now = new Date();
+      const range = {
+        start: startOfMonth(now.getFullYear(), now.getMonth()),
+        end: endOfMonth(now.getFullYear(), now.getMonth()),
+      };
+      await showReportByCategory(fromRaw, userNorm, "cp", range);
+      break;
+    }
     case "relatorio_completo": {
       const now = new Date();
       const range = {
@@ -3578,7 +3616,7 @@ cron.schedule(
         const dueDate = new Date(dueIso);
         if (Number.isNaN(dueDate.getTime())) return;
         const dueMs = startOfDay(dueDate).getTime();
-        if (dueMs > todayMs) return;
+        if (dueMs !== todayMs) return;
         const toRaw = getVal(row, "user_raw") || getVal(row, "user");
         const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
         if (!toRaw || !userNorm) return;
@@ -3598,14 +3636,6 @@ cron.schedule(
       for (const [userNorm, bucket] of dueByUser.entries()) {
         const { to, items } = bucket;
         if (!items.length || !to) continue;
-
-        const withinWindow = hasRecentUserInteraction(userNorm);
-        if (!withinWindow && ADMIN_WA_NUMBER && shouldNotifyAdminReminder(userNorm)) {
-          await sendText(
-            ADMIN_WA_NUMBER,
-            `⚠️ Tentativa de lembrete para ${to} fora da janela de 24h. A mensagem foi enviada mesmo assim.`
-          );
-        }
 
         const pagar = items
           .filter((item) => item.kind === "pagar")
@@ -3640,8 +3670,11 @@ cron.schedule(
         if (!sections.length) continue;
 
         const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
-        const delivered = await sendText(to, message);
-        if (!delivered) {
+        const withinWindow = hasRecentUserInteraction(userNorm);
+        const delivered = withinWindow
+          ? await sendText(to, message)
+          : await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
+        if (!delivered || !withinWindow) {
           continue;
         }
 
