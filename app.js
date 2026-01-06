@@ -4,7 +4,6 @@
 // ============================
 
 import express from "express";
-import bodyParser from "body-parser";
 import Stripe from "stripe";
 import OpenAI from "openai";
 import axios from "axios";
@@ -121,13 +120,15 @@ if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
 // ============================
 const app = express();
 
-const jsonParser = bodyParser.json();
-app.use((req, res, next) => {
-  if (req.originalUrl.startsWith("/stripe/webhook")) {
-    return next();
-  }
-  return jsonParser(req, res, next);
-});
+// Stripe webhook (raw body) - endpoint: /webhook/stripe
+// Eventos no Stripe Dashboard:
+// - checkout.session.completed
+// - invoice.payment_succeeded
+// - invoice.payment_failed
+// - customer.subscription.deleted
+app.post("/webhook/stripe", express.raw({ type: "application/json" }), handleStripeWebhook);
+
+app.use(express.json());
 
 app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
@@ -165,6 +166,8 @@ const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const lastInboundInteraction = new Map();
 const reminderAdminNotice = new Map();
 const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+const usuarioStatusCache = new Map();
+const USUARIO_CACHE_TTL_MS = 60 * 1000;
 
 const recordUserInteraction = (userNorm) => {
   if (!userNorm) return;
@@ -1099,12 +1102,17 @@ const SHEET_HEADERS = [
   "descricao",
 ];
 
-const CLIENTES_HEADERS = [
+const USUARIOS_HEADERS = [
   "user",
+  "nome",
   "plano",
   "ativo",
   "data_inicio",
   "vencimento_plano",
+  "ultima_atualizacao",
+  "origem",
+  "checkout_id",
+  "email",
 ];
 
 let doc;
@@ -1141,20 +1149,20 @@ async function ensureSheet() {
   return sheet;
 }
 
-async function ensureSheetClientes() {
+async function ensureSheetUsuarios() {
   await ensureAuth();
-  let sheet = doc.sheetsByTitle["clientes"];
+  let sheet = doc.sheetsByTitle["Usuarios"];
   if (!sheet) {
-    sheet = await doc.addSheet({ title: "clientes", headerValues: CLIENTES_HEADERS });
+    sheet = await doc.addSheet({ title: "Usuarios", headerValues: USUARIOS_HEADERS });
   } else {
     await sheet.loadHeaderRow();
     const current = (sheet.headerValues || []).map((header) => (header || "").trim());
     const filtered = current.filter(Boolean);
     const hasDuplicate = new Set(filtered).size !== filtered.length;
-    const missing = CLIENTES_HEADERS.filter((header) => !current.includes(header));
-    const orderMismatch = CLIENTES_HEADERS.some((header, index) => current[index] !== header);
-    if (hasDuplicate || missing.length || orderMismatch || current.length !== CLIENTES_HEADERS.length) {
-      await sheet.setHeaderRow(CLIENTES_HEADERS);
+    const missing = USUARIOS_HEADERS.filter((header) => !current.includes(header));
+    const orderMismatch = USUARIOS_HEADERS.some((header, index) => current[index] !== header);
+    if (hasDuplicate || missing.length || orderMismatch || current.length !== USUARIOS_HEADERS.length) {
+      await sheet.setHeaderRow(USUARIOS_HEADERS);
     }
   }
   return sheet;
@@ -1175,6 +1183,122 @@ const setVal = (row, key, value) => {
   if (!row) return;
   if (typeof row.set === "function") row.set(key, value);
   else row[key] = value;
+};
+
+const normalizePlan = (plano) => {
+  if (!plano) return null;
+  const normalized = plano.toString().trim().toLowerCase();
+  if (["mensal", "mes", "mês"].includes(normalized)) return "mensal";
+  if (["trimestral", "trimestre"].includes(normalized)) return "trimestral";
+  if (["anual", "ano"].includes(normalized)) return "anual";
+  return null;
+};
+
+const addMonthsSafe = (date, months) => {
+  if (!date || Number.isNaN(date.getTime?.())) return null;
+  const day = date.getDate();
+  const base = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const daysInMonth = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+  return new Date(base.getFullYear(), base.getMonth(), Math.min(day, daysInMonth));
+};
+
+const formatISODate = (date) => {
+  if (!date || Number.isNaN(date.getTime?.())) return "";
+  return date.toISOString().split("T")[0];
+};
+
+const parseISODateSafe = (value) => {
+  if (!value) return null;
+  const raw = value.toString().trim();
+  if (!raw) return null;
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const date = isoMatch ? new Date(`${raw}T00:00:00`) : new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const computeNewVencimento = (currentVencISO, plan, baseDate) => {
+  const planKey = normalizePlan(plan);
+  if (!planKey) return null;
+  const planMonths = { mensal: 1, trimestral: 3, anual: 12 };
+  const today = startOfDay(new Date());
+  const currentDate = parseISODateSafe(currentVencISO);
+  const base =
+    currentDate && startOfDay(currentDate).getTime() >= today.getTime()
+      ? currentDate
+      : baseDate || new Date();
+  const next = addMonthsSafe(base, planMonths[planKey]);
+  return formatISODate(next);
+};
+
+const upsertUsuarioFromSubscription = async ({
+  userNorm,
+  nome,
+  plano,
+  email,
+  checkout_id,
+  data_inicio,
+  ativo,
+  extendVencimento = false,
+}) => {
+  if (!userNorm) throw new Error("Usuário inválido.");
+  const sheet = await ensureSheetUsuarios();
+  const rows = await sheet.getRows();
+  const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  const normalizedPlan = normalizePlan(plano) || normalizePlan(getVal(target, "plano"));
+  const existingDataInicio = parseISODateSafe(getVal(target, "data_inicio"));
+  const payloadDataInicio = parseISODateSafe(data_inicio);
+  const baseDataInicio = payloadDataInicio || existingDataInicio || new Date();
+  const existingVencimento = getVal(target, "vencimento_plano");
+  const vencimento = extendVencimento
+    ? computeNewVencimento(existingVencimento, normalizedPlan, baseDataInicio) || existingVencimento
+    : existingVencimento || formatISODate(baseDataInicio);
+  const nowIso = formatISODate(new Date());
+  const update = {
+    user: userNorm,
+    nome: nome || getVal(target, "nome") || "",
+    plano: normalizedPlan || getVal(target, "plano") || "",
+    ativo: ativo ? "true" : "false",
+    data_inicio: formatISODate(baseDataInicio),
+    vencimento_plano: vencimento || "",
+    ultima_atualizacao: nowIso,
+    origem: "site",
+    checkout_id: checkout_id || getVal(target, "checkout_id") || "",
+    email: email || getVal(target, "email") || "",
+  };
+
+  if (target) {
+    Object.entries(update).forEach(([key, value]) => setVal(target, key, value));
+    await target.save();
+  } else {
+    await sheet.addRow(update);
+  }
+  usuarioStatusCache.set(userNorm, { value: update.ativo === "true", expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
+  console.log("✅ Usuario atualizado:", userNorm, update.plano, update.ativo);
+  return update;
+};
+
+const isUsuarioAtivo = async (userNorm) => {
+  if (!userNorm) return false;
+  const cached = usuarioStatusCache.get(userNorm);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const sheet = await ensureSheetUsuarios();
+  const rows = await sheet.getRows();
+  const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  if (!target) {
+    usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
+    return false;
+  }
+  const ativoRaw = getVal(target, "ativo");
+  const ativoValue =
+    ativoRaw === true ||
+    (typeof ativoRaw === "string" && ativoRaw.trim().toLowerCase() === "true");
+  const vencimentoRaw = getVal(target, "vencimento_plano");
+  const vencimentoDate = parseISODateSafe(vencimentoRaw);
+  const today = startOfDay(new Date());
+  const dentroDoVencimento = vencimentoDate ? startOfDay(vencimentoDate).getTime() >= today.getTime() : true;
+  const active = Boolean(ativoValue && dentroDoVencimento);
+  usuarioStatusCache.set(userNorm, { value: active, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
+  return active;
 };
 
 const saveRow = (row) => (typeof row.save === "function" ? row.save() : Promise.resolve());
@@ -3358,6 +3482,20 @@ async function handleUserText(fromRaw, text) {
   recordUserInteraction(userNorm);
   const trimmed = (text || "").trim();
 
+  if (!userNorm || userNorm !== ADMIN_NUMBER_NORM) {
+    const active = await isUsuarioAtivo(userNorm);
+    if (!active) {
+      const nome = getStoredFirstName(userNorm);
+      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
+      await sendText(
+        fromRaw,
+        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
+        { bypassWindow: true }
+      );
+      return;
+    }
+  }
+
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleStatusConfirmationFlow(fromRaw, userNorm, trimmed)) return;
   if (await handlePaymentConfirmFlow(fromRaw, userNorm, trimmed)) return;
@@ -3498,42 +3636,63 @@ async function handleStripeWebhook(req, res) {
     return;
   }
 
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    const whatsapp = session.metadata?.whatsapp;
+  try {
+    const activeEvents = new Set(["checkout.session.completed", "invoice.payment_succeeded"]);
+    const inactiveEvents = new Set(["customer.subscription.deleted", "invoice.payment_failed"]);
+    const isActiveEvent = activeEvents.has(event.type);
+    const isInactiveEvent = inactiveEvents.has(event.type);
 
-    if (whatsapp) {
-      console.log("✅ Novo pagamento Stripe recebido:", whatsapp);
-      try {
-        const sheet = await ensureSheetClientes();
-        await sheet.addRow({
-          user: whatsapp,
-          plano: "Ativo",
-          ativo: "TRUE",
-          data_inicio: new Date().toISOString().split("T")[0],
-          vencimento_plano: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
-            .toISOString()
-            .split("T")[0],
-        });
-
-        await sendText(
-          whatsapp,
-          "🎉 Bem-vindo(a) à *FinPlanner IA*! Seu plano foi ativado com sucesso. Envie uma mensagem a qualquer momento para começar seu planejamento financeiro."
-        );
-      } catch (error) {
-        console.error("Erro ao registrar cliente após pagamento:", error);
-      }
+    if (!isActiveEvent && !isInactiveEvent) {
+      res.sendStatus(200);
+      return;
     }
+
+    const session = event.data?.object || {};
+    const whatsapp = session.metadata?.whatsapp;
+    if (!whatsapp) {
+      console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+      res.sendStatus(200);
+      return;
+    }
+
+    const userNorm = normalizeUser(whatsapp);
+    if (!userNorm) {
+      res.sendStatus(200);
+      return;
+    }
+
+    if (isActiveEvent) {
+      const plano = normalizePlan(session.metadata?.plano);
+      if (!plano) {
+        console.log("⚠️ Evento Stripe sem plano válido.");
+        res.sendStatus(200);
+        return;
+      }
+      const nome = session.customer_details?.name || session.customer_name || session.metadata?.nome || "";
+      const email = session.customer_details?.email || session.customer_email || session.metadata?.email || "";
+      await upsertUsuarioFromSubscription({
+        userNorm,
+        nome,
+        plano,
+        email,
+        checkout_id: session.id || session.subscription || session.payment_intent || "",
+        data_inicio: formatISODate(new Date()),
+        ativo: true,
+        extendVencimento: true,
+      });
+    } else if (isInactiveEvent) {
+      await upsertUsuarioFromSubscription({
+        userNorm,
+        ativo: false,
+        extendVencimento: false,
+      });
+    }
+  } catch (error) {
+    console.error("Erro ao processar evento Stripe:", error.message);
   }
 
   res.sendStatus(200);
 }
-
-app.post(
-  "/stripe/webhook",
-  bodyParser.raw({ type: "application/json" }),
-  handleStripeWebhook
-);
 
 app.post("/webhook", async (req, res) => {
   try {
@@ -3636,6 +3795,10 @@ cron.schedule(
       for (const [userNorm, bucket] of dueByUser.entries()) {
         const { to, items } = bucket;
         if (!items.length || !to) continue;
+        const ativo = await isUsuarioAtivo(userNorm);
+        if (!ativo) {
+          continue;
+        }
 
         const pagar = items
           .filter((item) => item.kind === "pagar")
