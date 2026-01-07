@@ -1185,14 +1185,35 @@ const setVal = (row, key, value) => {
   else row[key] = value;
 };
 
-const normalizePlan = (plano) => {
-  if (!plano) return null;
-  const normalized = plano.toString().trim().toLowerCase();
-  if (["mensal", "mes", "mês"].includes(normalized)) return "mensal";
-  if (["trimestral", "trimestre"].includes(normalized)) return "trimestral";
-  if (["anual", "ano"].includes(normalized)) return "anual";
+function normalizePlan(input) {
+  if (!input) return null;
+  const p = String(input).trim().toLowerCase();
+
+  if (p === "mensal" || p.includes("mensal") || p === "monthly" || p === "month") return "mensal";
+  if (p === "trimestral" || p.includes("trim") || p === "quarterly" || p === "quarter") return "trimestral";
+  if (p === "anual" || p.includes("anual") || p.includes("anu") || p === "yearly" || p === "annual" || p === "year")
+    return "anual";
+
   return null;
-};
+}
+
+function pickFirst(...vals) {
+  for (const v of vals) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
+  }
+  return "";
+}
+
+async function getSubscriptionMetadata(stripeClient, subscriptionId) {
+  if (!subscriptionId) return {};
+  try {
+    const sub = await stripeClient.subscriptions.retrieve(subscriptionId);
+    return sub?.metadata || {};
+  } catch (e) {
+    console.error("Erro ao buscar subscription metadata:", e?.message || e);
+    return {};
+  }
+}
 
 const addMonthsSafe = (date, months) => {
   if (!date || Number.isNaN(date.getTime?.())) return null;
@@ -3637,39 +3658,31 @@ async function handleStripeWebhook(req, res) {
   }
 
   try {
-    const activeEvents = new Set(["checkout.session.completed", "invoice.payment_succeeded"]);
-    const inactiveEvents = new Set(["customer.subscription.deleted", "invoice.payment_failed"]);
-    const isActiveEvent = activeEvents.has(event.type);
-    const isInactiveEvent = inactiveEvents.has(event.type);
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const subMeta = await getSubscriptionMetadata(stripe, session.subscription);
+      const planoRaw = pickFirst(session.metadata?.plano, subMeta?.plano);
+      const plano = normalizePlan(planoRaw);
 
-    if (!isActiveEvent && !isInactiveEvent) {
-      res.sendStatus(200);
-      return;
-    }
-
-    const session = event.data?.object || {};
-    const whatsapp = session.metadata?.whatsapp;
-    if (!whatsapp) {
-      console.log("⚠️ Evento Stripe sem whatsapp metadata.");
-      res.sendStatus(200);
-      return;
-    }
-
-    const userNorm = normalizeUser(whatsapp);
-    if (!userNorm) {
-      res.sendStatus(200);
-      return;
-    }
-
-    if (isActiveEvent) {
-      const plano = normalizePlan(session.metadata?.plano);
       if (!plano) {
-        console.log("⚠️ Evento Stripe sem plano válido.");
-        res.sendStatus(200);
-        return;
+        console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw);
+        return res.sendStatus(200);
       }
+
+      const whatsapp = session.metadata?.whatsapp;
+      if (!whatsapp) {
+        console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+        return res.sendStatus(200);
+      }
+
+      const userNorm = normalizeUser(whatsapp);
+      if (!userNorm) {
+        return res.sendStatus(200);
+      }
+
       const nome = session.customer_details?.name || session.customer_name || session.metadata?.nome || "";
       const email = session.customer_details?.email || session.customer_email || session.metadata?.email || "";
+      console.log("🧾 Upsert usuario:", { userNorm, plano, ativo: true });
       await upsertUsuarioFromSubscription({
         userNorm,
         nome,
@@ -3680,7 +3693,52 @@ async function handleStripeWebhook(req, res) {
         ativo: true,
         extendVencimento: true,
       });
-    } else if (isInactiveEvent) {
+    }
+
+    if (event.type === "invoice.payment_succeeded") {
+      const invoice = event.data.object;
+      const subMeta = await getSubscriptionMetadata(stripe, invoice.subscription);
+      const planoRaw = pickFirst(subMeta?.plano);
+      const plano = normalizePlan(planoRaw);
+
+      if (!plano) {
+        console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw);
+        return res.sendStatus(200);
+      }
+
+      const whatsapp = subMeta?.whatsapp;
+      if (!whatsapp) {
+        console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+        return res.sendStatus(200);
+      }
+
+      const userNorm = normalizeUser(whatsapp);
+      if (!userNorm) {
+        return res.sendStatus(200);
+      }
+
+      console.log("🧾 Upsert usuario:", { userNorm, plano, ativo: true });
+      await upsertUsuarioFromSubscription({
+        userNorm,
+        plano,
+        ativo: true,
+        extendVencimento: true,
+      });
+    }
+
+    if (event.type === "customer.subscription.deleted" || event.type === "invoice.payment_failed") {
+      const payload = event.data.object || {};
+      const subMeta = await getSubscriptionMetadata(stripe, payload.subscription);
+      const whatsapp = pickFirst(payload.metadata?.whatsapp, subMeta?.whatsapp);
+      if (!whatsapp) {
+        console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+        return res.sendStatus(200);
+      }
+      const userNorm = normalizeUser(whatsapp);
+      if (!userNorm) {
+        return res.sendStatus(200);
+      }
+      console.log("🧾 Upsert usuario:", { userNorm, plano: null, ativo: false });
       await upsertUsuarioFromSubscription({
         userNorm,
         ativo: false,
