@@ -22,6 +22,11 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const USE_OPENAI_RAW = process.env.USE_OPENAI;
 const DEBUG_SHEETS_RAW = process.env.DEBUG_SHEETS;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_PRICE_MENSAL = process.env.STRIPE_PRICE_MENSAL;
+const STRIPE_PRICE_TRIMESTRAL = process.env.STRIPE_PRICE_TRIMESTRAL;
+const STRIPE_PRICE_ANUAL = process.env.STRIPE_PRICE_ANUAL;
+const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL;
+const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL;
 
 const {
   PORT,
@@ -132,6 +137,56 @@ app.use(express.json());
 
 app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
+});
+
+app.post("/checkout", async (req, res) => {
+  if (!stripe) {
+    return res.status(500).json({ error: "Stripe não configurado." });
+  }
+  const { plano, whatsapp, nome, email } = req.body || {};
+  if (!whatsapp) {
+    return res.status(400).json({ error: "whatsapp obrigatório." });
+  }
+  const planoNorm = normalizePlan(plano) || "mensal";
+  const priceMap = {
+    mensal: STRIPE_PRICE_MENSAL,
+    trimestral: STRIPE_PRICE_TRIMESTRAL,
+    anual: STRIPE_PRICE_ANUAL,
+  };
+  const priceId = priceMap[planoNorm];
+  if (!priceId) {
+    return res.status(400).json({ error: "Plano inválido ou price não configurado." });
+  }
+  if (!STRIPE_SUCCESS_URL || !STRIPE_CANCEL_URL) {
+    return res.status(500).json({ error: "URLs de checkout não configuradas." });
+  }
+
+  console.log("Checkout create payload:", { plano: planoNorm, whatsapp: !!whatsapp });
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: STRIPE_SUCCESS_URL,
+      cancel_url: STRIPE_CANCEL_URL,
+      subscription_data: {
+        metadata: {
+          whatsapp: String(whatsapp || ""),
+          plano: planoNorm,
+          nome: String(nome || ""),
+          email: String(email || ""),
+        },
+      },
+      metadata: {
+        whatsapp: String(whatsapp || ""),
+        plano: planoNorm,
+      },
+    });
+    return res.status(200).json({ url: session.url });
+  } catch (error) {
+    console.error("Erro ao criar checkout:", error.message);
+    return res.status(500).json({ error: "Erro ao criar checkout." });
+  }
 });
 
 // ============================
