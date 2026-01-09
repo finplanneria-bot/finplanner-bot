@@ -3718,16 +3718,20 @@ async function handleStripeWebhook(req, res) {
       const subMeta = await getSubscriptionMetadata(stripe, session.subscription);
       const planoRaw = pickFirst(session.metadata?.plano, subMeta?.plano);
       let plano = normalizePlan(planoRaw);
+      let priceId = "";
 
       if (!plano) {
         try {
-          const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
-          const priceId = lineItems?.data?.[0]?.price?.id || "";
-          if (priceId === STRIPE_PRICE_MENSAL) plano = "mensal";
-          else if (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
-          else if (priceId === STRIPE_PRICE_ANUAL) plano = "anual";
+          const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 5 });
+          priceId = lineItems?.data?.[0]?.price?.id || "";
+          console.log("🔎 Stripe line items:", { sessionId: session.id, priceId });
+          if (priceId) {
+            if (priceId === STRIPE_PRICE_MENSAL) plano = "mensal";
+            else if (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
+            else if (priceId === STRIPE_PRICE_ANUAL) plano = "anual";
+          }
           if (plano) {
-            console.log(`Fallback plano via priceId: ${priceId} -> ${plano}`);
+            console.log("✅ Plano resolvido via priceId:", { plano, priceId });
           }
         } catch (error) {
           console.error("Erro ao buscar line items do Stripe:", error.message);
@@ -3735,7 +3739,7 @@ async function handleStripeWebhook(req, res) {
       }
 
       if (!plano) {
-        console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw);
+        console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw, "priceId =", priceId);
         return res.sendStatus(200);
       }
 
