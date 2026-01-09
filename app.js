@@ -3717,7 +3717,22 @@ async function handleStripeWebhook(req, res) {
       const session = event.data.object;
       const subMeta = await getSubscriptionMetadata(stripe, session.subscription);
       const planoRaw = pickFirst(session.metadata?.plano, subMeta?.plano);
-      const plano = normalizePlan(planoRaw);
+      let plano = normalizePlan(planoRaw);
+
+      if (!plano) {
+        try {
+          const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
+          const priceId = lineItems?.data?.[0]?.price?.id || "";
+          if (priceId === STRIPE_PRICE_MENSAL) plano = "mensal";
+          else if (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
+          else if (priceId === STRIPE_PRICE_ANUAL) plano = "anual";
+          if (plano) {
+            console.log(`Fallback plano via priceId: ${priceId} -> ${plano}`);
+          }
+        } catch (error) {
+          console.error("Erro ao buscar line items do Stripe:", error.message);
+        }
+      }
 
       if (!plano) {
         console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw);
