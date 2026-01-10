@@ -1386,7 +1386,20 @@ const isUsuarioAtivo = async (userNorm) => {
   const sheet = await ensureSheetUsuarios();
   const rows = await sheet.getRows();
   const candidates = getUserCandidates(userNorm);
-  const target = rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
+  const exact = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  const candidateMatches = exact
+    ? [exact]
+    : rows.filter((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
+  const pickMostRecent = (list) =>
+    list
+      .slice()
+      .sort((a, b) => {
+        const dateA = parseDateLoose(getVal(a, "data_inicio")) || parseDateLoose(getVal(a, "vencimento_plano")) || new Date(0);
+        const dateB = parseDateLoose(getVal(b, "data_inicio")) || parseDateLoose(getVal(b, "vencimento_plano")) || new Date(0);
+        return dateB.getTime() - dateA.getTime();
+      })[0];
+  const target = exact || pickMostRecent(candidateMatches);
+
   if (!target) {
     console.log("🔐 AccessCheck:", {
       fromRaw: userNorm,
@@ -1402,8 +1415,31 @@ const isUsuarioAtivo = async (userNorm) => {
     usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
     return false;
   }
+  console.log("🔎 MatchedRow:", {
+    userNorm,
+    candidates,
+    matchedUser: getVal(target, "user"),
+    ativoVal: getVal(target, "ativo"),
+    planoVal: getVal(target, "plano"),
+    vencimentoVal: getVal(target, "vencimento_plano"),
+  });
   const ativoRaw = getVal(target, "ativo");
   const ativoOk = isTruthy(ativoRaw);
+  if (!ativoOk) {
+    console.log("🔐 AccessCheck:", {
+      fromRaw: userNorm,
+      userNorm,
+      candidates,
+      found: true,
+      ativoVal: ativoRaw,
+      ativoOk: false,
+      vencimentoVal: getVal(target, "vencimento_plano"),
+      vencOk: false,
+      planoVal: getVal(target, "plano"),
+    });
+    usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
+    return false;
+  }
   const vencimentoRaw = getVal(target, "vencimento_plano");
   const vencimentoDate = parseDateLoose(vencimentoRaw);
   const today = startOfDay(new Date());
