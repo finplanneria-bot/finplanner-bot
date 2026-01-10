@@ -1270,6 +1270,43 @@ async function getSubscriptionMetadata(stripeClient, subscriptionId) {
   }
 }
 
+function isTruthy(v) {
+  if (v === true) return true;
+  if (v === false || v == null) return false;
+  const s = String(v).trim().toLowerCase();
+  return ["true", "1", "yes", "y", "sim", "s", "verdadeiro", "ativo", "on"].includes(s);
+}
+
+function parseDateLoose(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split("/").map(Number);
+    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getUserCandidates(userNorm) {
+  const candidates = new Set();
+  if (userNorm) candidates.add(userNorm);
+  const digits = String(userNorm || "").replace(/\D/g, "");
+  if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
+    candidates.add(digits.slice(0, 4) + digits.slice(5));
+  }
+  if (digits.startsWith("55") && digits.length === 12) {
+    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
+  }
+  return Array.from(candidates);
+}
+
 const addMonthsSafe = (date, months) => {
   if (!date || Number.isNaN(date.getTime?.())) return null;
   const day = date.getDate();
@@ -1348,7 +1385,8 @@ const upsertUsuarioFromSubscription = async ({
   } else {
     await sheet.addRow(update);
   }
-  usuarioStatusCache.set(userNorm, { value: update.ativo === "true", expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
+  const candidates = getUserCandidates(userNorm);
+  candidates.forEach((candidate) => usuarioStatusCache.delete(candidate));
   console.log("✅ Usuario atualizado:", userNorm, update.plano, update.ativo);
   return update;
 };
@@ -1359,20 +1397,42 @@ const isUsuarioAtivo = async (userNorm) => {
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const sheet = await ensureSheetUsuarios();
   const rows = await sheet.getRows();
-  const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  const candidates = getUserCandidates(userNorm);
+  const target = rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
   if (!target) {
+    console.log("🔐 AccessCheck:", {
+      fromRaw: userNorm,
+      userNorm,
+      candidates,
+      found: false,
+      ativoVal: null,
+      ativoOk: false,
+      vencimentoVal: null,
+      vencOk: false,
+      planoVal: null,
+    });
     usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
     return false;
   }
   const ativoRaw = getVal(target, "ativo");
-  const ativoValue =
-    ativoRaw === true ||
-    (typeof ativoRaw === "string" && ativoRaw.trim().toLowerCase() === "true");
+  const ativoOk = isTruthy(ativoRaw);
   const vencimentoRaw = getVal(target, "vencimento_plano");
-  const vencimentoDate = parseISODateSafe(vencimentoRaw);
+  const vencimentoDate = parseDateLoose(vencimentoRaw);
   const today = startOfDay(new Date());
-  const dentroDoVencimento = vencimentoDate ? startOfDay(vencimentoDate).getTime() >= today.getTime() : true;
-  const active = Boolean(ativoValue && dentroDoVencimento);
+  const vencOk = vencimentoDate ? startOfDay(vencimentoDate).getTime() >= today.getTime() : true;
+  const planoVal = getVal(target, "plano");
+  const active = Boolean(ativoOk && vencOk);
+  console.log("🔐 AccessCheck:", {
+    fromRaw: userNorm,
+    userNorm,
+    candidates,
+    found: true,
+    ativoVal: ativoRaw,
+    ativoOk,
+    vencimentoVal: vencimentoRaw,
+    vencOk,
+    planoVal,
+  });
   usuarioStatusCache.set(userNorm, { value: active, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
   return active;
 };
@@ -3555,6 +3615,7 @@ function parseRangeMessage(text) {
 
 async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
+  console.log("📩 Inbound:", { fromRaw, userNorm });
   recordUserInteraction(userNorm);
   const trimmed = (text || "").trim();
 
