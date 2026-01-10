@@ -1157,18 +1157,7 @@ const SHEET_HEADERS = [
   "descricao",
 ];
 
-const USUARIOS_HEADERS = [
-  "user",
-  "nome",
-  "plano",
-  "ativo",
-  "data_inicio",
-  "vencimento_plano",
-  "ultima_atualizacao",
-  "origem",
-  "checkout_id",
-  "email",
-];
+const USUARIOS_HEADERS = ["user", "plano", "ativo", "data_inicio", "vencimento_plano", "email", "nome", "checkout_id"];
 
 let doc;
 
@@ -1220,6 +1209,7 @@ async function ensureSheetUsuarios() {
       await sheet.setHeaderRow(USUARIOS_HEADERS);
     }
   }
+  console.log("📄 Usuarios headers:", sheet.headerValues);
   return sheet;
 }
 
@@ -1368,15 +1358,13 @@ const upsertUsuarioFromSubscription = async ({
   const nowIso = formatISODate(new Date());
   const update = {
     user: userNorm,
-    nome: nome || getVal(target, "nome") || "",
     plano: normalizedPlan || getVal(target, "plano") || "",
     ativo: ativo ? "true" : "false",
     data_inicio: formatISODate(baseDataInicio),
     vencimento_plano: vencimento || "",
-    ultima_atualizacao: nowIso,
-    origem: "site",
-    checkout_id: checkout_id || getVal(target, "checkout_id") || "",
     email: email || getVal(target, "email") || "",
+    nome: nome || getVal(target, "nome") || "",
+    checkout_id: checkout_id || getVal(target, "checkout_id") || "",
   };
 
   if (target) {
