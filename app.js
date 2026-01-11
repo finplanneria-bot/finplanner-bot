@@ -3298,7 +3298,7 @@ const detectIntentHeuristic = (text) => {
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
   if (/registrar recebimento|\brecebimento\b/.test(lower)) return "registrar_recebimento";
-  if (/registrar pagamento|\bpagamento\b/.test(lower)) return "registrar_pagamento";
+  if (/registrar pagamento|\bpagamento\b|\bpagar\b/.test(lower)) return "registrar_pagamento";
   return "desconhecido";
 };
 
@@ -3338,6 +3338,7 @@ const buildIntentPrompt = (text) => {
             '- "quanto eu gastei esse mês?" -> relatorio_pagamentos_mes\n' +
             '- "quanto recebi este mês?" -> relatorio_recebimentos_mes\n' +
             '- "contas a pagar deste mês" -> relatorio_contas_pagar_mes\n' +
+            '- "pagar escola 12/11 2.000" -> registrar_pagamento\n' +
             '- "quero relatório completo" -> relatorio_completo\n' +
             '- "abrir menu" -> mostrar_menu\n\n' +
             `Mensagem: "${text}"\nResponda somente com uma das opções. Use "desconhecido" caso não tenha correspondência.`,
@@ -3992,7 +3993,7 @@ cron.schedule(
         const dueDate = new Date(dueIso);
         if (Number.isNaN(dueDate.getTime())) return;
         const dueMs = startOfDay(dueDate).getTime();
-        if (dueMs !== todayMs) return;
+        if (dueMs > todayMs) return;
         const toRaw = getVal(row, "user_raw") || getVal(row, "user");
         const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
         if (!toRaw || !userNorm) return;
