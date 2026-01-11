@@ -3352,7 +3352,6 @@ const detectIntent = async (text) => {
   const fallback = detectIntentHeuristic(text);
   if (!text) return fallback;
   if (!openaiClient) return fallback;
-  if (fallback && fallback !== "desconhecido") return fallback;
   try {
     const output = await callOpenAI({
       model: OPENAI_INTENT_MODEL,
