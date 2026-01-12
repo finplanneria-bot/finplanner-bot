@@ -131,7 +131,7 @@ const app = express();
 // - invoice.payment_succeeded
 // - invoice.payment_failed
 // - customer.subscription.deleted
-app.post("/webhook/stripe", express.raw({ type: "application/json" }), handleStripeWebhook);
+app.post("/webhook/stripe", express.raw({ type: "*/*" }), handleStripeWebhook);
 
 app.use(express.json());
 
@@ -3788,10 +3788,15 @@ async function handleStripeWebhook(req, res) {
 
   const sig = req.headers["stripe-signature"];
   let event;
+  const payload = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "", "utf8");
 
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(payload, sig, STRIPE_WEBHOOK_SECRET);
   } catch (err) {
+    console.error("⚠️ Stripe raw body inválido:", {
+      isBuffer: Buffer.isBuffer(req.body),
+      contentType: req.headers["content-type"],
+    });
     console.error("⚠️  Erro ao validar webhook Stripe:", err.message);
     res.status(400).send(`Webhook error: ${err.message}`);
     return;
