@@ -4014,6 +4014,7 @@ cron.schedule(
         if (!items.length || !to) continue;
         const ativo = await isUsuarioAtivo(userNorm);
         if (!ativo) {
+          console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
           continue;
         }
 
@@ -4051,10 +4052,19 @@ cron.schedule(
 
         const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
         const withinWindow = hasRecentUserInteraction(userNorm);
+        console.log("⏰ Cron send attempt:", {
+          userNorm,
+          to,
+          total: items.length,
+          pagar: pagar.length,
+          receber: receber.length,
+          withinWindow,
+        });
         const delivered = withinWindow
           ? await sendText(to, message)
           : await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
         if (!delivered || !withinWindow) {
+          console.log("⚠️ Cron delivery halted:", { userNorm, to, delivered, withinWindow });
           continue;
         }
 
