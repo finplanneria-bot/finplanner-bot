@@ -1158,6 +1158,19 @@ const SHEET_HEADERS = [
 ];
 
 const USUARIOS_HEADERS = ["user", "plano", "ativo", "data_inicio", "vencimento_plano", "email", "nome", "checkout_id"];
+const USER_LANC_HEADERS = [
+  "row_id",
+  "tipo",
+  "descricao",
+  "categoria",
+  "status",
+  "valor",
+  "contas_a_pagar",
+  "contas_a_receber",
+  "vencimento_iso",
+  "vencimento_br",
+  "criado_em",
+];
 
 let doc;
 
@@ -1213,6 +1226,31 @@ async function ensureSheetUsuarios() {
   return sheet;
 }
 
+const getUserSheetName = (userNorm) => {
+  const base = `Usuario_${userNorm || "desconhecido"}`.replace(/[\\/*?:[\]]/g, "_");
+  return base.length > 100 ? base.slice(0, 100) : base;
+};
+
+async function ensureUserSheet(userNorm) {
+  await ensureAuth();
+  const title = getUserSheetName(userNorm);
+  let sheet = doc.sheetsByTitle[title];
+  if (!sheet) {
+    sheet = await doc.addSheet({ title, headerValues: USER_LANC_HEADERS });
+  } else {
+    await sheet.loadHeaderRow();
+    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const filtered = current.filter(Boolean);
+    const hasDuplicate = new Set(filtered).size !== filtered.length;
+    const missing = USER_LANC_HEADERS.filter((header) => !current.includes(header));
+    const orderMismatch = USER_LANC_HEADERS.some((header, index) => current[index] !== header);
+    if (hasDuplicate || missing.length || orderMismatch || current.length !== USER_LANC_HEADERS.length) {
+      await sheet.setHeaderRow(USER_LANC_HEADERS);
+    }
+  }
+  return sheet;
+}
+
 const getVal = (row, key) => {
   if (!row) return undefined;
   if (typeof row.get === "function") return row.get(key);
@@ -1228,6 +1266,36 @@ const setVal = (row, key, value) => {
   if (!row) return;
   if (typeof row.set === "function") row.set(key, value);
   else row[key] = value;
+};
+
+const buildUserSheetRow = (entry) => {
+  const tipo = getVal(entry, "tipo");
+  const valor = getVal(entry, "valor");
+  return {
+    row_id: getVal(entry, "row_id"),
+    tipo,
+    descricao: getVal(entry, "descricao"),
+    categoria: getVal(entry, "categoria"),
+    status: getVal(entry, "status"),
+    valor,
+    contas_a_pagar: tipo === "conta_pagar" ? valor : "",
+    contas_a_receber: tipo === "conta_receber" ? valor : "",
+    vencimento_iso: getVal(entry, "vencimento_iso"),
+    vencimento_br: getVal(entry, "vencimento_br"),
+    criado_em: getVal(entry, "timestamp") || new Date().toISOString(),
+  };
+};
+
+const upsertUserSheetEntry = async (entry) => {
+  const userRaw = getVal(entry, "user") || getVal(entry, "user_raw");
+  const userNorm = normalizeUser(userRaw);
+  const rowId = getVal(entry, "row_id");
+  if (!userNorm || !rowId) return;
+  const sheet = await ensureUserSheet(userNorm);
+  const rows = await sheet.getRows();
+  const exists = rows.find((row) => getVal(row, "row_id") === rowId);
+  if (exists) return;
+  await sheet.addRow(buildUserSheetRow(entry));
 };
 
 function normalizePlan(input) {
@@ -1881,6 +1949,7 @@ const createRow = async (payload) => {
   const sheet = await ensureSheet();
   if (DEBUG_SHEETS) console.log("[Sheets] Adding row", payload);
   await sheet.addRow(payload);
+  await upsertUserSheetEntry(payload);
 };
 
 const deleteRow = async (row) => {
@@ -1890,6 +1959,21 @@ const deleteRow = async (row) => {
 };
 
 const generateRowId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const migrateUserSheets = async () => {
+  try {
+    const sheet = await ensureSheet();
+    const rows = await sheet.getRows();
+    let migrated = 0;
+    for (const row of rows) {
+      await upsertUserSheetEntry(row);
+      migrated += 1;
+    }
+    console.log("✅ Migração de lançamentos concluída:", { total: migrated });
+  } catch (error) {
+    console.error("Erro ao migrar lançamentos para abas de usuário:", error.message);
+  }
+};
 
 // ============================
 // Parse de lançamento
@@ -3993,14 +4077,36 @@ cron.schedule(
 
       const enqueueReminder = (row, kind) => {
         const dueIso = getVal(row, "vencimento_iso");
-        if (!dueIso) return;
-        const dueDate = new Date(dueIso);
-        if (Number.isNaN(dueDate.getTime())) return;
+        const dueBr = getVal(row, "vencimento_br");
+        const dueDate = dueIso ? new Date(dueIso) : parseDateToken(dueBr);
+        if (!dueDate || Number.isNaN(dueDate.getTime())) {
+          console.log("⚠️ Cron skip (data inválida):", {
+            user: getVal(row, "user") || getVal(row, "user_raw"),
+            tipo: getVal(row, "tipo"),
+            vencimento_iso: dueIso,
+            vencimento_br: dueBr,
+          });
+          return;
+        }
         const dueMs = startOfDay(dueDate).getTime();
-        if (dueMs > todayMs) return;
+        if (dueMs > todayMs) {
+          console.log("ℹ️ Cron skip (vencimento futuro):", {
+            user: getVal(row, "user") || getVal(row, "user_raw"),
+            tipo: getVal(row, "tipo"),
+            vencimento_iso: dueIso,
+            vencimento_br: dueBr,
+          });
+          return;
+        }
         const toRaw = getVal(row, "user_raw") || getVal(row, "user");
         const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
-        if (!toRaw || !userNorm) return;
+        if (!toRaw || !userNorm) {
+          console.log("⚠️ Cron skip (usuário inválido):", {
+            user: getVal(row, "user") || getVal(row, "user_raw"),
+            tipo: getVal(row, "tipo"),
+          });
+          return;
+        }
         const bucket = dueByUser.get(userNorm) || { to: toRaw, items: [] };
         if (!bucket.to) bucket.to = toRaw;
         bucket.items.push({ row, kind, dueMs });
@@ -4012,6 +4118,10 @@ cron.schedule(
         const status = (getVal(row, "status") || "").toString().toLowerCase();
         if (tipo === "conta_pagar" && status !== "pago") enqueueReminder(row, "pagar");
         if (tipo === "conta_receber" && !["pago", "recebido"].includes(status)) enqueueReminder(row, "receber");
+      }
+
+      if (!dueByUser.size) {
+        console.log("ℹ️ Cron: nenhum lançamento pendente para hoje ou vencido.");
       }
 
       for (const [userNorm, bucket] of dueByUser.entries()) {
@@ -4094,4 +4204,5 @@ cron.schedule(
 const port = PORT || 10000;
 app.listen(port, () => {
   console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
+  migrateUserSheets();
 });
