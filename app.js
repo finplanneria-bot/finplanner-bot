@@ -131,7 +131,7 @@ const app = express();
 // - invoice.payment_succeeded
 // - invoice.payment_failed
 // - customer.subscription.deleted
-app.post("/webhook/stripe", express.raw({ type: "*/*" }), handleStripeWebhook);
+app.post("/webhook/stripe", express.raw({ type: "application/json" }), handleStripeWebhook);
 
 app.use(express.json());
 
@@ -1171,6 +1171,10 @@ const USER_LANC_HEADERS = [
   "vencimento_br",
   "criado_em",
 ];
+const CONFIG_HEADERS = ["key", "value"];
+const SHEET_READ_BACKOFF_MS = [1000, 2000, 4000, 8000, 12000];
+const USER_SHEET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const userSheetCache = new Map();
 
 let doc;
 
@@ -1186,13 +1190,33 @@ async function ensureAuth() {
   return doc;
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withRetry = async (fn, label) => {
+  for (let attempt = 0; attempt < SHEET_READ_BACKOFF_MS.length; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      const status = error?.response?.status || error?.code;
+      if (status === 429 || status === 403) {
+        const delay = SHEET_READ_BACKOFF_MS[attempt] + Math.floor(Math.random() * 250);
+        console.warn(`🔁 Sheets retry (${label}) tentativa ${attempt + 1}: aguardando ${delay}ms`);
+        await sleep(delay);
+      } else {
+        throw error;
+      }
+    }
+  }
+  return null;
+};
+
 async function ensureSheet() {
   await ensureAuth();
   let sheet = doc.sheetsByTitle["finplanner"];
   if (!sheet) {
-    sheet = await doc.addSheet({ title: "finplanner", headerValues: SHEET_HEADERS });
+    sheet = await withRetry(() => doc.addSheet({ title: "finplanner", headerValues: SHEET_HEADERS }), "add-sheet");
   } else {
-    await sheet.loadHeaderRow();
+    await withRetry(() => sheet.loadHeaderRow(), "load-header-finplanner");
     const current = sheet.headerValues || [];
     const normalized = current.map((header) => (header || "").trim());
     const hasDuplicate = new Set(normalized.filter(Boolean)).size !== normalized.filter(Boolean).length;
@@ -1200,7 +1224,7 @@ async function ensureSheet() {
     const orderMismatch = SHEET_HEADERS.some((header, index) => normalized[index] !== header);
 
     if (hasDuplicate || missing.length || orderMismatch || normalized.length !== SHEET_HEADERS.length) {
-      await sheet.setHeaderRow(SHEET_HEADERS);
+      await withRetry(() => sheet.setHeaderRow(SHEET_HEADERS), "set-header-finplanner");
     }
   }
   return sheet;
@@ -1210,16 +1234,16 @@ async function ensureSheetUsuarios() {
   await ensureAuth();
   let sheet = doc.sheetsByTitle["Usuarios"];
   if (!sheet) {
-    sheet = await doc.addSheet({ title: "Usuarios", headerValues: USUARIOS_HEADERS });
+    sheet = await withRetry(() => doc.addSheet({ title: "Usuarios", headerValues: USUARIOS_HEADERS }), "add-usuarios");
   } else {
-    await sheet.loadHeaderRow();
+    await withRetry(() => sheet.loadHeaderRow(), "load-header-usuarios");
     const current = (sheet.headerValues || []).map((header) => (header || "").trim());
     const filtered = current.filter(Boolean);
     const hasDuplicate = new Set(filtered).size !== filtered.length;
     const missing = USUARIOS_HEADERS.filter((header) => !current.includes(header));
     const orderMismatch = USUARIOS_HEADERS.some((header, index) => current[index] !== header);
     if (hasDuplicate || missing.length || orderMismatch || current.length !== USUARIOS_HEADERS.length) {
-      await sheet.setHeaderRow(USUARIOS_HEADERS);
+      await withRetry(() => sheet.setHeaderRow(USUARIOS_HEADERS), "set-header-usuarios");
     }
   }
   console.log("📄 Usuarios headers:", sheet.headerValues);
@@ -1234,22 +1258,65 @@ const getUserSheetName = (userNorm) => {
 async function ensureUserSheet(userNorm) {
   await ensureAuth();
   const title = getUserSheetName(userNorm);
+  const cached = userSheetCache.get(userNorm);
+  if (cached && cached.expiresAt > Date.now() && cached.title === title) {
+    console.log("📌 Cache aba usuário:", { userNorm, title });
+  }
   let sheet = doc.sheetsByTitle[title];
   if (!sheet) {
-    sheet = await doc.addSheet({ title, headerValues: USER_LANC_HEADERS });
+    sheet = await withRetry(() => doc.addSheet({ title, headerValues: USER_LANC_HEADERS }), "add-user-sheet");
   } else {
-    await sheet.loadHeaderRow();
+    await withRetry(() => sheet.loadHeaderRow(), "load-header-user-sheet");
     const current = (sheet.headerValues || []).map((header) => (header || "").trim());
     const filtered = current.filter(Boolean);
     const hasDuplicate = new Set(filtered).size !== filtered.length;
     const missing = USER_LANC_HEADERS.filter((header) => !current.includes(header));
     const orderMismatch = USER_LANC_HEADERS.some((header, index) => current[index] !== header);
     if (hasDuplicate || missing.length || orderMismatch || current.length !== USER_LANC_HEADERS.length) {
-      await sheet.setHeaderRow(USER_LANC_HEADERS);
+      await withRetry(() => sheet.setHeaderRow(USER_LANC_HEADERS), "set-header-user-sheet");
+    }
+  }
+  userSheetCache.set(userNorm, { title, expiresAt: Date.now() + USER_SHEET_CACHE_TTL_MS });
+  return sheet;
+}
+
+async function ensureConfigSheet() {
+  await ensureAuth();
+  let sheet = doc.sheetsByTitle["CONFIG"];
+  if (!sheet) {
+    sheet = await withRetry(() => doc.addSheet({ title: "CONFIG", headerValues: CONFIG_HEADERS }), "add-config");
+  } else {
+    await withRetry(() => sheet.loadHeaderRow(), "load-header-config");
+    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const filtered = current.filter(Boolean);
+    const hasDuplicate = new Set(filtered).size !== filtered.length;
+    const missing = CONFIG_HEADERS.filter((header) => !current.includes(header));
+    const orderMismatch = CONFIG_HEADERS.some((header, index) => current[index] !== header);
+    if (hasDuplicate || missing.length || orderMismatch || current.length !== CONFIG_HEADERS.length) {
+      await withRetry(() => sheet.setHeaderRow(CONFIG_HEADERS), "set-header-config");
     }
   }
   return sheet;
 }
+
+const getConfigValue = async (key) => {
+  const sheet = await ensureConfigSheet();
+  const rows = await withRetry(() => sheet.getRows(), "get-config");
+  const found = rows?.find((row) => getVal(row, "key") === key);
+  return found ? getVal(found, "value") : "";
+};
+
+const setConfigValue = async (key, value) => {
+  const sheet = await ensureConfigSheet();
+  const rows = await withRetry(() => sheet.getRows(), "get-config");
+  const found = rows?.find((row) => getVal(row, "key") === key);
+  if (found) {
+    setVal(found, "value", value);
+    await withRetry(() => found.save(), "save-config");
+  } else {
+    await withRetry(() => sheet.addRow({ key, value }), "add-config-row");
+  }
+};
 
 const getVal = (row, key) => {
   if (!row) return undefined;
@@ -1286,16 +1353,20 @@ const buildUserSheetRow = (entry) => {
   };
 };
 
-const upsertUserSheetEntry = async (entry) => {
+const upsertUserSheetEntry = async (entry, { skipCheck = false } = {}) => {
   const userRaw = getVal(entry, "user") || getVal(entry, "user_raw");
   const userNorm = normalizeUser(userRaw);
   const rowId = getVal(entry, "row_id");
   if (!userNorm || !rowId) return;
   const sheet = await ensureUserSheet(userNorm);
-  const rows = await sheet.getRows();
-  const exists = rows.find((row) => getVal(row, "row_id") === rowId);
+  if (skipCheck) {
+    await withRetry(() => sheet.addRow(buildUserSheetRow(entry)), "append-user-sheet");
+    return;
+  }
+  const rows = await withRetry(() => sheet.getRows(), "get-user-rows");
+  const exists = rows?.find((row) => getVal(row, "row_id") === rowId);
   if (exists) return;
-  await sheet.addRow(buildUserSheetRow(entry));
+  await withRetry(() => sheet.addRow(buildUserSheetRow(entry)), "append-user-sheet");
 };
 
 function normalizePlan(input) {
@@ -1413,7 +1484,7 @@ const upsertUsuarioFromSubscription = async ({
 }) => {
   if (!userNorm) throw new Error("Usuário inválido.");
   const sheet = await ensureSheetUsuarios();
-  const rows = await sheet.getRows();
+  const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
   const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
   const normalizedPlan = normalizePlan(plano) || normalizePlan(getVal(target, "plano"));
   const existingDataInicio = parseISODateSafe(getVal(target, "data_inicio"));
@@ -1452,7 +1523,7 @@ const isUsuarioAtivo = async (userNorm) => {
   const cached = usuarioStatusCache.get(userNorm);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const sheet = await ensureSheetUsuarios();
-  const rows = await sheet.getRows();
+  const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
   const candidates = getUserCandidates(userNorm);
   const exact = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
   const candidateMatches = exact
@@ -1543,7 +1614,7 @@ const getRowIdentifier = (row) => (getVal(row, "row_id") || getVal(row, "timesta
 
 async function allRowsForUser(userNorm) {
   const sheet = await ensureSheet();
-  const rows = await sheet.getRows();
+  const rows = await withRetry(() => sheet.getRows(), "get-finplanner");
   return rows.filter((row) => normalizeUser(getVal(row, "user")) === userNorm);
 }
 
@@ -1948,8 +2019,8 @@ const resetSession = (userNorm) => {
 const createRow = async (payload) => {
   const sheet = await ensureSheet();
   if (DEBUG_SHEETS) console.log("[Sheets] Adding row", payload);
-  await sheet.addRow(payload);
-  await upsertUserSheetEntry(payload);
+  await withRetry(() => sheet.addRow(payload), "append-finplanner");
+  await upsertUserSheetEntry(payload, { skipCheck: true });
 };
 
 const deleteRow = async (row) => {
@@ -1963,13 +2034,22 @@ const generateRowId = () => `${Date.now()}-${Math.random().toString(36).slice(2,
 const migrateUserSheets = async () => {
   try {
     const sheet = await ensureSheet();
-    const rows = await sheet.getRows();
+    const batchSize = 100;
+    const cursorRaw = await getConfigValue("user_sheet_cursor");
+    const cursor = Number.parseInt(cursorRaw || "0", 10) || 0;
+    const rows = await withRetry(() => sheet.getRows({ offset: cursor, limit: batchSize }), "get-finplanner-batch");
+    if (!rows || rows.length === 0) {
+      console.log("ℹ️ Migração de lançamentos: nada novo para migrar.", { cursor });
+      return;
+    }
     let migrated = 0;
     for (const row of rows) {
-      await upsertUserSheetEntry(row);
+      await upsertUserSheetEntry(row, { skipCheck: true });
       migrated += 1;
     }
-    console.log("✅ Migração de lançamentos concluída:", { total: migrated });
+    const nextCursor = cursor + rows.length;
+    await setConfigValue("user_sheet_cursor", String(nextCursor));
+    console.log("✅ Migração de lançamentos concluída:", { total: migrated, cursor: nextCursor });
   } catch (error) {
     console.error("Erro ao migrar lançamentos para abas de usuário:", error.message);
   }
@@ -3871,17 +3951,26 @@ async function handleStripeWebhook(req, res) {
   }
 
   const sig = req.headers["stripe-signature"];
+  if (!sig) {
+    console.error("stripe-signature ausente");
+    res.sendStatus(400);
+    return;
+  }
+  if (!Buffer.isBuffer(req.body)) {
+    console.error("Webhook Stripe sem raw Buffer — verifique se a rota está antes do express.json()");
+    res.sendStatus(400);
+    return;
+  }
   let event;
-  const payload = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "", "utf8");
 
   try {
-    event = stripe.webhooks.constructEvent(payload, sig, STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("⚠️ Stripe raw body inválido:", {
       isBuffer: Buffer.isBuffer(req.body),
       contentType: req.headers["content-type"],
+      error: err.message,
     });
-    console.error("⚠️  Erro ao validar webhook Stripe:", err.message);
     res.status(400).send(`Webhook error: ${err.message}`);
     return;
   }
@@ -4069,7 +4158,7 @@ cron.schedule(
   async () => {
     try {
       const sheet = await ensureSheet();
-      const rows = await sheet.getRows();
+      const rows = await withRetry(() => sheet.getRows(), "get-finplanner-cron");
       const today = startOfDay(new Date());
       const todayMs = today.getTime();
 
