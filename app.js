@@ -1,9 +1,9 @@
 // ============================
-// FinPlanner IA - WhatsApp Bot
+// FinPlanner IA - Bot do WhatsApp
 // Versão: app.js v2025-10-23.1
 // ============================
 
-import express from "express";
+import express de "express";
 import Stripe from "stripe";
 import OpenAI from "openai";
 import axios from "axios";
@@ -29,13 +29,13 @@ const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL;
 const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL;
 
 const {
-  PORT,
-  SHEETS_ID,
-  GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  PORTA,
+  ID_DAS_PLANILHAS,
+  E-MAIL DA CONTA DE SERVIÇO DO GOOGLE,
   GOOGLE_SERVICE_ACCOUNT_KEY: RAW_KEY = "",
   WA_TOKEN,
   WA_PHONE_NUMBER_ID,
-  ADMIN_WA_NUMBER,
+  NÚMERO_ADMIN_WA,
   WEBHOOK_VERIFY_TOKEN,
   STRIPE_WEBHOOK_SECRET,
 } = process.env;
@@ -43,11 +43,11 @@ const {
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
-const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+const openaiClient = USE_OPENAI && OPENAI_API_KEY ? novo OpenAI ({apiKey: OPENAI_API_KEY }): nulo;
 const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
 const OPENAI_CATEGORY_MODEL = process.env.OPENAI_CATEGORY_MODEL || OPENAI_INTENT_MODEL;
 
-if (USE_OPENAI && !openaiClient) {
+se (USE_OPENAI && !openaiClient) {
   console.warn("OpenAI ativado, mas OPENAI_API_KEY não foi informado. Usando detecção heurística.");
 }
 
@@ -55,11 +55,11 @@ const normalizePromptMessages = (input) => {
   if (!Array.isArray(input)) return [];
   return input.map((message) => {
     const parts = Array.isArray(message?.content) ? message.content : [message?.content];
-    const text = parts
+    const texto = partes
       .map((part) => {
-        if (!part) return "";
-        if (typeof part === "string") return part;
-        if (typeof part?.text === "string") return part.text;
+        se (!parte) retorne "";
+        se (tipo de parte === "string") retorne parte;
+        Se (typeof part?.text === "string") retornar part.text;
         return typeof part === "object" ? JSON.stringify(part) : "";
       })
       .filter(Boolean)
@@ -69,68 +69,68 @@ const normalizePromptMessages = (input) => {
 };
 
 const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 }) => {
-  if (!openaiClient) return null;
-  const messages = normalizePromptMessages(input);
-  try {
+  se (!openaiClient) retornar nulo;
+  const mensagens = normalizarPromptMessages(entrada);
+  tentar {
     const responsesClient = openaiClient.responses;
-    if (responsesClient && typeof responsesClient.create === "function") {
+    se (responsesClient && typeof responsesClient.create === "function") {
       const response = await responsesClient.create({
-        model,
-        input,
-        temperature,
+        modelo,
+        entrada,
+        temperatura,
         max_output_tokens: maxOutputTokens,
       });
-      return response?.output_text?.trim() || null;
+      retornar resposta?.texto_saída?.trim() || nulo;
     }
     const chatCompletionsClient = openaiClient.chat?.completions;
-    if (chatCompletionsClient && typeof chatCompletionsClient.create === "function") {
+    se (chatCompletionsClient && typeof chatCompletionsClient.create === "function") {
       const response = await chatCompletionsClient.create({
-        model,
-        messages: messages.length ? messages : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }],
-        temperature,
+        modelo,
+        mensagens: mensagens.length ? mensagens : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }],
+        temperatura,
         max_tokens: maxOutputTokens,
       });
-      return response?.choices?.[0]?.message?.content?.trim() || null;
+      retornar resposta?.escolhas?.[0]?.mensagem?.conteúdo?.trim() || nulo;
     }
     const completionsClient = openaiClient.completions;
-    if (completionsClient && typeof completionsClient.create === "function") {
+    se (completionsClient && typeof completionsClient.create === "function") {
       const prompt = (messages.length ? messages : [{ role: "user", content: typeof input === "string" ? input : JSON.stringify(input) }])
         .map((msg) => `${msg.role.toUpperCase()}: ${msg.content}`)
         .join("\n\n");
       const response = await completionsClient.create({
-        model,
-        prompt,
-        temperature,
+        modelo,
+        incitar,
+        temperatura,
         max_tokens: maxOutputTokens,
       });
-      return response?.choices?.[0]?.text?.trim() || null;
+      retornar resposta?.escolhas?.[0]?.texto?.trim() || nulo;
     }
     console.warn("Cliente OpenAI inicializado, mas nenhum método compatível foi encontrado.");
-  } catch (error) {
-    throw error;
+  } catch (erro) {
+    lançar erro;
   }
-  return null;
+  retornar nulo;
 };
 
 // ============================
-// Google Auth fix (supports literal \n)
+// Correção para autenticação do Google (suporta caracteres literais \n)
 // ============================
 let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
-if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
+se (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
   GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
 }
 
 // ============================
-// APP
+// Aplicativo
 // ============================
 const app = express();
 
-// Stripe webhook (raw body) - endpoint: /webhook/stripe
+// Webhook do Stripe (corpo bruto) - endpoint: /webhook/stripe
 // Eventos no Stripe Dashboard:
-// - checkout.session.completed
+// - finalização de compra.sessão.concluída
 // - invoice.payment_succeeded
 // - invoice.payment_failed
-// - customer.subscription.deleted
+// - assinatura do cliente excluída
 app.post("/webhook/stripe", express.raw({ type: "application/json" }), handleStripeWebhook);
 
 app.use(express.json());
@@ -140,80 +140,80 @@ app.get("/", (_req, res) => {
 });
 
 app.post("/checkout", async (req, res) => {
-  if (!stripe) {
+  se (!listra) {
     return res.status(500).json({ error: "Stripe não configurado." });
   }
   const { plano, whatsapp, nome, email } = req.body || {};
-  if (!whatsapp) {
+  se (!whatsapp) {
     return res.status(400).json({ error: "whatsapp obrigatório." });
   }
   const planoNorm = normalizePlan(plano) || "mensal";
   const priceMap = {
     mensal: STRIPE_PRICE_MENSAL,
     trimestral: STRIPE_PRICE_TRIMESTRAL,
-    anual: STRIPE_PRICE_ANUAL,
+    anual: STRIPE_PRICE_ANNUAL,
   };
   const priceId = priceMap[planoNorm];
-  if (!priceId) {
+  se (!priceId) {
     return res.status(400).json({ error: "Plano inválido ou price não configurado." });
   }
-  if (!STRIPE_SUCCESS_URL || !STRIPE_CANCEL_URL) {
+  se (!STRIPE_SUCCESS_URL || !STRIPE_CANCEL_URL) {
     return res.status(500).json({ error: "URLs de checkout não configuradas." });
   }
 
-  console.log("Checkout create payload:", { plano: planoNorm, whatsapp: !!whatsapp });
+  console.log("Checkout criar payload:", { plan: planNorm, whatsapp: !!whatsapp });
 
-  try {
+  tentar {
     const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: STRIPE_SUCCESS_URL,
+      modo: "assinatura",
+      itens_da_linha: [{ preço: id_do_preço, quantidade: 1 }],
+      URL de sucesso: STRIPE_SUCCESS_URL,
       cancel_url: STRIPE_CANCEL_URL,
-      subscription_data: {
-        metadata: {
-          whatsapp: String(whatsapp || ""),
+      dados_de_assinatura: {
+        metadados: {
+          WhatsApp: String(whatsapp || ""),
           plano: planoNorm,
           nome: String(nome || ""),
           email: String(email || ""),
         },
       },
-      metadata: {
-        whatsapp: String(whatsapp || ""),
+      metadados: {
+        WhatsApp: String(whatsapp || ""),
         plano: planoNorm,
       },
     });
-    return res.status(200).json({ url: session.url });
-  } catch (error) {
+    retornar res.status(200).json({ url: session.url });
+  } catch (erro) {
     console.error("Erro ao criar checkout:", error.message);
     return res.status(500).json({ error: "Erro ao criar checkout." });
   }
 });
 
 // ============================
-// Utils
+// Utilitários
 // ============================
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
-const userFirstNames = new Map();
+const userFirstNames = novo Map();
 
 const extractFirstName = (value) => {
-  if (!value) return "";
+  se (!valor) retorne "";
   const cleaned = value.toString().trim();
-  if (!cleaned) return "";
+  se (!limpo) retorne "";
   const parts = cleaned.split(/\s+/);
   const first = parts[0] || "";
-  return first;
+  retornar primeiro;
 };
 
 const rememberUserName = (userNorm, fullName) => {
-  if (!userNorm || !fullName) return;
+  Se (!userNorm || !fullName) retorne;
   const first = extractFirstName(fullName);
-  if (!first) return;
+  se (!primeiro) retornar;
   userFirstNames.set(userNorm, first);
 };
 
 const getStoredFirstName = (userNorm) => {
-  if (!userNorm) return "";
-  return userFirstNames.get(userNorm) || "";
+  se (!userNorm) retornar "";
+  retornar userFirstNames.get(userNorm) || "";
 };
 
 const processedMessages = new Map();
@@ -221,42 +221,42 @@ const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const lastInboundInteraction = new Map();
 const reminderAdminNotice = new Map();
 const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
-const usuarioStatusCache = new Map();
-const USUARIO_CACHE_TTL_MS = 60 * 1000;
+const userStatusCache = new Map();
+const USER_CACHE_TTL_MS = 60*1000;
 
 const recordUserInteraction = (userNorm) => {
-  if (!userNorm) return;
-  lastInboundInteraction.set(userNorm, Date.now());
+  se (!userNorm) retornar;
+  últimaInteraçãoDeEntrada.set(normaDoUsuário, Data.agora());
 };
 
-function hasRecentUserInteraction(userNorm) {
-  if (!userNorm) return false;
-  const last = lastInboundInteraction.get(userNorm);
+função hasRecentUserInteraction(userNorm) {
+  se (!userNorm) retornar falso;
+  const último = últimaInteraçãoDeEntrada.get(userNorm);
   return typeof last === "number" && Date.now() - last <= WA_SESSION_WINDOW_MS;
 }
 
 const shouldNotifyAdminReminder = (userNorm) => {
-  if (!userNorm) return false;
-  const today = new Date().toISOString().split("T")[0];
+  se (!userNorm) retornar falso;
+  const hoje = new Date().toISOString().split("T")[0];
   const key = reminderAdminNotice.get(userNorm);
-  if (key === today) return false;
-  reminderAdminNotice.set(userNorm, today);
-  return true;
+  se (chave === hoje) retorne falso;
+  avisoDoAdministradorDeLembrete.set(normaDoUsuário, hoje);
+  retornar verdadeiro;
 };
 
 const isDuplicateMessage = (id) => {
-  if (!id) return false;
+  se (!id) retornar falso;
   const now = Date.now();
-  for (const [storedId, ts] of processedMessages) {
-    if (now - ts > MESSAGE_CACHE_TTL_MS) {
+  para (const [storedId, ts] de processedMessages) {
+    se (agora - ts > MESSAGE_CACHE_TTL_MS) {
       processedMessages.delete(storedId);
     }
   }
-  if (processedMessages.has(id)) {
-    return true;
+  se (processedMessages.has(id)) {
+    retornar verdadeiro;
   }
   processedMessages.set(id, now);
-  return false;
+  retornar falso;
 };
 const NUMBER_WORDS = {
   zero: 0,
@@ -264,20 +264,20 @@ const NUMBER_WORDS = {
   uma: 1,
   dois: 2,
   duas: 2,
-  tres: 3,
+  três: 3,
   três: 3,
   quatro: 4,
   cinco: 5,
   seis: 6,
   sete: 7,
   oito: 8,
-  nove: 9,
+  novo: 9,
   dez: 10,
-  onze: 11,
-  doze: 12,
+  o nosso: 11,
+  dose: 12,
   treze: 13,
   quatorze: 14,
-  catorze: 14,
+  quatorze: 14,
   quinze: 15,
   dezesseis: 16,
   dezessete: 17,
@@ -306,19 +306,19 @@ const NUMBER_WORDS = {
 const NUMBER_CONNECTORS = new Set([
   "e",
   "de",
-  "da",
-  "do",
-  "das",
+  "e",
+  "fazer",
+  "o",
   "dos",
   "reais",
   "real",
   "centavos",
   "centavo",
-  "r$",
+  "R$",
 ]);
 
-const normalizeDiacritics = (text) =>
-  (text || "")
+const normalizeDiacritics = (texto) =>
+  (texto || "")
     .toString()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
@@ -326,41 +326,41 @@ const normalizeDiacritics = (text) =>
 const escapeRegex = (value) => (value || "").replace(/([.*+?^${}()|\[\]\\])/g, "\\$1");
 
 const parseNumberWordsTokens = (tokens) => {
-  let total = 0;
-  let current = 0;
-  for (const token of tokens) {
-    if (!token) continue;
-    if (NUMBER_CONNECTORS.has(token)) continue;
-    if (token === "mil") {
-      total += (current || 1) * 1000;
-      current = 0;
-      continue;
+  seja total = 0;
+  seja atual = 0;
+  para (const token de tokens) {
+    se (!token) continue;
+    se (NUMBER_CONNECTORS.has(token)) continue;
+    se (token === "mil") {
+      total += (atual || 1) * 1000;
+      atual = 0;
+      continuar;
     }
     const value = NUMBER_WORDS[token];
-    if (typeof value === "number") {
-      current += value;
-    } else {
-      return null;
+    se (tipo de valor === "número") {
+      valor atual += valor;
+    } outro {
+      retornar nulo;
     }
   }
-  return total + current || null;
+  retornar total + atual || nulo;
 };
 
 const extractNumberWords = (text) => {
-  const normalized = normalizeDiacritics(text).toLowerCase();
-  const tokens = normalized.split(/[^a-z$]+/).filter(Boolean);
-  let sequence = [];
-  for (const token of tokens) {
+  const normalizado = normalizarDiacritics(texto).toLowerCase();
+  const tokens = normalized.split(/[^az$]+/).filter(Boolean);
+  seja sequência = [];
+  para (const token de tokens) {
     if (NUMBER_CONNECTORS.has(token) || NUMBER_WORDS[token] !== undefined || token === "mil") {
-      sequence.push(token);
+      sequência.push(token);
     } else if (sequence.length) {
-      break;
+      quebrar;
     }
   }
-  if (!sequence.length) return null;
+  Se (!sequence.length) retornar nulo;
   const parsed = parseNumberWordsTokens(sequence);
-  if (!parsed) return null;
-  return { amount: parsed, raw: sequence.join(" ") };
+  se (!analisado) retorne nulo;
+  retornar { quantidade: analisado, bruto: sequência.join(" ") };
 };
 
 const DATE_TOKEN_PATTERN = "\\b(\\d{1,2}[\\/-]\\d{1,2}(?:[\\/-]\\d{2,4})?)\\b";
@@ -368,29 +368,29 @@ const VALUE_TOKEN_PATTERN =
   "(?:R\\$?\\s*)?(?:\\d{1,3}(?:[.,]\\d{3})+(?:[.,]\\d{1,2})?|\\d+(?:[.,]\\d{1,2})?)(?!\\s*[\\/-]\\d)";
 
 const parseNumericToken = (rawToken) => {
-  if (rawToken === undefined || rawToken === null) return null;
+  Se (rawToken === undefined || rawToken === null) retorne null;
   let token = rawToken.toString().trim().toLowerCase();
-  if (!token) return null;
+  se (!token) retornar nulo;
 
   token = token.replace(/^r\$/i, "");
 
-  if (token.endsWith("mil")) {
+  se (token.terminaCom("mil")) {
     const baseToken = token.slice(0, -3).trim();
     const baseValue = baseToken ? parseNumericToken(baseToken) : 1;
-    return baseValue ? baseValue * 1000 : null;
+    retornar valorBase ? valorBase * 1000 : nulo;
   }
 
-  let multiplier = 1;
-  if (token.endsWith("k")) {
-    multiplier = 1000;
+  seja multiplicador = 1;
+  se (token.terminaCom("k")) {
+    multiplicador = 1000;
     token = token.slice(0, -1);
   }
 
   token = token.replace(/^r\$/i, "").replace(/\s+/g, "");
   token = token.replace(/[^0-9.,-]/g, "");
-  if (!token) return null;
+  se (!token) retornar nulo;
 
-  if (token.includes(".") && token.includes(",")) {
+  se (token.includes(".") && token.includes(",")) {
     const lastDot = token.lastIndexOf(".");
     const lastComma = token.lastIndexOf(",");
     const decimalSep = lastDot > lastComma ? "." : ",";
@@ -402,40 +402,40 @@ const parseNumericToken = (rawToken) => {
   } else if (token.includes(",")) {
     const lastComma = token.lastIndexOf(",");
     const decimals = token.length - lastComma - 1;
-    if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
+    se (decimais === 3 && token.replace(/[^0-9]/g, "").length > 3) {
       token = token.replace(/,/g, "");
-    } else {
+    } outro {
       token = token.replace(/,/g, ".");
     }
   } else if (token.includes(".")) {
     const lastDot = token.lastIndexOf(".");
     const decimals = token.length - lastDot - 1;
-    if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
+    se (decimais === 3 && token.replace(/[^0-9]/g, "").length > 3) {
       token = token.replace(/\./g, "");
     }
   }
 
-  const parsed = parseFloat(token);
-  if (!Number.isFinite(parsed)) return null;
-  return parsed * multiplier;
+  const analisado = parseFloat(token);
+  Se (!Number.isFinite(parsed)) retorne nulo;
+  retornar multiplicador analisado;
 };
 
 const extractAmountFromText = (text) => {
-  if (!text) return { amount: 0 };
+  se (!texto) retorne { quantidade: 0 };
   const source = text.toString();
 
   const dataRegexGlobal = new RegExp(DATE_TOKEN_PATTERN, "g");
   const dateMatches = [...source.matchAll(dataRegexGlobal)];
   const spans = dateMatches.map((match) => ({
-    start: match.index,
-    end: match.index + match[0].length,
+    início: match.index,
+    fim: match.index + match[0].length,
   }));
 
   const inlineTrailingDateRegex = /[\/-]\s*\d{1,2}(?:[\/-]\d{2,4})?/g;
-  let trailing;
-  while ((trailing = inlineTrailingDateRegex.exec(source)) !== null) {
+  deixe arrastando;
+  enquanto ((trailing = inlineTrailingDateRegex.exec(source)) !== null) {
     const prevChar = source[trailing.index - 1];
-    if (prevChar && /\d/.test(prevChar)) {
+    se (prevChar && /\d/.test(prevChar)) {
       spans.push({ start: trailing.index, end: trailing.index + trailing[0].length });
     }
   }
@@ -443,67 +443,67 @@ const extractAmountFromText = (text) => {
   spans.sort((a, b) => a.start - b.start);
 
   const valorRegexGlobal = new RegExp(VALUE_TOKEN_PATTERN, "gi");
-  let match;
-  while ((match = valorRegexGlobal.exec(source)) !== null) {
+  que combine;
+  enquanto ((match = valorRegexGlobal.exec(source)) !== null) {
     const start = match.index;
-    const end = start + match[0].length;
+    const fim = início + correspondência[0].comprimento;
     if (spans.some((span) => start < span.end && end > span.start)) continue;
     const raw = match[0];
     const value = parseNumericToken(raw);
-    if (value) return { amount: value, raw };
+    se (valor) retornar { quantidade: valor, bruto };
   }
 
-  const words = extractNumberWords(source);
-  if (words) return words;
+  const palavras = extrairPalavrasNuméricas(fonte);
+  se (palavras) retornar palavras;
 
-  let sanitized = source;
-  if (spans.length) {
+  seja sanitizado = fonte;
+  se (spans.length) {
     const chars = Array.from(source);
     spans.forEach(({ start, end }) => {
-      for (let i = start; i < end; i += 1) {
+      para (seja i = início; i < fim; i += 1) {
         chars[i] = " ";
       }
     });
     sanitized = chars.join("");
   }
   const fallbackRegex = /\d+(?:[.,]\d+)?k|\d+/gi;
-  while ((match = fallbackRegex.exec(sanitized)) !== null) {
+  enquanto ((match = fallbackRegex.exec(sanitized)) !== null) {
     const raw = match[0];
-    const remainder = sanitized.slice(match.index + raw.length);
+    const resto = sanitizado.slice(match.index + raw.length);
     const trailingDigits = remainder.match(/^\s*[\/-]\s*\d/);
-    if (trailingDigits) continue;
-    let cursor = 0;
-    while (cursor < remainder.length && /\s/.test(remainder[cursor])) cursor += 1;
-    if (cursor < remainder.length && /\d/.test(remainder[cursor])) continue;
+    se (dígitos_traseiros) continuar;
+    seja cursor = 0;
+    enquanto (cursor < resto.comprimento && /\s/.teste(resto[cursor])) cursor += 1;
+    se (cursor < resto.comprimento && /\d/.teste(resto[cursor])) continue;
     const value = parseNumericToken(raw);
-    if (value) return { amount: value, raw };
+    se (valor) retornar { quantidade: valor, bruto };
   }
 
-  return { amount: 0 };
+  retornar { quantidade: 0 };
 };
 
-const toNumber = (value) => {
-  if (value === undefined || value === null) return 0;
-  if (typeof value === "number") return value;
+const toNumber = (valor) => {
+  se (valor === indefinido || valor === nulo) retorne 0;
+  Se (tipo de valor === "número") retornar valor;
   const result = extractAmountFromText(String(value));
   return Number.isFinite(result.amount) ? result.amount : 0;
 };
-const formatCurrencyBR = (value) => {
+const formatCurrencyBR = (valor) => {
   const num = Number(value || 0);
-  return `R$${Math.abs(num).toLocaleString("pt-BR", {
+  retornar `R$${Math.abs(num).toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
 };
 
-const formatSignedCurrencyBR = (value) => {
+const formatSignedCurrencyBR = (valor) => {
   const num = Number(value || 0);
   const formatted = formatCurrencyBR(Math.abs(num));
-  return num < 0 ? `-${formatted}` : formatted;
+  retornar num < 0 ? `-${formatado}` : formatado;
 };
 const statusIconLabel = (status) => {
-  const normalized = (status || "").toString().toLowerCase();
-  if (normalized === "pago") return "✅ Pago";
+  const normalizado = (status || "").toString().toLowerCase();
+  se (normalizado === "pago") retornar "✅ Pago";
   if (normalized === "recebido") return "✅ Recebido";
   return "⏳ Pendente";
 };
@@ -511,64 +511,64 @@ const statusIconLabel = (status) => {
 const startOfDay = (d) => {
   const tmp = new Date(d);
   tmp.setHours(0, 0, 0, 0);
-  return tmp;
+  retornar tmp;
 };
-const endOfDay = (d) => {
+const fimDoDia = (d) => {
   const tmp = new Date(d);
   tmp.setHours(23, 59, 59, 999);
-  return tmp;
+  retornar tmp;
 };
 const startOfMonth = (y, m) => new Date(y, m, 1, 0, 0, 0, 0);
-const endOfMonth = (y, m) => new Date(y, m + 1, 0, 23, 59, 59, 999);
+const fimDoMês = (y, m) => new Date(y, m + 1, 0, 23, 59, 59, 999);
 
-const daysInMonth = (year, monthIndex) => new Date(year, monthIndex + 1, 0).getDate();
+const diasNoMês = (ano, índiceDoMês) => new Date(ano, índiceDoMês + 1, 0).getDate();
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const addDays = (date, days) => {
   const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
+  resultado.setDate(resultado.getDate() + dias);
+  retornar resultado;
 };
 
 const nextMonthlyDate = (day, referenceDate, { inclusive = false } = {}) => {
-  const reference = startOfDay(referenceDate);
-  let year = reference.getFullYear();
-  let month = reference.getMonth();
+  const referência = inícioDoDia(dataReferência);
+  seja ano = referência.getFullYear();
+  seja mês = referência.getMonth();
   const buildDate = (y, m) => {
     const safeDay = clamp(Math.round(day), 1, daysInMonth(y, m));
     const instance = new Date(y, m, safeDay);
-    instance.setHours(0, 0, 0, 0);
-    return instance;
+    instância.setHours(0, 0, 0, 0);
+    retornar instância;
   };
-  let candidate = buildDate(year, month);
-  while (inclusive ? candidate < reference : candidate <= reference) {
-    month += 1;
-    if (month > 11) {
-      month = 0;
-      year += 1;
+  seja candidato = dataDeConstrução(ano, mês);
+  enquanto (inclusivo ? candidato < referência : candidato <= referência) {
+    mês += 1;
+    se (mês > 11) {
+      mês = 0;
+      ano += 1;
     }
-    candidate = buildDate(year, month);
+    candidato = dataDeConstrução(ano, mês);
   }
-  return candidate;
+  retornar candidato;
 };
 
 const nextIntervalDate = (intervalDays, startDate, fromDate = new Date()) => {
-  const interval = Math.max(Math.round(intervalDays), 1);
+  const intervalo = Math.max(Math.round(intervaloDias), 1);
   const base = startOfDay(startDate);
   const from = startOfDay(fromDate);
-  if (base.getTime() >= from.getTime()) return base;
+  se (base.getTime() >= from.getTime()) retorne base;
   const diffMs = from.getTime() - base.getTime();
   const steps = Math.ceil(diffMs / (interval * 24 * 60 * 60 * 1000));
   const candidate = addDays(base, steps * interval);
-  if (candidate.getTime() >= from.getTime()) return candidate;
-  return addDays(candidate, interval);
+  se (candidato.getTime() >= de.getTime()) retorne candidato;
+  retornar adicionarDias(candidato, intervalo);
 };
 
 const formatBRDate = (d) => {
-  if (!d) return "";
-  try {
-    return new Date(d).toLocaleDateString("pt-BR");
+  se (!d) retorne "";
+  tentar {
+    retornar novo Date(d).toLocaleDateString("pt-BR");
   } catch (e) {
-    return "";
+    retornar "";
   }
 };
 
@@ -585,60 +585,60 @@ const numberToKeycapEmojis = (n) => {
     8: "8️⃣",
     9: "9️⃣",
   };
-  return String(n)
-    .split("")
+  retornar String(n)
+    .dividir("")
     .map((d) => map[d] || d)
-    .join("");
+    .juntar("");
 };
 
 const withinRange = (dt, start, end) => {
-  if (!dt) return false;
+  se (!dt) retornar falso;
   const time = new Date(dt).getTime();
-  return time >= start.getTime() && time <= end.getTime();
+  retornar tempo >= início.getTime() && tempo <= fim.getTime();
 };
 
 const parseDateToken = (token) => {
-  if (!token) return null;
+  se (!token) retornar nulo;
   const lower = token.toLowerCase();
-  if (lower === "hoje") return new Date();
+  se (lower === "hoje") retorne new Date();
   if (lower === "amanha" || lower === "amanhã") {
     const d = new Date();
     d.setDate(d.getDate() + 1);
-    return d;
+    retornar d;
   }
-  if (lower === "ontem") {
+  se (inferior === "ontem") {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d;
+    retornar d;
   }
   const match = token.match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
-  if (match) {
-    const day = Number(match[1]);
-    const month = Number(match[2]) - 1;
+  se (correspondência) {
+    const dia = Número(match[1]);
+    const mês = Número(match[2]) - 1;
     const currentYear = new Date().getFullYear();
-    let year = currentYear;
-    if (match[3]) {
-      year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
-    } else {
+    seja ano = anoAtual;
+    se (match[3]) {
+      ano = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+    } outro {
       const tentative = new Date(currentYear, month, day);
       const now = new Date();
-      if (tentative < startOfDay(now)) {
-        year = currentYear + 1;
+      se (tentativo < inícioDoDia(agora)) {
+        ano = anoAtual + 1;
       }
     }
-    const d = new Date(year, month, day);
-    if (!Number.isNaN(d.getTime())) return d;
+    const d = new Date(ano, mês, dia);
+    if (!Número.isNaN(d.getTime())) return d;
   }
-  return null;
+  retornar nulo;
 };
 
-const CATEGORY_DEFINITIONS = [
+const DEFINIÇÕES_DE_CATEGÓRIA = [
   {
     slug: "mercado",
-    label: "Mercado / Supermercado",
+    rótulo: "Mercado / Supermercado",
     emoji: "🛒",
     description: "Compras de supermercado, feira e itens de despensa para casa.",
-    keywords: [
+    Palavras-chave: [
       "mercado",
       "supermercado",
       "hortifruti",
@@ -650,7 +650,7 @@ const CATEGORY_DEFINITIONS = [
       "acougue",
       "feira",
       "compras do mes",
-      "cesta basica",
+      "estrada básica",
     ],
     aliases: ["supermercado", "mercado_supermercado"],
   },
@@ -659,7 +659,7 @@ const CATEGORY_DEFINITIONS = [
     label: "Alimentação",
     emoji: "🍽️",
     description: "Refeições prontas, lanches e alimentação fora de casa.",
-    keywords: [
+    Palavras-chave: [
       "restaurante",
       "lanche",
       "lanchonete",
@@ -670,35 +670,35 @@ const CATEGORY_DEFINITIONS = [
       "padaria",
       "marmita",
       "self-service",
-      "delivery",
+      "entrega",
       "comida pronta",
       "quentinha",
       "espetinho",
     ],
   },
   {
-    slug: "bebidas",
-    label: "Bebidas",
+    lesma: "bebidas",
+    rótulo: "Bebidas",
     emoji: "🍹",
     description: "Bebidas alcoólicas ou não alcoólicas compradas separadamente da refeição.",
-    keywords: [
+    Palavras-chave: [
       "bebida",
       "cerveja",
       "refrigerante",
       "vinho",
-      "drink",
-      "drinks",
+      "bebida",
+      "bebidas",
       "bar",
       "chopp",
       "suco",
       "água",
-      "agua",
-      "whisky",
-      "gin",
+      "água",
+      "uísque",
+      "Gin",
       "café",
-      "cafe",
-      "energético",
-      "energetico",
+      "café",
+      "enérgico",
+      "enérgico",
     ],
   },
   {
@@ -706,35 +706,35 @@ const CATEGORY_DEFINITIONS = [
     label: "Higiene Pessoal",
     emoji: "🧴",
     description: "Produtos de cuidado pessoal, higiene e cosméticos.",
-    keywords: [
+    Palavras-chave: [
       "higiene",
       "sabonete",
-      "shampoo",
+      "xampu",
       "condicionador",
       "creme",
       "desodorante",
       "perfume",
       "escova",
-      "pasta",
+      "massa",
       "fio dental",
       "absorvente",
       "barbeador",
       "cotonete",
       "higiene pessoal",
-      "cosmetico",
+      "cosmético",
       "cosmético",
     ],
   },
   {
-    slug: "utilidades",
-    label: "Utilidades",
+    slug: "utilitários",
+    rótulo: "Serviços públicos",
     emoji: "🔌",
     description: "Contas essenciais como luz, água e gás.",
     keywords: ["luz", "energia", "água", "agua", "gás", "gas", "conta de luz", "conta de agua"],
   },
   {
     slug: "internet_telefonia",
-    label: "Internet / Telefonia",
+    Rótulo: "Internet / Telefonia"
     emoji: "🌐",
     description: "Planos de internet, telefonia fixa ou celular.",
     keywords: ["internet", "fibra", "vivo", "claro", "tim", "oi", "telefonia", "celular", "telefone"],
@@ -747,11 +747,11 @@ const CATEGORY_DEFINITIONS = [
     keywords: ["aluguel", "condomínio", "condominio", "iptu", "financiamento", "alojamento", "imovel", "imóvel"],
   },
   {
-    slug: "transporte",
+    lesma: "transporte",
     label: "Transporte",
     emoji: "🚗",
     description: "Deslocamentos, combustível, pedágios e manutenção de veículos.",
-    keywords: [
+    Palavras-chave: [
       "uber",
       "99",
       "gasolina",
@@ -759,7 +759,7 @@ const CATEGORY_DEFINITIONS = [
       "combustivel",
       "passagem",
       "ônibus",
-      "onibus",
+      "todos",
       "transporte",
       "estacionamento",
       "pedágio",
@@ -769,19 +769,19 @@ const CATEGORY_DEFINITIONS = [
     ],
   },
   {
-    slug: "saude",
+    lesma: "salsicha",
     label: "Saúde",
     emoji: "💊",
     description: "Cuidados com saúde, planos, exames e medicamentos.",
-    keywords: [
+    Palavras-chave: [
       "academia",
       "plano",
       "consulta",
       "dentista",
       "farmácia",
-      "farmacia",
+      "farmácia",
       "remédio",
-      "remedio",
+      "remédio",
       "exame",
       "hospital",
       "terapia",
@@ -795,8 +795,8 @@ const CATEGORY_DEFINITIONS = [
     keywords: ["curso", "faculdade", "escola", "mensalidade", "aula", "material", "livro", "apostila"],
   },
   {
-    slug: "lazer",
-    label: "Lazer",
+    lesma: "laser",
+    rótulo: "Laser",
     emoji: "🎭",
     description: "Atividades de lazer, cultura, assinaturas e viagens.",
     keywords: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento", "viagem", "passeio", "parque"],
@@ -837,54 +837,54 @@ const CATEGORY_DEFINITIONS = [
     keywords: ["investimento", "bolsa", "renda fixa", "tesouro", "ação", "acao", "cripto", "poupança", "poupanca"],
   },
   {
-    slug: "outros",
+    lesma: "outros",
     label: "Outros",
     emoji: "🧩",
     description: "Despesas ou receitas que não se encaixam nas demais categorias.",
-    keywords: [],
+    palavras-chave: [],
   },
 ];
 
-const sanitizeCategoryKey = (value) => {
-  if (!value) return "";
-  return normalizeDiacritics(value.toString().toLowerCase())
+const sanitizeCategoryKey = (valor) => {
+  se (!valor) retorne "";
+  retornar normalizarDiacritics(valor.toString().toLowerCase())
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
 };
 
-const CATEGORY_BY_SLUG = new Map();
-CATEGORY_DEFINITIONS.forEach((category) => {
-  category.normalizedKeywords = (category.keywords || []).map((kw) => normalizeDiacritics(kw));
+const CATEGORIA_POR_SLUG = novo Mapa();
+DEFINIÇÕES_DE_CATEGÓRIA.paraCada((categoria) => {
+  categoria.palavras-chave normalizadas = (categoria.palavras-chave || []).map((kw) => normalizarDiacritics(kw));
   const keys = new Set([
     sanitizeCategoryKey(category.slug),
     sanitizeCategoryKey(category.label),
   ]);
   (category.aliases || []).forEach((alias) => keys.add(sanitizeCategoryKey(alias)));
   keys.forEach((key) => {
-    if (key) CATEGORY_BY_SLUG.set(key, category);
+    se (chave) CATEGORIA_POR_SLUG.definir(chave, categoria);
   });
 });
 
 const getCategoryDefinition = (slug) => {
   const key = sanitizeCategoryKey(slug);
-  if (!key) return null;
-  return CATEGORY_BY_SLUG.get(key) || null;
+  se (!chave) retornar nulo;
+  retornar CATEGORY_BY_SLUG.get(chave) || nulo;
 };
 
-const humanizeCategorySlug = (value) => {
+const humanizeCategorySlug = (valor) => {
   const raw = (value || "").toString().trim();
-  if (!raw) return "";
+  se (!raw) retornar "";
   const parts = raw.split(/[_-]+/).filter(Boolean);
-  if (!parts.length) return raw;
+  se (!parts.length) retorne bruto;
   return parts.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" / ");
 };
 
-const detectCategoryHeuristic = (description, tipo) => {
-  const normalized = normalizeDiacritics((description || "").toLowerCase());
-  for (const category of CATEGORY_DEFINITIONS) {
+const detectarHeurísticaDeCategoria = (descrição, tipo) => {
+  const normalizado = normalizarDiacritics((descrição || "").toLowerCase());
+  para (const categoria de DEFINIÇÕES_DE_CATEGORIA) {
     const keywords = category.normalizedKeywords || [];
-    if (keywords.some((kw) => kw && normalized.includes(kw))) {
-      return { slug: category.slug, emoji: category.emoji };
+    se (palavras-chave.algumas((kw) => kw && normalized.includes(kw))) {
+      retornar { slug: categoria.slug, emoji: categoria.emoji };
     }
   }
   if (tipo === "conta_receber") {
@@ -899,44 +899,44 @@ const formatCategoryLabel = (slug, emoji) => {
   const def = getCategoryDefinition(slug);
   const label = def?.label || humanizeCategorySlug(slug) || "—";
   const icon = emoji || def?.emoji;
-  if (!label || label === "—") {
-    return icon ? `${icon} —` : "—";
+  se (!rótulo || rótulo === "—") {
+    retornar ícone ? `${icon} —` : "—";
   }
-  return icon ? `${icon} ${label}` : label;
+  retornar ícone ? `${ícone} ${rótulo}` : rótulo;
 };
 
 const CATEGORY_PROMPT_HINT = CATEGORY_DEFINITIONS.map((category) => {
   const samples = (category.keywords || []).slice(0, 5);
   const detail = category.description ? ` - ${category.description}` : "";
   const sampleText = samples.length ? ` Exemplos: ${samples.join(", ")}.` : "";
-  return `${category.slug}: ${category.label}${detail}${sampleText}`;
+  retornar `${category.slug}: ${category.label}${detail}${sampleText}`;
 }).join("\n");
 
 const truncateForPrompt = (value, max = 200) => {
-  if (!value) return "";
+  se (!valor) retorne "";
   const str = value.toString().trim();
-  if (str.length <= max) return str;
-  return `${str.slice(0, max - 1)}…`;
+  se (str.length <= max) retorne str;
+  retornar `${str.slice(0, max - 1)}…`;
 };
 
-const buildCategoryPrompt = (description, tipo) => [
+const buildCategoryPrompt = (descrição, tipo) => [
   {
-    role: "system",
-    content: [
+    função: "sistema",
+    contente: [
       {
-        type: "text",
-        text:
+        tipo: "texto",
+        texto:
           "Você é um classificador de categorias financeiras. Responda apenas com um dos slugs informados, sem explicações.",
       },
     ],
   },
   {
-    role: "user",
-    content: [
+    função: "usuário",
+    contente: [
       {
-        type: "text",
+        tipo: "texto",
         text: `Categorias disponíveis:\n${CATEGORY_PROMPT_HINT}\n\nDescrição do lançamento: "${truncateForPrompt(
-          description,
+          descrição,
         )}"\nTipo do lançamento: ${tipo === "conta_receber" ? "recebimento" : "pagamento"}\nResponda apenas com o slug mais adequado.`,
       },
     ],
@@ -944,35 +944,35 @@ const buildCategoryPrompt = (description, tipo) => [
 ];
 
 const resolveCategory = async (description, tipo) => {
-  const fallback = detectCategoryHeuristic(description, tipo);
+  const fallback = detectCategoryHeuristic(descrição, tipo);
   if (!description || !description.toString().trim() || !openaiClient) return fallback;
-  try {
+  tentar {
     const output = await callOpenAI({
-      model: OPENAI_CATEGORY_MODEL,
-      input: buildCategoryPrompt(description, tipo),
-      temperature: 0,
+      modelo: OPENAI_CATEGORY_MODEL,
+      entrada: buildCategoryPrompt(descrição, tipo),
+      temperatura: 0,
       maxOutputTokens: 50,
     });
     const predicted = output?.trim();
-    const def = getCategoryDefinition(predicted);
-    if (!def && predicted) {
+    const def = getCategoryDefinition(previsto);
+    se (!def && previsto) {
       const pieces = predicted.split(/\s|,|;|\n/).filter(Boolean);
-      for (const piece of pieces) {
+      para (const pedaço de pedaços) {
         const candidate = getCategoryDefinition(piece);
-        if (candidate) {
-          return { slug: candidate.slug, emoji: candidate.emoji };
+        se (candidato) {
+          retornar { slug: candidate.slug, emoji: candidate.emoji };
         }
       }
     }
-    if (def) return { slug: def.slug, emoji: def.emoji };
-  } catch (error) {
+    se (def) retornar { slug: def.slug, emoji: def.emoji };
+  } catch (erro) {
     console.error("Falha ao consultar OpenAI para categoria:", error?.message || error);
   }
-  return fallback;
+  retornar opção alternativa;
 };
 
 // ============================
-// WhatsApp helpers
+// Auxiliares do WhatsApp
 // ============================
 const WA_API_VERSION = "v17.0";
 const WA_API = `https://graph.facebook.com/${WA_API_VERSION}/${WA_PHONE_NUMBER_ID}/messages`;
@@ -981,149 +981,149 @@ const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const ADMIN_NUMBER_NORM = ADMIN_WA_NUMBER ? normalizeUser(ADMIN_WA_NUMBER) : null;
 
-const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
-  if (!text) return [];
-  if (text.length <= limit) return [text];
+const splitLongMessage = (texto, limite = WA_TEXT_LIMIT) => {
+  se (!texto) retorne [];
+  se (texto.comprimento <= limite) retorne [texto];
   const parts = [];
-  let remaining = text;
-  while (remaining.length > limit) {
+  seja o restante = texto;
+  enquanto (comprimento restante > limite) {
     let sliceIndex = remaining.lastIndexOf("\n", limit);
-    if (sliceIndex === -1 || sliceIndex < limit * 0.5) {
+    se (sliceIndex === -1 || sliceIndex < limite * 0,5) {
       const spaceIndex = remaining.lastIndexOf(" ", limit);
-      if (spaceIndex > sliceIndex) {
+      se (spaceIndex > sliceIndex) {
         sliceIndex = spaceIndex;
       }
     }
-    if (sliceIndex === -1 || sliceIndex === 0) {
-      sliceIndex = limit;
+    se (sliceIndex === -1 || sliceIndex === 0) {
+      sliceIndex = limite;
     }
     const chunk = remaining.slice(0, sliceIndex).trimEnd();
-    if (chunk) {
-      parts.push(chunk);
+    se (pedaço) {
+      partes.empurrar(pedaço);
     }
-    remaining = remaining.slice(sliceIndex).trimStart();
-    if (!remaining) {
-      break;
+    restante = restante.fatia(índiceDaFatia).trimStart();
+    se (!restante) {
+      quebrar;
     }
-    if (remaining.length <= limit) {
-      parts.push(remaining);
-      return parts;
+    se (comprimento restante <= limite) {
+      partes.empurrar(restante);
+      devolver peças;
     }
   }
-  if (remaining && remaining.length <= limit) {
-    parts.push(remaining);
+  se (restante && restante.comprimento <= limite) {
+    partes.empurrar(restante);
   }
-  return parts;
+  devolver peças;
 };
 
-async function sendWA(payload) {
-  try {
-    await axios.post(WA_API, payload, {
-      headers: {
-        Authorization: `Bearer ${WA_TOKEN}`,
+função assíncrona enviarWA(carga útil) {
+  tentar {
+    aguarde axios.post(WA_API, payload, {
+      cabeçalhos: {
+        Autorização: `Portador ${WA_TOKEN}`,
         "Content-Type": "application/json",
       },
     });
-    return true;
-  } catch (error) {
+    retornar verdadeiro;
+  } catch (erro) {
     console.error("Erro WA:", error.response?.data || error.message);
-    return false;
+    retornar falso;
   }
 }
 
 const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
   const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
   const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "template",
-    template: {
-      name: TEMPLATE_REMINDER_NAME,
-      language: { code: "pt_BR" },
-      components: [
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "modelo",
+    modelo: {
+      nome: TEMPLATE_REMINDER_NAME,
+      idioma: { código: "pt_BR" },
+      componentes: [
         {
-          type: "body",
-          parameters: [{ type: "text", text: firstName }],
+          tipo: "corpo",
+          parâmetros: [{ tipo: "texto", texto: nome }],
         },
         {
-          type: "button",
-          sub_type: "quick_reply",
-          index: "0",
-          parameters: [{ type: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
+          tipo: "botão",
+          sub_tipo: "resposta_rápida",
+          índice: "0",
+          parâmetros: [{ tipo: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
         },
       ],
     },
   };
-  const success = await sendWA(payload);
-  if (success) {
+  const sucesso = await sendWA(payload);
+  se (sucesso) {
     console.log("✅ Template de reengajamento enviado para", to);
   }
-  return success;
+  retorno bem-sucedido;
 };
 
 const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = false }) => {
-  if (!to) return false;
-  if (bypassWindow) return true;
-  if (userNorm && ADMIN_NUMBER_NORM && userNorm === ADMIN_NUMBER_NORM) {
-    return true;
+  se (!para) retornar falso;
+  se (bypassWindow) retornar verdadeiro;
+  se (userNorm && ADMIN_NUMBER_NORM && userNorm === ADMIN_NUMBER_NORM) {
+    retornar verdadeiro;
   }
-  if (hasRecentUserInteraction(userNorm)) {
-    return true;
+  se (hasRecentUserInteraction(userNorm)) {
+    retornar verdadeiro;
   }
-  await sendTemplateReminder(to, userNorm, nameHint);
-  return false;
+  aguarde sendTemplateReminder(to, userNorm, nameHint);
+  retornar falso;
 };
 
 const sendText = async (to, body, options = {}) => {
-  if (!to || !body) return false;
+  se (!para || !corpo) retorne falso;
   const userNorm = normalizeUser(to);
   const nameHint = options.nameHint || getStoredFirstName(userNorm);
   const canSend = await ensureSessionWindow({
-    to,
+    para,
     userNorm,
-    nameHint,
+    Dica de nome,
     bypassWindow: options.bypassWindow || false,
   });
-  if (!canSend) return false;
-  const segments = splitLongMessage(body);
-  let allDelivered = true;
-  const total = segments.length || 1;
-  if (total === 0) return false;
-  for (let index = 0; index < segments.length; index += 1) {
+  Se (!canSend) retornar falso;
+  const segmentos = splitLongMessage(corpo);
+  seja allDelivered = verdadeiro;
+  const total = segmentos.comprimento || 1;
+  se (total === 0) retorne falso;
+  para (seja índice = 0; índice < segmentos.comprimento; índice += 1) {
     const segment = segments[index];
-    const success = await sendWA({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: segment },
+    const sucesso = aguardar enviarWA({
+      produto_de_mensagens: "whatsapp",
+      para,
+      tipo: "texto",
+      texto: { corpo: segmento },
     });
-    if (success) {
-      const suffix = total > 1 ? ` (parte ${index + 1}/${total})` : "";
+    se (sucesso) {
+      const sufixo = total > 1 ? ` (parte ${index + 1}/${total})` : "";
       console.log("💬 Mensagem enviada normalmente para", to, suffix);
-    } else {
-      allDelivered = false;
-      break;
+    } outro {
+      todosEntregues = falso;
+      quebrar;
     }
   }
-  return allDelivered;
+  retornar todos os entregues;
 };
 
 const sendCopyButton = (to, title, code, btnTitle) => {
-  if (!code) return;
+  se (!código) retornar;
   const safeTitle = btnTitle.length > 20 ? `${btnTitle.slice(0, 17)}...` : btnTitle;
-  return sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: title },
-      action: {
-        buttons: [
+  retornar sendWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
+      corpo: { texto: título },
+      Ação: {
+        botões: [
           {
-            type: "copy_code",
-            copy_code: code,
-            title: safeTitle,
+            tipo: "código_de_cópia",
+            copy_code: código,
+            título: safeTitle,
           },
         ],
       },
@@ -1132,12 +1132,12 @@ const sendCopyButton = (to, title, code, btnTitle) => {
 };
 
 // ============================
-// Google Sheets helpers
+// Auxiliares do Google Sheets
 // ============================
 const SHEET_HEADERS = [
   "row_id",
-  "timestamp",
-  "user",
+  "carimbo de data/hora",
+  "usuário",
   "user_raw",
   "tipo",
   "conta",
@@ -1150,8 +1150,8 @@ const SHEET_HEADERS = [
   "fixa",
   "fix_parent_id",
   "vencimento_dia",
-  "recorrencia_tipo",
-  "recorrencia_valor",
+  "tipo_de_recorrência",
+  "valor_de_recorrência",
   "categoria",
   "categoria_emoji",
   "descricao",
@@ -1171,83 +1171,83 @@ const USER_LANC_HEADERS = [
   "vencimento_br",
   "criado_em",
 ];
-const CONFIG_HEADERS = ["key", "value"];
+const CONFIG_HEADERS = ["chave", "valor"];
 const SHEET_READ_BACKOFF_MS = [1000, 2000, 4000, 8000, 12000];
 const USER_SHEET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const userSheetCache = new Map();
+const userSheetCache = novo Map();
 
-let doc;
+deixe o doc;
 
-async function ensureAuth() {
-  if (doc) return doc;
+função assíncrona ensureAuth() {
+  se (doc) retorne doc;
   const auth = new JWT({
     email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    key: GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n"),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    chave: GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n"),
+    escopos: ["https://www.googleapis.com/auth/spreadsheets"],
   });
   doc = new GoogleSpreadsheet(SHEETS_ID, auth);
-  await doc.loadInfo();
-  return doc;
+  aguarde doc.loadInfo();
+  retornar documento;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const withRetry = async (fn, label) => {
-  for (let attempt = 0; attempt < SHEET_READ_BACKOFF_MS.length; attempt += 1) {
-    try {
-      return await fn();
-    } catch (error) {
+  para (seja tentativa = 0; tentativa < SHEET_READ_BACKOFF_MS.length; tentativa += 1) {
+    tentar {
+      retornar await fn();
+    } catch (erro) {
       const status = error?.response?.status || error?.code;
-      if (status === 429 || status === 403) {
+      se (status === 429 || status === 403) {
         const delay = SHEET_READ_BACKOFF_MS[attempt] + Math.floor(Math.random() * 250);
-        console.warn(`🔁 Sheets retry (${label}) tentativa ${attempt + 1}: aguardando ${delay}ms`);
-        await sleep(delay);
-      } else {
-        throw error;
+        console.warn(`🔁 Sheets retry (${label}) tenta ${attempt + 1}: aguardando ${delay}ms`);
+        aguardar sleep(atraso);
+      } outro {
+        lançar erro;
       }
     }
   }
-  return null;
+  retornar nulo;
 };
 
-async function ensureSheet() {
-  await ensureAuth();
+função assíncrona ensureSheet() {
+  aguarde garantirAuth();
   let sheet = doc.sheetsByTitle["finplanner"];
-  if (!sheet) {
-    sheet = await withRetry(() => doc.addSheet({ title: "finplanner", headerValues: SHEET_HEADERS }), "add-sheet");
-  } else {
+  se (!folha) {
+    planilha = await withRetry(() => doc.addSheet({ title: "finplanner", headerValues: SHEET_HEADERS }), "add-sheet");
+  } outro {
     await withRetry(() => sheet.loadHeaderRow(), "load-header-finplanner");
-    const current = sheet.headerValues || [];
+    const current = sheet.headerValues ​​|| [];
     const normalized = current.map((header) => (header || "").trim());
     const hasDuplicate = new Set(normalized.filter(Boolean)).size !== normalized.filter(Boolean).length;
     const missing = SHEET_HEADERS.filter((header) => !normalized.includes(header));
     const orderMismatch = SHEET_HEADERS.some((header, index) => normalized[index] !== header);
 
-    if (hasDuplicate || missing.length || orderMismatch || normalized.length !== SHEET_HEADERS.length) {
+    se (hasDuplicate || missing.length || orderMismatch || normalized.length !== SHEET_HEADERS.length) {
       await withRetry(() => sheet.setHeaderRow(SHEET_HEADERS), "set-header-finplanner");
     }
   }
-  return sheet;
+  folha de devolução;
 }
 
-async function ensureSheetUsuarios() {
-  await ensureAuth();
+função assíncrona ensureSheetUsuarios() {
+  aguarde garantirAuth();
   let sheet = doc.sheetsByTitle["Usuarios"];
-  if (!sheet) {
-    sheet = await withRetry(() => doc.addSheet({ title: "Usuarios", headerValues: USUARIOS_HEADERS }), "add-usuarios");
-  } else {
+  se (!folha) {
+    planilha = await withRetry(() => doc.addSheet({ title: "Usuários", headerValues: USUARIOS_HEADERS }), "add-usuários");
+  } outro {
     await withRetry(() => sheet.loadHeaderRow(), "load-header-usuarios");
-    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const current = (sheet.headerValues ​​|| []).map((header) => (header || "").trim());
     const filtered = current.filter(Boolean);
     const hasDuplicate = new Set(filtered).size !== filtered.length;
     const missing = USUARIOS_HEADERS.filter((header) => !current.includes(header));
     const orderMismatch = USUARIOS_HEADERS.some((header, index) => current[index] !== header);
-    if (hasDuplicate || missing.length || orderMismatch || current.length !== USUARIOS_HEADERS.length) {
+    se (hasDuplicate || missing.length || orderMismatch || current.length !== USUARIOS_HEADERS.length) {
       await withRetry(() => sheet.setHeaderRow(USUARIOS_HEADERS), "set-header-usuarios");
     }
   }
-  console.log("📄 Usuarios headers:", sheet.headerValues);
-  return sheet;
+  console.log("📄 Cabeçalhos de usuários:", sheet.headerValues);
+  folha de devolução;
 }
 
 const getUserSheetName = (userNorm) => {
@@ -1255,94 +1255,94 @@ const getUserSheetName = (userNorm) => {
   return base.length > 100 ? base.slice(0, 100) : base;
 };
 
-async function ensureUserSheet(userNorm) {
-  await ensureAuth();
+função assíncrona ensureUserSheet(userNorm) {
+  aguarde garantirAuth();
   const title = getUserSheetName(userNorm);
   const cached = userSheetCache.get(userNorm);
-  if (cached && cached.expiresAt > Date.now() && cached.title === title) {
+  se (em cache && cached.expiresAt > Date.now() && cached.title === title) {
     console.log("📌 Cache aba usuário:", { userNorm, title });
   }
   let sheet = doc.sheetsByTitle[title];
-  if (!sheet) {
-    sheet = await withRetry(() => doc.addSheet({ title, headerValues: USER_LANC_HEADERS }), "add-user-sheet");
-  } else {
+  se (!folha) {
+    planilha = await withRetry(() => doc.addSheet({ title, headerValues: USER_LANC_HEADERS }), "add-user-sheet");
+  } outro {
     await withRetry(() => sheet.loadHeaderRow(), "load-header-user-sheet");
-    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const current = (sheet.headerValues ​​|| []).map((header) => (header || "").trim());
     const filtered = current.filter(Boolean);
     const hasDuplicate = new Set(filtered).size !== filtered.length;
     const missing = USER_LANC_HEADERS.filter((header) => !current.includes(header));
     const orderMismatch = USER_LANC_HEADERS.some((header, index) => current[index] !== header);
-    if (hasDuplicate || missing.length || orderMismatch || current.length !== USER_LANC_HEADERS.length) {
+    se (hasDuplicate || missing.length || orderMismatch || current.length !== USER_LANC_HEADERS.length) {
       await withRetry(() => sheet.setHeaderRow(USER_LANC_HEADERS), "set-header-user-sheet");
     }
   }
   userSheetCache.set(userNorm, { title, expiresAt: Date.now() + USER_SHEET_CACHE_TTL_MS });
-  return sheet;
+  folha de devolução;
 }
 
-async function ensureConfigSheet() {
-  await ensureAuth();
+função assíncrona ensureConfigSheet() {
+  aguarde garantirAuth();
   let sheet = doc.sheetsByTitle["CONFIG"];
-  if (!sheet) {
-    sheet = await withRetry(() => doc.addSheet({ title: "CONFIG", headerValues: CONFIG_HEADERS }), "add-config");
-  } else {
+  se (!folha) {
+    planilha = await withRetry(() => doc.addSheet({ title: "CONFIG", headerValues: CONFIG_HEADERS }), "add-config");
+  } outro {
     await withRetry(() => sheet.loadHeaderRow(), "load-header-config");
-    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const current = (sheet.headerValues ​​|| []).map((header) => (header || "").trim());
     const filtered = current.filter(Boolean);
     const hasDuplicate = new Set(filtered).size !== filtered.length;
     const missing = CONFIG_HEADERS.filter((header) => !current.includes(header));
     const orderMismatch = CONFIG_HEADERS.some((header, index) => current[index] !== header);
-    if (hasDuplicate || missing.length || orderMismatch || current.length !== CONFIG_HEADERS.length) {
+    se (hasDuplicate || missing.length || orderMismatch || current.length !== CONFIG_HEADERS.length) {
       await withRetry(() => sheet.setHeaderRow(CONFIG_HEADERS), "set-header-config");
     }
   }
-  return sheet;
+  folha de devolução;
 }
 
 const getConfigValue = async (key) => {
   const sheet = await ensureConfigSheet();
   const rows = await withRetry(() => sheet.getRows(), "get-config");
-  const found = rows?.find((row) => getVal(row, "key") === key);
-  return found ? getVal(found, "value") : "";
+  const encontrado = linhas?.find((linha) => getVal(linha, "chave") === chave);
+  retornar encontrado ? getVal(encontrado, "valor") : "";
 };
 
 const setConfigValue = async (key, value) => {
   const sheet = await ensureConfigSheet();
   const rows = await withRetry(() => sheet.getRows(), "get-config");
-  const found = rows?.find((row) => getVal(row, "key") === key);
-  if (found) {
-    setVal(found, "value", value);
+  const encontrado = linhas?.find((linha) => getVal(linha, "chave") === chave);
+  se (encontrado) {
+    definirValor(encontrado, "valor", valor);
     await withRetry(() => found.save(), "save-config");
-  } else {
+  } outro {
     await withRetry(() => sheet.addRow({ key, value }), "add-config-row");
   }
 };
 
-const getVal = (row, key) => {
-  if (!row) return undefined;
+const getVal = (linha, chave) => {
+  se (!linha) retornar indefinido;
   if (typeof row.get === "function") return row.get(key);
-  if (key in row) return row[key];
-  if (row._rawData && row._sheet?.headerValues) {
+  se (chave na linha) retorne linha[chave];
+  se (row._rawData && row._sheet?.headerValues) {
     const index = row._sheet.headerValues.indexOf(key);
-    if (index >= 0) return row._rawData[index];
+    se (índice >= 0) retorne linha._dadosBruto[índice];
   }
-  return undefined;
+  retornar indefinido;
 };
 
-const setVal = (row, key, value) => {
-  if (!row) return;
+const setVal = (linha, chave, valor) => {
+  se (!linha) retornar;
   if (typeof row.set === "function") row.set(key, value);
-  else row[key] = value;
+  senão linha[chave] = valor;
 };
 
 const buildUserSheetRow = (entry) => {
   const tipo = getVal(entry, "tipo");
   const valor = getVal(entry, "valor");
-  return {
+  retornar {
     row_id: getVal(entry, "row_id"),
     tipo,
     descricao: getVal(entry, "descricao"),
-    categoria: getVal(entry, "categoria"),
+    categoria: getVal(entrada, "categoria"),
     status: getVal(entry, "status"),
     valor,
     contas_a_pagar: tipo === "conta_pagar" ? valor : "",
@@ -1357,128 +1357,128 @@ const upsertUserSheetEntry = async (entry, { skipCheck = false } = {}) => {
   const userRaw = getVal(entry, "user") || getVal(entry, "user_raw");
   const userNorm = normalizeUser(userRaw);
   const rowId = getVal(entry, "row_id");
-  if (!userNorm || !rowId) return;
+  Se (!userNorm || !rowId) retorne;
   const sheet = await ensureUserSheet(userNorm);
-  if (skipCheck) {
+  se (skipCheck) {
     await withRetry(() => sheet.addRow(buildUserSheetRow(entry)), "append-user-sheet");
-    return;
+    retornar;
   }
   const rows = await withRetry(() => sheet.getRows(), "get-user-rows");
   const exists = rows?.find((row) => getVal(row, "row_id") === rowId);
-  if (exists) return;
+  se (existir) retornar;
   await withRetry(() => sheet.addRow(buildUserSheetRow(entry)), "append-user-sheet");
 };
 
-function normalizePlan(input) {
-  if (!input) return null;
+função normalizarPlano(entrada) {
+  se (!entrada) retorne nulo;
   const p = String(input).trim().toLowerCase();
 
-  if (p === "mensal" || p.includes("mensal") || p === "monthly" || p === "month") return "mensal";
-  if (p === "trimestral" || p.includes("trim") || p === "quarterly" || p === "quarter") return "trimestral";
-  if (p === "anual" || p.includes("anual") || p.includes("anu") || p === "yearly" || p === "annual" || p === "year")
-    return "anual";
+  se (p === "mensal" || p.includes("mensal") || p === "monthly" || p === "month") retorne "mensal";
+  se (p === "trimestral" || p.includes("trim") || p === "quarterly" || p === "quarter") retorne "trimestral";
+  se (p === "anual" || p.includes("anual") || p.includes("anu") || p === "yearly" || p === "annual" || p === "year")
+    retornar "anual";
 
-  return null;
+  retornar nulo;
 }
 
-function pickFirst(...vals) {
-  for (const v of vals) {
+função escolherPrimeiro(...vals) {
+  para (const v de vals) {
     if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
   }
-  return "";
+  retornar "";
 }
 
-async function getSubscriptionMetadata(stripeClient, subscriptionId) {
-  if (!subscriptionId) return {};
-  try {
+função assíncrona getSubscriptionMetadata(stripeClient, subscriptionId) {
+  se (!subscriptionId) retornar {};
+  tentar {
     const sub = await stripeClient.subscriptions.retrieve(subscriptionId);
-    return sub?.metadata || {};
+    retornar sub?.metadata || {};
   } catch (e) {
     console.error("Erro ao buscar subscription metadata:", e?.message || e);
-    return {};
+    retornar {};
   }
 }
 
-function isTruthy(v) {
-  if (v === true) return true;
-  if (v === false || v == null) return false;
+função isTruthy(v) {
+  se (v === verdadeiro) retorne verdadeiro;
+  se (v === falso || v == nulo) retorne falso;
   const s = String(v).trim().toLowerCase();
   return ["true", "1", "yes", "y", "sim", "s", "verdadeiro", "ativo", "on"].includes(s);
 }
 
-function parseDateLoose(v) {
-  if (!v) return null;
+função parseDateLoose(v) {
+  se (!v) retornar nulo;
   const s = String(v).trim();
-  if (!s) return null;
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
-    const d = new Date(s);
-    return Number.isNaN(d.getTime()) ? null : d;
+  se (!s) retornar nulo;
+  se (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const d = novo Date(s);
+    retornar número. isNaN(d.getTime())? nulo: d;
   }
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+  se (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/").map(Number);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    return Number.isNaN(d.getTime()) ? null : d;
+    retornar número. isNaN(d.getTime())? nulo: d;
   }
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const d = novo Date(s);
+  retornar número. isNaN(d.getTime())? nulo: d;
 }
 
-function getUserCandidates(userNorm) {
+função obterCandidatosUsuários(normaUsuário) {
   const candidates = new Set();
-  if (userNorm) candidates.add(userNorm);
-  const digits = String(userNorm || "").replace(/\D/g, "");
-  if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
-    candidates.add(digits.slice(0, 4) + digits.slice(5));
+  se (userNorm) candidatos.adicionar(userNorm);
+  const dígitos = String(userNorm || "").replace(/\D/g, "");
+  se (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
+    candidatos.adicionar(dígitos.fatia(0, 4) + dígitos.fatia(5));
   }
-  if (digits.startsWith("55") && digits.length === 12) {
-    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
+  se (digits.startsWith("55") && digits.length === 12) {
+    candidatos.adicionar(dígitos.fatia(0, 4) + "9" + dígitos.fatia(4));
   }
-  return Array.from(candidates);
+  retornar Array.from(candidatos);
 }
 
-const addMonthsSafe = (date, months) => {
-  if (!date || Number.isNaN(date.getTime?.())) return null;
-  const day = date.getDate();
+const adicionarMesesSeguros = (data, meses) => {
+  Se (!date || Number.isNaN(date.getTime?.())) retornar nulo;
+  const dia = data.getDate();
   const base = new Date(date.getFullYear(), date.getMonth() + months, 1);
   const daysInMonth = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
-  return new Date(base.getFullYear(), base.getMonth(), Math.min(day, daysInMonth));
+  retornar novo Date(base.getFullYear(), base.getMonth(), Math.min(day, daysInMonth));
 };
 
 const formatISODate = (date) => {
-  if (!date || Number.isNaN(date.getTime?.())) return "";
-  return date.toISOString().split("T")[0];
+  Se (!date || Number.isNaN(date.getTime?.())) retornar "";
+  retornar date.toISOString().split("T")[0];
 };
 
-const parseISODateSafe = (value) => {
-  if (!value) return null;
+const parseISODateSafe = (valor) => {
+  Se (!valor) retornar nulo;
   const raw = value.toString().trim();
-  if (!raw) return null;
+  se (!raw) retornar nulo;
   const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const date = isoMatch ? new Date(`${raw}T00:00:00`) : new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
 const computeNewVencimento = (currentVencISO, plan, baseDate) => {
-  const planKey = normalizePlan(plan);
-  if (!planKey) return null;
+  const planKey = normalizePlan(plano);
+  se (!planKey) retornar nulo;
   const planMonths = { mensal: 1, trimestral: 3, anual: 12 };
-  const today = startOfDay(new Date());
+  const hoje = inícioDoDia(novo Date());
   const currentDate = parseISODateSafe(currentVencISO);
-  const base =
+  base constante =
     currentDate && startOfDay(currentDate).getTime() >= today.getTime()
-      ? currentDate
-      : baseDate || new Date();
+      ? dataAtual
+      : dataBase || novo Date();
   const next = addMonthsSafe(base, planMonths[planKey]);
-  return formatISODate(next);
+  retornar formatISODate(próximo);
 };
 
 const upsertUsuarioFromSubscription = async ({
   userNorm,
   nome,
   plano,
-  email,
+  e-mail,
   checkout_id,
-  data_inicio,
+  data_inicial,
   ativo,
   extendVencimento = false,
 }) => {
@@ -1486,7 +1486,7 @@ const upsertUsuarioFromSubscription = async ({
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
   const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
-  const normalizedPlan = normalizePlan(plano) || normalizePlan(getVal(target, "plano"));
+  const planoNormalizado = normalizarPlano(plano) || normalizarPlano(obterValor(alvo, "plano"));
   const existingDataInicio = parseISODateSafe(getVal(target, "data_inicio"));
   const payloadDataInicio = parseISODateSafe(data_inicio);
   const baseDataInicio = payloadDataInicio || existingDataInicio || new Date();
@@ -1495,68 +1495,68 @@ const upsertUsuarioFromSubscription = async ({
     ? computeNewVencimento(existingVencimento, normalizedPlan, baseDataInicio) || existingVencimento
     : existingVencimento || formatISODate(baseDataInicio);
   const nowIso = formatISODate(new Date());
-  const update = {
-    user: userNorm,
-    plano: normalizedPlan || getVal(target, "plano") || "",
+  const atualização = {
+    usuário: userNorm,
+    plano: planoNormalizado || obterValor(alvo, "plano") || "",
     ativo: ativo ? "true" : "false",
-    data_inicio: formatISODate(baseDataInicio),
+    data_inicio: formatoISODate(baseDataInicio),
     vencimento_plano: vencimento || "",
     email: email || getVal(target, "email") || "",
     nome: nome || getVal(target, "nome") || "",
     checkout_id: checkout_id || getVal(target, "checkout_id") || "",
   };
 
-  if (target) {
+  se (alvo) {
     Object.entries(update).forEach(([key, value]) => setVal(target, key, value));
-    await target.save();
-  } else {
-    await sheet.addRow(update);
+    aguarde target.save();
+  } outro {
+    aguarde sheet.addRow(atualizar);
   }
   const candidates = getUserCandidates(userNorm);
   candidates.forEach((candidate) => usuarioStatusCache.delete(candidate));
   console.log("✅ Usuario atualizado:", userNorm, update.plano, update.ativo);
-  return update;
+  retornar atualização;
 };
 
 const isUsuarioAtivo = async (userNorm) => {
-  if (!userNorm) return false;
+  se (!userNorm) retornar falso;
   const cached = usuarioStatusCache.get(userNorm);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  Se (em cache && cached.expiresAt > Date.now()) retorne cached.value;
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
   const candidates = getUserCandidates(userNorm);
   const exact = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
-  const candidateMatches = exact
-    ? [exact]
+  const candidateMatches = exato
+    ? [exato]
     : rows.filter((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
-  const pickMostRecent = (list) =>
-    list
-      .slice()
+  const pickMostRecent = (lista) =>
+    lista
+      .fatiar()
       .sort((a, b) => {
         const dateA = parseDateLoose(getVal(a, "data_inicio")) || parseDateLoose(getVal(a, "vencimento_plano")) || new Date(0);
         const dateB = parseDateLoose(getVal(b, "data_inicio")) || parseDateLoose(getVal(b, "vencimento_plano")) || new Date(0);
-        return dateB.getTime() - dateA.getTime();
+        retornar dateB.getTime() - dateA.getTime();
       })[0];
-  const target = exact || pickMostRecent(candidateMatches);
+  const alvo = exato || escolherMaisRecente(correspondênciasCandidatas);
 
-  if (!target) {
-    console.log("🔐 AccessCheck:", {
+  se (!alvo) {
+    console.log("🔐 Verificação de Acesso:", {
       fromRaw: userNorm,
       userNorm,
-      candidates,
-      found: false,
-      ativoVal: null,
+      candidatos,
+      encontrado: falso,
+      ativoVal: nulo,
       ativoOk: false,
-      vencimentoVal: null,
-      vencOk: false,
-      planoVal: null,
+      expirationVal: nulo,
+      vencOk: falso,
+      planoVal: nulo,
     });
-    usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
-    return false;
+    userStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+    retornar falso;
   }
-  console.log("🔎 MatchedRow:", {
+  console.log("🔎 Linha correspondente:", {
     userNorm,
-    candidates,
+    candidatos,
     matchedUser: getVal(target, "user"),
     ativoVal: getVal(target, "ativo"),
     planoVal: getVal(target, "plano"),
@@ -1564,40 +1564,40 @@ const isUsuarioAtivo = async (userNorm) => {
   });
   const ativoRaw = getVal(target, "ativo");
   const ativoOk = isTruthy(ativoRaw);
-  if (!ativoOk) {
-    console.log("🔐 AccessCheck:", {
+  se (!ativoOk) {
+    console.log("🔐 Verificação de Acesso:", {
       fromRaw: userNorm,
       userNorm,
-      candidates,
-      found: true,
-      ativoVal: ativoRaw,
+      candidatos,
+      encontrado: verdadeiro,
+      activeVal: activeRaw,
       ativoOk: false,
       vencimentoVal: getVal(target, "vencimento_plano"),
-      vencOk: false,
+      vencOk: falso,
       planoVal: getVal(target, "plano"),
     });
-    usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
-    return false;
+    userStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+    retornar falso;
   }
   const vencimentoRaw = getVal(target, "vencimento_plano");
   const vencimentoDate = parseDateLoose(vencimentoRaw);
-  const today = startOfDay(new Date());
+  const hoje = inícioDoDia(novo Date());
   const vencOk = vencimentoDate ? startOfDay(vencimentoDate).getTime() >= today.getTime() : true;
   const planoVal = getVal(target, "plano");
   const active = Boolean(ativoOk && vencOk);
-  console.log("🔐 AccessCheck:", {
+  console.log("🔐 Verificação de Acesso:", {
     fromRaw: userNorm,
     userNorm,
-    candidates,
-    found: true,
-    ativoVal: ativoRaw,
+    candidatos,
+    encontrado: verdadeiro,
+    activeVal: activeRaw,
     ativoOk,
     vencimentoVal: vencimentoRaw,
     vencOk,
     planoVal,
   });
-  usuarioStatusCache.set(userNorm, { value: active, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
-  return active;
+  userStatusCache.set(userNorm, { value: active, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+  retornar ativo;
 };
 
 const saveRow = (row) => (typeof row.save === "function" ? row.save() : Promise.resolve());
@@ -1605,57 +1605,57 @@ const saveRow = (row) => (typeof row.save === "function" ? row.save() : Promise.
 const getEffectiveDate = (row) => {
   const iso = getVal(row, "vencimento_iso");
   const ts = getVal(row, "timestamp");
-  if (iso) return new Date(iso);
-  if (ts) return new Date(ts);
-  return null;
+  se (iso) retorne novo Date(iso);
+  se (ts) retorne novo Date(ts);
+  retornar nulo;
 };
 
 const getRowIdentifier = (row) => (getVal(row, "row_id") || getVal(row, "timestamp") || "").toString();
 
-async function allRowsForUser(userNorm) {
+função assíncrona todasAsLinhasParaUsuário(userNorm) {
   const sheet = await ensureSheet();
   const rows = await withRetry(() => sheet.getRows(), "get-finplanner");
-  return rows.filter((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  retornar rows.filter((row) => normalizeUser(getVal(row, "user")) === userNorm);
 }
 
 const findRowById = async (userNorm, rowId) => {
-  if (!rowId) return null;
-  const rows = await allRowsForUser(userNorm);
+  Se (!rowId) retornar nulo;
+  const linhas = await todasAsLinhasParaUsuário(userNorm);
   const target = rowId.toString();
-  return rows.find((row) => getRowIdentifier(row) === target);
+  retornar rows.find((row) => getRowIdentifier(row) === target);
 };
 
 const withinPeriod = (rows, start, end) => rows.filter((row) => withinRange(getEffectiveDate(row), start, end));
-const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row, "valor")), 0);
+const sumValues ​​= (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row, "valor")), 0);
 
 // ============================
-// Rendering helpers
+// Auxiliares de renderização
 // ============================
 const isRowFixed = (row) => String(getVal(row, "fixa") || "").toLowerCase() === "sim";
 
-const describeRecurrence = (row) => {
-  if (!isRowFixed(row)) return "";
+const describeRecurrence = (linha) => {
+  se (!isRowFixed(linha)) retorne "";
   const tipo = (getVal(row, "recorrencia_tipo") || "").toString().toLowerCase();
   const valorRaw = Number(getVal(row, "recorrencia_valor"));
-  if (tipo === "monthly") {
+  se (tipo === "mensal") {
     const reference = getVal(row, "vencimento_iso") || getVal(row, "timestamp");
     const baseDate = reference ? new Date(reference) : new Date();
     const day = Number.isFinite(valorRaw) && valorRaw > 0 ? valorRaw : baseDate.getDate();
     const safeDay = Math.min(Math.max(Math.round(day), 1), 31);
     return `Todo dia ${String(safeDay).padStart(2, "0")} do mês`;
   }
-  if (tipo === "interval") {
+  se (tipo === "intervalo") {
     const days = Number.isFinite(valorRaw) && valorRaw > 0 ? Math.round(valorRaw) : 0;
-    if (!days) return "";
+    se (!dias) retorne "";
     if (days === 7) return "Toda semana";
     if (days === 15) return "A cada 15 dias";
-    if (days % 7 === 0) {
-      const weeks = days / 7;
+    se (dias % 7 === 0) {
+      const semanas = dias / 7;
       return weeks === 1 ? "Toda semana" : `A cada ${weeks} semanas`;
     }
     return `A cada ${days} dias`;
   }
-  return "";
+  retornar "";
 };
 
 const formatEntryBlock = (row, options = {}) => {
@@ -1668,24 +1668,24 @@ const formatEntryBlock = (row, options = {}) => {
   const statusLabel = statusRaw === "recebido" ? "✅ Recebido" : statusRaw === "pago" ? "✅ Pago" : "⏳ Pendente";
   const tipoRaw = (getVal(row, "tipo") || "conta_pagar").toString();
   const tipoLabel = tipoRaw === "conta_receber" ? "💵 Receita" : "💸 Despesa";
-  const fields = [
+  const campos = [
     `📝 Descrição: ${descricao}`,
     `📂 Categoria: ${categoriaLabel}`,
     `💰 Valor: ${valor}`,
-    `📅 Data: ${data}`,
+    `📅 Data: ${date}`,
     `🏷 Status: ${statusLabel}`,
-    `🔁 Tipo: ${tipoLabel}`,
+    `🔁 Tipo: ${labelType}`,
   ];
-  if (isRowFixed(row)) {
-    const recurrenceLabel = describeRecurrence(row);
+  se (isRowFixed(linha)) {
+    const recurrenceLabel = describeRecurrence(linha);
     if (recurrenceLabel) fields.push(`🔄 Recorrência: ${recurrenceLabel}`);
   }
-  if (headerLabel) {
-    return `${headerLabel}\n\n${fields.join("\n")}`;
+  se (rótulo do cabeçalho) {
+    retornar `${headerLabel}\n\n${fields.join("\n")}`;
   }
-  if (typeof index === "number") {
+  se (tipo de índice === "número") {
     const numberLine = numberToKeycapEmojis(index);
-    return [numberLine, "", ...fields].join("\n");
+    retornar [numberLine, "", ...campos].join("\n");
   }
   return `📘 Lançamento\n\n${fields.join("\n")}`;
 };
@@ -1693,14 +1693,14 @@ const formatEntryBlock = (row, options = {}) => {
 const formatEntrySummary = (row, options = {}) =>
   formatEntryBlock(row, { ...options, headerLabel: options.headerLabel || "📘 Resumo do lançamento" });
 
-const aggregateCategoryTotals = (rows) => {
-  const totals = new Map();
-  for (const row of rows) {
+const aggregateCategoryTotals = (linhas) => {
+  const totais = novo Mapa();
+  para (const linha de linhas) {
     const amount = toNumber(getVal(row, "valor"));
-    if (!amount) continue;
+    se (!quantidade) continue;
     let slug = (getVal(row, "categoria") || "").toString();
     let emoji = getVal(row, "categoria_emoji");
-    if (!slug) {
+    se (!slug) {
       const fallback = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo"));
       slug = fallback.slug;
       emoji = emoji || fallback.emoji;
@@ -1709,14 +1709,14 @@ const aggregateCategoryTotals = (rows) => {
     const key = def?.slug || slug || "outros";
     const label = formatCategoryLabel(key, emoji || def?.emoji);
     const entry = totals.get(key) || { key, label, total: 0 };
-    entry.total += amount;
-    entry.label = label;
-    totals.set(key, entry);
+    entrada.total += quantidade;
+    entrada.rótulo = rótulo;
+    totais.definir(chave, entrada);
   }
   return Array.from(totals.values()).sort((a, b) => b.total - a.total);
 };
 
-const formatCategoryLines = (rows) => {
+const formatCategoryLines = (linhas) => {
   const aggregates = aggregateCategoryTotals(rows);
   if (!aggregates.length) return "✅ Nenhuma categoria encontrada no período.";
   return aggregates.map((item) => `• ${item.label}: ${formatCurrencyBR(item.total)}`).join("\n");
@@ -1731,10 +1731,10 @@ const formatSaldoLine = (recebido, pago) => {
 // ============================
 // Menus interativos
 // ============================
-const MAIN_MENU_SECTIONS = [
+const SEÇÕES_DO_MENU_PRINCIPAL = [
   {
     title: "Lançamentos e Contas",
-    rows: [
+    linhas: [
       { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
       { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
       { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
@@ -1743,14 +1743,14 @@ const MAIN_MENU_SECTIONS = [
   },
   {
     title: "Relatórios e Histórico",
-    rows: [
+    linhas: [
       { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gerar por categoria e período." },
       { id: "MENU:lancamentos", title: "🧾 Meus lançamentos", description: "Ver por mês ou período personalizado." },
     ],
   },
   {
     title: "Ajustes e Ajuda",
-    rows: [
+    linhas: [
       { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
       { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
       { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar a FinPlanner IA." },
@@ -1759,40 +1759,40 @@ const MAIN_MENU_SECTIONS = [
 ];
 
 const sendMainMenu = (to, { greeting = false } = {}) =>
-  sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "list",
-      body: {
-        text: greeting
+  enviarWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "lista",
+      corpo: {
+        texto: saudação
           ? `👋 Olá! Eu sou a FinPlanner IA.\n\n💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.\n\nToque em *Abrir menu* ou digite o que deseja fazer.`
           : "Toque em *Abrir menu* ou digite o que deseja fazer.",
       },
-      action: {
-        button: "Abrir menu",
-        sections: MAIN_MENU_SECTIONS,
+      Ação: {
+        botão: "Abrir menu",
+        seções: SEÇÕES_DO_MENU_PRINCIPAL,
       },
     },
   });
 
 const sendWelcomeList = (to) => sendMainMenu(to, { greeting: true });
 
-const sendRelatoriosButtons = (to) =>
-  sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "list",
+const sendRelatoriosButtons = (para) =>
+  enviarWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "lista",
       body: { text: "📊 Qual relatório você deseja gerar?" },
-      action: {
+      Ação: {
         button: "Abrir opções",
-        sections: [
+        seções: [
           {
             title: "Tipos de relatório",
-            rows: [
+            linhas: [
               { id: "REL:CAT:cp", title: "Contas a pagar", description: "Pagamentos pendentes e quitados." },
               { id: "REL:CAT:rec", title: "Recebimentos", description: "Entradas registradas." },
               { id: "REL:CAT:pag", title: "Pagamentos", description: "Todos os gastos registrados." },
@@ -1804,16 +1804,16 @@ const sendRelatoriosButtons = (to) =>
     },
   });
 
-const sendPeriodoButtons = (to, prefix) =>
-  sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+const sendPeriodoButtons = (para, prefixo) =>
+  enviarWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: "🗓️ Escolha o período:" },
-      action: {
-        buttons: [
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: `${prefix}:mes_atual`, title: "Mês atual" } },
           { type: "reply", reply: { id: `${prefix}:todo_periodo`, title: "Todo período" } },
           { type: "reply", reply: { id: `${prefix}:personalizado`, title: "Data personalizada" } },
@@ -1822,16 +1822,16 @@ const sendPeriodoButtons = (to, prefix) =>
     },
   });
 
-const sendLancPeriodoButtons = (to) =>
-  sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+const sendLancPeriodoButtons = (para) =>
+  enviarWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: "🧾 Escolha o período:" },
-      action: {
-        buttons: [
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: `LANC:PER:hoje`, title: "Hoje" } },
           { type: "reply", reply: { id: `LANC:PER:mes_atual`, title: "Mês atual" } },
           { type: "reply", reply: { id: `LANC:PER:personalizado`, title: "Data personalizada" } },
@@ -1840,16 +1840,16 @@ const sendLancPeriodoButtons = (to) =>
     },
   });
 
-const sendDeleteMenu = (to) =>
-  sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+const sendDeleteMenu = (para) =>
+  enviarWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: "🗑️ Como deseja excluir?" },
-      action: {
-        buttons: [
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: "DEL:LAST", title: "Último lançamento" } },
           { type: "reply", reply: { id: "DEL:LIST", title: "Listar lançamentos" } },
         ],
@@ -1857,65 +1857,65 @@ const sendDeleteMenu = (to) =>
     },
   });
 
-const sendContasFixasMenu = (to) =>
-  sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+const sendContasFixasMenu = (para) =>
+  enviarWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: "Escolha uma opção:" },
-      action: {
-        buttons: [
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: "CFIX:CAD", title: "Cadastrar fixa" } },
-          { type: "reply", reply: { id: "CFIX:LIST", title: "Listar fixas" } },
-          { type: "reply", reply: { id: "CFIX:DEL", title: "Excluir fixas" } },
+          { type: "reply", reply: { id: "CFIX:LIST", title: "Listar correções" } },
+          { type: "reply", reply: { id: "CFIX:DEL", title: "Excluir fixações" } },
         ],
       },
     },
   });
 
-const sendCadastrarContaFixaMessage = (to) =>
-  sendText(
-    to,
+const sendCadastrarContaFixaMessage = (para) =>
+  enviarTexto(
+    para,
     `♻ Cadastro de conta fixa\n\nEnvie tudo em uma única mensagem neste formato:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n🔁 Recorrência: Informe o intervalo\n(ex: todo dia 05, a cada 15 dias, semanal, quinzenal)\n\n💡 Exemplos:\n➡ Internet 120 todo dia 05\n➡ Aluguel 150 a cada 15 dias\n➡ Academia 90 semanal\n\nDigite *cancelar* para sair.`
   );
 
 const sendListarContasFixasMessage = async (to, userNorm) => {
   const fixed = await getFixedAccounts(userNorm);
-  if (!fixed.length) {
+  se (!comprimento.fixo) {
     await sendText(to, "Você ainda não possui contas fixas cadastradas.");
-    return;
+    retornar;
   }
   const deduped = dedupeFixedAccounts(fixed);
-  const pending = deduped
+  const pendente = deduplicado
     .filter((row) => (getVal(row, "status") || "").toString().toLowerCase() !== "pago")
     .sort((a, b) => getEffectiveDate(a) - getEffectiveDate(b));
-  if (!pending.length) {
+  se (!pending.length) {
     await sendText(to, "🎉 Todas as suas contas fixas estão em dia no momento!");
-    return;
+    retornar;
   }
-  const list = buildFixedAccountList(pending);
+  const lista = construirListaDeContasFixas(pendente);
   sessionPayConfirm.delete(userNorm);
   setPayState(userNorm, {
-    awaiting: "index",
-    rows: pending,
-    queue: [],
+    aguardando: "índice",
+    linhas: pendentes,
+    fila: [],
     currentIndex: 0,
-    currentRowId: null,
+    currentRowId: nulo,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await sendText(
-    to,
+  aguardar enviarTexto(
+    para,
     `♻️ *Contas fixas pendentes*\n\n${list}\n\n✅ Para confirmar pagamento, envie o número da conta.\nExemplo: Confirmar 1 ou Confirmar 1,2,3.`
   );
 };
 
-const buildFixedAccountList = (rows) =>
-  rows
-    .map((row, index) => {
-      return formatEntryBlock(row, {
-        index: index + 1,
+const buildFixedAccountList = (linhas) =>
+  linhas
+    .map((linha, índice) => {
+      retornar formatEntryBlock(linha, {
+        índice: índice + 1,
       });
     })
     .join("\n\n");
@@ -1923,64 +1923,64 @@ const buildFixedAccountList = (rows) =>
 const isFixedAccount = (row) => isRowFixed(row);
 
 const getFixedAccounts = async (userNorm) => {
-  const rows = await allRowsForUser(userNorm);
-  return rows.filter((row) => isFixedAccount(row));
+  const linhas = await todasAsLinhasParaUsuário(userNorm);
+  retornar rows.filter((row) => isFixedAccount(row));
 };
 
-const dedupeFixedAccounts = (rows) => {
+const dedupeFixedAccounts = (linhas) => {
   const byParent = new Map();
-  const priority = (row) => {
+  const prioridade = (linha) => {
     const status = (getVal(row, "status") || "").toString().toLowerCase();
-    return status === "pago" || status === "recebido" ? 1 : 0;
+    status de retorno === "pago" || status === "recebido" ? 1 : 0;
   };
-  rows.forEach((row) => {
+  linhas.forEach((linha) => {
     const parent = getVal(row, "fix_parent_id") || getVal(row, "row_id") || getRowIdentifier(row);
-    if (!parent) return;
+    se (!pai) retornar;
     const existing = byParent.get(parent);
-    if (!existing) {
-      byParent.set(parent, row);
-      return;
+    se (!existir) {
+      porParent.set(parent, linha);
+      retornar;
     }
-    const currentPriority = priority(row);
+    const prioridadeAtual = prioridade(linha);
     const existingPriority = priority(existing);
-    if (currentPriority < existingPriority) {
-      byParent.set(parent, row);
-      return;
+    se (prioridadeAtual < prioridadeExistente) {
+      porParent.set(parent, linha);
+      retornar;
     }
-    if (currentPriority === existingPriority) {
+    se (prioridadeAtual === prioridadeExistente) {
       const existingDate = getEffectiveDate(existing);
       const candidateDate = getEffectiveDate(row);
-      if (!existingDate || (candidateDate && candidateDate < existingDate)) {
-        byParent.set(parent, row);
+      se (!existingDate || (candidateDate && candidateDate < existingDate)) {
+        porParent.set(parent, linha);
       }
     }
   });
-  return [...byParent.values()];
+  retornar [...porParent.values()];
 };
 
-async function sendExcluirContaFixaMessage(to, userNorm) {
+função assíncrona enviarExcluirContaFixaMessage(para, userNorm) {
   const fixed = dedupeFixedAccounts(await getFixedAccounts(userNorm));
-  if (!fixed.length) {
+  se (!comprimento.fixo) {
     sessionFixedDelete.delete(userNorm);
     await sendText(to, "Você ainda não possui contas fixas cadastradas.");
-    return;
+    retornar;
   }
-  const sorted = fixed
-    .slice()
+  const sorted = fixo
+    .fatiar()
     .sort((a, b) => {
-      const dateA = getEffectiveDate(a);
+      const dataA = getEffectiveDate(a);
       const dateB = getEffectiveDate(b);
-      if (dateA && dateB) return dateA - dateB;
-      if (dateA) return -1;
-      if (dateB) return 1;
+      if (dataA && dataB) retornar dataA - dataB;
+      se (dataA) retorne -1;
+      se (dateB) retorne 1;
       const contaA = (getVal(a, "conta") || "").toString().toLowerCase();
-      const contaB = (getVal(b, "conta") || "").toString().toLowerCase();
-      return contaA.localeCompare(contaB);
+      const countB = (getVal(b, "count") || "").toString().toLowerCase();
+      retornar accountA.localCompare(accountB);
     });
   sessionFixedDelete.set(userNorm, { awaiting: "index", rows: sorted });
-  const list = buildFixedAccountList(sorted);
+  const lista = construirListaDeContasFixas(ordenada);
   const message = `🗑 Excluir conta fixa\n\nPara remover uma conta recorrente, digite o número de qual deseja excluir:\n\n${list}\n\nEnvie o número da conta fixa que deseja excluir.`;
-  await sendText(to, message);
+  aguardar sendText(para, mensagem);
 }
 
 // ============================
@@ -1994,7 +1994,7 @@ const sessionFixedRegister = new Map();
 const sessionFixedDelete = new Map();
 const sessionStatusConfirm = new Map();
 const sessionPaymentCode = new Map();
-const sessionPayConfirm = new Map();
+const sessionPayConfirm = novo Map();
 
 const startReportCategoryFlow = async (to, userNorm, category) => {
   sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
@@ -2014,43 +2014,142 @@ const resetSession = (userNorm) => {
 };
 
 // ============================
-// Sheets operations
+// Operações com planilhas
 // ============================
 const createRow = async (payload) => {
   const sheet = await ensureSheet();
-  if (DEBUG_SHEETS) console.log("[Sheets] Adding row", payload);
+  if (DEBUG_SHEETS) console.log("[Sheets] Adicionando linha", payload);
   await withRetry(() => sheet.addRow(payload), "append-finplanner");
   await upsertUserSheetEntry(payload, { skipCheck: true });
 };
 
 const deleteRow = async (row) => {
-  if (!row) return;
-  if (DEBUG_SHEETS) console.log("[Sheets] Removing row", getVal(row, "row_id"));
+  se (!linha) retornar;
+  if (DEBUG_SHEETS) console.log("[Sheets] Removendo linha", getVal(row, "row_id"));
   if (typeof row.delete === "function") await row.delete();
 };
 
 const generateRowId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const buildCronBuckets = (rows, todayMs) => {
+  const dueByUser = new Map();
+  const enqueueReminder = (row, kind) => {
+    const dueIso = getVal(row, "vencimento_iso");
+    const dueBr = getVal(row, "vencimento_br");
+    const dueDate = dueIso ? new Date(dueIso) : parseDateToken(dueBr);
+    se (!dueDate || Number.isNaN(dueDate.getTime())) {
+      console.log("⚠️ Cron skip (data inválida):", {
+        usuário: getVal(linha, "usuário") || getVal(linha, "usuário_bruto"),
+        tipo: getVal(linha, "tipo"),
+        vencimento_iso: dueIso,
+        vencimento_br: dueBr,
+      });
+      retornar;
+    }
+    const dueMs = startOfDay(dueDate).getTime();
+    se (dueMs > todayMs) {
+      console.log("ℹ️ Cron skip (vencimento futuro):", {
+        usuário: getVal(linha, "usuário") || getVal(linha, "usuário_bruto"),
+        tipo: getVal(linha, "tipo"),
+        vencimento_iso: dueIso,
+        vencimento_br: dueBr,
+      });
+      retornar;
+    }
+    const toRaw = getVal(row, "user_raw") || getVal(row, "user");
+    const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
+    se (!toRaw || !userNorm) {
+      console.log("⚠️ Cron skip (usuário inválido):", {
+        usuário: getVal(linha, "usuário") || getVal(linha, "usuário_bruto"),
+        tipo: getVal(linha, "tipo"),
+      });
+      retornar;
+    }
+    const bucket = dueByUser.get(userNorm) || { to: toRaw, items: [] };
+    se (!bucket.to) bucket.to = toRaw;
+    bucket.items.push({ row, kind, dueMs });
+    dueByUser.set(userNorm, bucket);
+  };
+
+  para (const linha de linhas) {
+    const tipo = (getVal(row, "tipo") || "").toString().toLowerCase();
+    const status = (getVal(row, "status") || "").toString().toLowerCase();
+    if (tipo === "conta_pagar" && status !== "pago") enqueueReminder(row, "pagar");
+    if (tipo === "conta_receber" && !["pago", "recebido"].includes(status)) enqueueReminder(row, "receber");
+  }
+
+  retornar devidoPeloUsuário;
+};
+
+const buildCronMessage = (items, todayMs) => {
+  const pagar = items.filter((item) => item.kind === "pagar").sort((a, b) => a.dueMs - b.dueMs);
+  const receber = items.filter((item) => item.kind === "receber").sort((a, b) => a.dueMs - b.dueMs);
+  const sections = [];
+  seja contador = 1;
+
+  se (comprimento da cerca) {
+    const blocks = pagar.map((item) => {
+      const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
+      const dueLabel = dueRaw || "—";
+      const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+      retornar formatEntryBlock(item.row, { index: counter++, dateText: label });
+    });
+    sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
+  }
+
+  se (receber.length) {
+    const blocks = receber.map((item) => {
+      const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
+      const dueLabel = dueRaw || "—";
+      const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+      retornar formatEntryBlock(item.row, { index: counter++, dateText: label });
+    });
+    sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
+  }
+
+  if (!sections.length) return { message: "", pagar, receber };
+  return { message: `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`, pagar, receber };
+};
+
+const sendCronReminderForUser = async (userNorm, to, { bypassWindow = false } = {}) => {
+  const sheet = await ensureSheet();
+  const rows = await withRetry(() => sheet.getRows(), "get-finplanner-cron");
+  const hoje = inícioDoDia(novo Date());
+  const dueByUser = buildCronBuckets(rows, today.getTime());
+  const bucket = dueByUser.get(userNorm);
+  se (!bucket || !bucket.items.length) {
+    await sendText(to, "ℹ️ Nenhum lembrete pendente para este usuário.", { bypassWindow: true });
+    retornar;
+  }
+  const { message, pagar, receber } = buildCronMessage(bucket.items, today.getTime());
+  se (!mensagem) {
+    await sendText(to, "ℹ️ Nenhum lembrete pendente para este usuário.", { bypassWindow: true });
+    retornar;
+  }
+  console.log("🧪 Cron manual (admin):", { userNorm, to, total: bucket.items.length, pagar: pagar.length, receber: receber.length });
+  await sendText(to, message, { bypassWindow });
+};
+
 const migrateUserSheets = async () => {
-  try {
+  tentar {
     const sheet = await ensureSheet();
     const batchSize = 100;
     const cursorRaw = await getConfigValue("user_sheet_cursor");
     const cursor = Number.parseInt(cursorRaw || "0", 10) || 0;
     const rows = await withRetry(() => sheet.getRows({ offset: cursor, limit: batchSize }), "get-finplanner-batch");
-    if (!rows || rows.length === 0) {
+    se (!linhas || linhas.comprimento === 0) {
       console.log("ℹ️ Migração de lançamentos: nada novo para migrar.", { cursor });
-      return;
+      retornar;
     }
-    let migrated = 0;
-    for (const row of rows) {
+    seja migrado = 0;
+    para (const linha de linhas) {
       await upsertUserSheetEntry(row, { skipCheck: true });
-      migrated += 1;
+      migrado += 1;
     }
     const nextCursor = cursor + rows.length;
     await setConfigValue("user_sheet_cursor", String(nextCursor));
     console.log("✅ Migração de lançamentos concluída:", { total: migrated, cursor: nextCursor });
-  } catch (error) {
+  } catch (erro) {
     console.error("Erro ao migrar lançamentos para abas de usuário:", error.message);
   }
 };
@@ -2058,26 +2157,26 @@ const migrateUserSheets = async () => {
 // ============================
 // Parse de lançamento
 // ============================
-const parseRegisterText = (text) => {
-  const original = (text || "").toString();
-  const normalized = normalizeDiacritics(original).toLowerCase();
+const parseRegisterText = (texto) => {
+  const original = (texto || "").toString();
+  const normalizado = normalizarDiacritics(original).toLowerCase();
   const isReceber = /\b(receb|receita|entrada|venda|vendi|ganhei)\b/.test(normalized);
   const tipo = isReceber ? "conta_receber" : "conta_pagar";
 
   let status = "pendente";
-  let statusDetected = false;
+  let statusDetectado = falso;
   const receivedRegex = /\b(recebid[oa]?|recebi|recebemos|creditad[oa]|caiu|confirmad[oa])\b/;
   const pendingRegex = /\b(pendente|a pagar|pagar|a receber|aguardando|em aberto)\b/;
   const paidRegex = /\b(pag[ouei]|paguei|quitad[oa]|liquidad[oa]|transferi|transferido|pix)\b/;
-  if (receivedRegex.test(normalized)) {
+  se (recebidoRegex.teste(normalizado)) {
     status = "recebido";
-    statusDetected = true;
+    statusDetectado = verdadeiro;
   } else if (pendingRegex.test(normalized)) {
     status = "pendente";
-    statusDetected = true;
+    statusDetectado = verdadeiro;
   } else if (paidRegex.test(normalized)) {
-    status = "pago";
-    statusDetected = true;
+    status = "aldeia";
+    statusDetectado = verdadeiro;
   }
   if (tipo === "conta_receber" && status === "pago") status = "recebido";
   if (tipo === "conta_pagar" && status === "recebido") status = "pago";
@@ -2085,29 +2184,29 @@ const parseRegisterText = (text) => {
   const amountInfo = extractAmountFromText(original);
   const valor = amountInfo.amount || 0;
 
-  let data = null;
+  seja data = nulo;
   const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
-  if (dateMatch) data = parseDateToken(dateMatch[1]);
+  if (dateMatch) dados = parseDateToken(dateMatch[1]);
 
-  if (!data) {
+  se (!dados) {
     const valueDateMatch = original.match(/(\d{3,})[\/-](\d{1,2})(?:\b|$)/);
-    if (valueDateMatch) {
-      const day = Number(valueDateMatch[2]);
-      if (day >= 1 && day <= 31) {
+    se (valueDateMatch) {
+      const dia = Número(valorDateMatch[2]);
+      se (dia >= 1 && dia <= 31) {
         const now = new Date();
         const candidate = new Date(now.getFullYear(), now.getMonth(), day);
-        candidate.setHours(0, 0, 0, 0);
-        if (candidate < startOfDay(now)) {
-          candidate.setMonth(candidate.getMonth() + 1, day);
+        candidato.setHours(0, 0, 0, 0);
+        se (candidato < inícioDoDia(agora)) {
+          candidato.setMonth(candidato.getMonth() + 1, dia);
         }
-        data = candidate;
+        dados = candidato;
       }
     }
   }
 
   let descricao = original;
-  if (amountInfo.raw) {
-    const rawEscaped = escapeRegex(amountInfo.raw);
+  se (amountInfo.raw) {
+    const rawEscaked = escapeRegex(amountInfo.raw);
     descricao = descricao.replace(new RegExp(rawEscaped, "i"), "");
   }
   descricao = descricao
@@ -2119,16 +2218,16 @@ const parseRegisterText = (text) => {
     .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
     .replace(/r\$/gi, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .aparar();
 
   if (descricao) {
     const tokens = descricao.split(/\s+/);
     const filtered = tokens.filter((token) => {
-      const normalizedToken = normalizeDiacritics(token).toLowerCase();
-      if (NUMBER_CONNECTORS.has(normalizedToken)) return false;
-      if (NUMBER_WORDS[normalizedToken] !== undefined) return false;
-      if (normalizedToken === "mil") return false;
-      return true;
+      const tokenNormalizado = normalizarDiacritics(token).toLowerCase();
+      Se (NUMBER_CONNECTORS.has(normalizedToken)) retorne falso;
+      se (NUMBER_WORDS[normalizedToken] !== undefined) retorne falso;
+      se (normalizedToken === "mil") retornar falso;
+      retornar verdadeiro;
     });
     descricao = filtered.join(" ");
   }
@@ -2137,21 +2236,21 @@ const parseRegisterText = (text) => {
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
 
   let tipoPagamento = "";
-  if (/\bpix\b/.test(normalized)) tipoPagamento = "pix";
+  se (/\bpix\b/.test(normalizado)) tipoPagamento = "pix";
   else if (/\bboleto\b/.test(normalized)) tipoPagamento = "boleto";
-  else if (/\b(cart[aã]o\s*de\s*cr[eé]dito|cart[aã]o\s*cr[eé]dito|cr[eé]dito\s*no?\s*cart[aã]o|credito\b.*cartao)\b/.test(normalized))
+  senão se (/\b(cart[aã]o\s*de\s*cr[eé]dito|cart[aã]o\s*cr[eé]dito|cr[eé]dito\s*no?\s*cart[aã]o|credito\b.*cartao)\b/.test(normalized))
     tipoPagamento = "cartao_credito";
-  else if (/\b(cart[aã]o\s*de\s*d[eé]bito|cart[aã]o\s*d[eé]bito|d[eé]bito\s*no?\s*cart[aã]o|debito\b.*cartao)\b/.test(normalized))
+  senão se (/\b(cart[aã]o\s*de\s*d[eé]bito|cart[aã]o\s*d[eé]bito|d[eé]bito\s*no?\s*cart[aã]o|debito\b.*cartao)\b/.test(normalized))
     tipoPagamento = "cartao_debito";
   else if (/\bdinheiro\b/.test(normalized)) tipoPagamento = "dinheiro";
-  else if (/\btransfer/i.test(normalized)) tipoPagamento = "transferencia";
+  else if (/\btransfer/i.test(normalized)) tipoPagamento = "transferência";
 
-  return {
+  retornar {
     tipo,
     valor,
-    data: data || new Date(),
+    dados: dados || novo Date(),
     status,
-    statusDetected,
+    statusDetectado,
     descricao,
     tipoPagamento,
   };
@@ -2160,302 +2259,302 @@ const parseRegisterText = (text) => {
 // ============================
 // Fluxos de mensagens
 // ============================
-async function showReportByCategory(fromRaw, userNorm, category, range) {
-  const rows = await allRowsForUser(userNorm);
-  const { start, end } = range;
+função assíncrona mostrarRelatórioPorCategoria(deRaw, userNorm, categoria, intervalo) {
+  const linhas = await todasAsLinhasParaUsuário(userNorm);
+  const { início, fim } = intervalo;
   const inRange = withinPeriod(rows, start, end);
 
   const statusOf = (row) => (getVal(row, "status") || "").toString().toLowerCase();
-  const isPaid = (row) => statusOf(row) === "pago";
+  const isPaid = ( linha ) => statusOf ( linha ) === " pagamento " ;
   const isReceived = (row) => {
-    const status = statusOf(row);
-    return status === "recebido" || status === "pago";
+    const status = statusOf(linha);
+    status de retorno === "recebido" || status === "pago";
   };
 
-  if (category === "cp") {
+  se (categoria === "cp") {
     const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
-    const pending = expenses.filter((row) => !isPaid(row));
-    const paid = expenses.filter(isPaid);
+    const pendente = despesas.filter((linha) => !isPaid(linha));
+    const pago = despesas.filter(éPago);
     const totalPending = sumValues(pending);
-    const totalPaid = sumValues(paid);
-    const totalExpenses = sumValues(expenses);
+    const totalPago = somaValores(pago);
+    const totalDespesas = somaValores(despesas);
     let message = "📊 *Relatório • Contas a pagar*";
-    if (!expenses.length) {
+    se (!expenses.length) {
       message += "\n\n✅ Nenhuma conta encontrada para o período selecionado.";
-    } else {
-      if (pending.length) {
-        message += `\n\n📂 Categorias pendentes:\n${formatCategoryLines(pending)}`;
+    } outro {
+      se (pendente.comprimento) {
+        mensagem += `\n\n📂 Categorias pendentes:\n${formatCategoryLines(pending)}`;
       }
-      if (paid.length) {
-        message += `\n\n✅ Categorias pagas:\n${formatCategoryLines(paid)}`;
+      se (pago.comprimento) {
+        mensagem += `\n\n✅ Categorias pagas:\n${formatCategoryLines(paid)}`;
       }
-      message += `\n\n🔸 Total pendente: ${formatCurrencyBR(totalPending)}`;
-      message += `\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
+      mensagem += `\n\n🔸 Total pendente: ${formatCurrencyBR(totalPending)}`;
+      mensagem += `\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
       message += `\n💰 Total geral: ${formatCurrencyBR(totalExpenses)}`;
     }
-    await sendText(fromRaw, message);
-    return;
+    aguardar sendText(fromRaw, mensagem);
+    retornar;
   }
 
-  if (category === "rec") {
+  se (categoria === "rec") {
     const receipts = inRange.filter((row) => getVal(row, "tipo") === "conta_receber");
-    const confirmed = receipts.filter(isReceived);
+    const confirmado = recibos.filter(éRecebido);
     const pending = receipts.filter((row) => !isReceived(row));
-    const totalReceived = sumValues(confirmed);
+    const totalRecebido = somaValores(confirmado);
     const totalPending = sumValues(pending);
     const totalReceipts = sumValues(receipts);
     let message = "📊 *Relatório • Recebimentos*";
-    if (!receipts.length) {
+    se (!recibos.comprimento) {
       message += "\n\n✅ Nenhum recebimento encontrado para o período selecionado.";
-    } else {
-      message += `\n\n📂 Categorias:\n${formatCategoryLines(receipts)}`;
+    } outro {
+      mensagem += `\n\n📂 Categorias:\n${formatCategoryLines(recibos)}`;
       message += `\n\n💵 Total recebido: ${formatCurrencyBR(totalReceived)}`;
-      message += `\n⏳ Total pendente: ${formatCurrencyBR(totalPending)}`;
+      mensagem += `\n⏳ Total pendente: ${formatCurrencyBR(totalPending)}`;
       message += `\n💰 Total geral: ${formatCurrencyBR(totalReceipts)}`;
     }
-    await sendText(fromRaw, message);
-    return;
+    aguardar sendText(fromRaw, mensagem);
+    retornar;
   }
 
-  if (category === "pag") {
+  se (categoria === "pag") {
     const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
-    const paid = expenses.filter(isPaid);
-    const pending = expenses.filter((row) => !isPaid(row));
-    const totalPaid = sumValues(paid);
+    const pago = despesas.filter(éPago);
+    const pendente = despesas.filter((linha) => !isPaid(linha));
+    const totalPago = somaValores(pago);
     const totalPending = sumValues(pending);
     let message = "📊 *Relatório • Pagamentos*";
-    if (!paid.length) {
+    se (!paid.length) {
       message += "\n\n✅ Nenhum pagamento confirmado no período.";
-      if (pending.length) {
-        message += `\n\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
+      se (pendente.comprimento) {
+        mensagem += `\n\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
       }
-      await sendText(fromRaw, message);
-      return;
+      aguardar sendText(fromRaw, mensagem);
+      retornar;
     }
-    message += `\n\n📂 Categorias pagas:\n${formatCategoryLines(paid)}`;
-    message += `\n\n💸 Total pago: ${formatCurrencyBR(totalPaid)}`;
-    if (pending.length) {
-      message += `\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
+    mensagem += `\n\n📂 Categorias pagas:\n${formatCategoryLines(paid)}`;
+    mensagem += `\n\n💸 Total pago: ${formatCurrencyBR(totalPaid)}`;
+    se (pendente.comprimento) {
+      mensagem += `\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
     }
     message += `\n💰 Total geral: ${formatCurrencyBR(totalPaid)}`;
-    await sendText(fromRaw, message);
-    return;
+    aguardar sendText(fromRaw, mensagem);
+    retornar;
   }
 
-  if (category === "all") {
+  se (categoria === "todas") {
     const receipts = inRange.filter((row) => getVal(row, "tipo") === "conta_receber");
     const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
-    const confirmedReceipts = receipts.filter(isReceived);
+    const recibosConfirmados = recibos.filter(éRecebido);
     const pendingReceipts = receipts.filter((row) => !isReceived(row));
     const paidExpenses = expenses.filter(isPaid);
     const pendingExpenses = expenses.filter((row) => !isPaid(row));
-    const totalReceived = sumValues(confirmedReceipts);
+    const totalRecebido = sumValues(recibosConfirmados);
     const totalReceipts = sumValues(receipts);
-    const totalPaid = sumValues(paidExpenses);
+    const totalPago = somaValores(despesasPagas);
     const totalPendingExpenses = sumValues(pendingExpenses);
-    const totalPendingReceipts = sumValues(pendingReceipts);
+    const totalRecebimentosPendentes = sumValores(recebimentospendentes);
     let message = "📊 *Relatório • Completo*";
-    if (!receipts.length && !expenses.length) {
+    se (!recibos.comprimento && !despesas.comprimento) {
       message += "\n\n✅ Nenhum lançamento encontrado para o período selecionado.";
-    } else {
-      if (receipts.length) {
+    } outro {
+      se (recibos.comprimento) {
         message += `\n\n💵 Recebimentos:\n${formatCategoryLines(receipts)}`;
         message += `\n\n💵 Total recebido: ${formatCurrencyBR(totalReceived)}`;
-        message += `\n⏳ Total pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
+        mensagem += `\n⏳ Total pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
         message += `\n💰 Total geral: ${formatCurrencyBR(totalReceipts)}`;
       }
-      if (pendingExpenses.length) {
-        message += `\n\n⏳ Contas a pagar:\n${formatCategoryLines(pendingExpenses)}`;
-        message += `\n\n⏳ Total pendente: ${formatCurrencyBR(totalPendingExpenses)}`;
+      se (despesaspendentes.comprimento) {
+        mensagem += `\n\n⏳ Contas a pagar:\n${formatCategoryLines(pendingExpenses)}`;
+        mensagem += `\n\n⏳ Total pendência: ${formatCurrencyBR(totalPendingExpenses)}`;
       }
-      if (paidExpenses.length) {
-        message += `\n\n✅ Contas pagas:\n${formatCategoryLines(paidExpenses)}`;
-        message += `\n\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
+      se (despesaspagas.comprimento) {
+        mensagem += `\n\n✅ Contas Pagas:\n${formatCategoryLines(paidExpenses)}`;
+        mensagem += `\n\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
       }
-      const saldo = formatSaldoLine(totalReceived, totalPaid);
-      message += `\n\n${saldo}`;
+      const saldo = formatoBalanceLine(totalRecebido, totalPago);
+      mensagem += `\n\n${saldo}`;
     }
-    await sendText(fromRaw, message);
+    aguardar sendText(fromRaw, mensagem);
   }
 }
 
-async function showLancamentos(fromRaw, userNorm, range) {
-  const rows = await allRowsForUser(userNorm);
+função assíncrona showLancamentos(fromRaw, userNorm, range) {
+  const linhas = await todasAsLinhasParaUsuário(userNorm);
   const filtered = withinPeriod(rows, range.start, range.end)
     .filter((row) => toNumber(getVal(row, "valor")) > 0)
     .sort((a, b) => getEffectiveDate(a) - getEffectiveDate(b));
-  if (!filtered.length) {
+  se (!filtered.length) {
     await sendText(fromRaw, "✅ Nenhum lançamento encontrado para o período selecionado.");
-    return;
+    retornar;
   }
   const blocks = filtered.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
   const message = `🧾 *Meus lançamentos*\n\n${blocks.join("\n\n")}`;
-  await sendText(fromRaw, message);
+  aguardar sendText(fromRaw, mensagem);
 }
 
-async function listPendingPayments(fromRaw, userNorm) {
-  const rows = await allRowsForUser(userNorm);
+função assíncrona listarPagamentosPendentes(deRaw, userNorm) {
+  const linhas = await todasAsLinhasParaUsuário(userNorm);
   const pending = rows.filter((row) => getVal(row, "tipo") === "conta_pagar" && getVal(row, "status") !== "pago");
-  if (!pending.length) {
+  se (!pending.length) {
     await sendText(fromRaw, "🎉 Você não possui contas pendentes no momento!");
-    return;
+    retornar;
   }
   const blocks = pending.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  const message =
-    `📅 *Contas a pagar pendentes*\n\n${blocks.join("\n\n")}` +
+  mensagem constante =
+    `📅 *Contas a pagar em aberto*\n\n${blocks.join("\n\n")}` +
     `\n\n✅ Para confirmar pagamento, envie o número da conta.\nExemplo: Confirmar 1 ou Confirmar 1,2,3.`;
   sessionPayConfirm.delete(userNorm);
   setPayState(userNorm, {
-    awaiting: "index",
-    rows: pending,
-    queue: [],
+    aguardando: "índice",
+    linhas: pendentes,
+    fila: [],
     currentIndex: 0,
-    currentRowId: null,
+    currentRowId: nulo,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await sendText(fromRaw, message);
+  aguardar sendText(fromRaw, mensagem);
 }
 
-async function listRowsForSelection(fromRaw, userNorm, mode) {
-  const rows = await allRowsForUser(userNorm);
-  const sorted = rows
-    .slice()
+função assíncrona listRowsForSelection(fromRaw, userNorm, mode) {
+  const linhas = await todasAsLinhasParaUsuário(userNorm);
+  const sorted = linhas
+    .fatiar()
     .sort((a, b) => getEffectiveDate(b) - getEffectiveDate(a))
     .slice(0, 15);
-  if (!sorted.length) {
+  se (!sorted.length) {
     await sendText(fromRaw, "Não encontrei lançamentos recentes.");
-    return;
+    retornar;
   }
   const blocks = sorted.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
-  if (mode === "edit") {
+  se (modo === "editar") {
     const message = `✏️ Selecione o lançamento que deseja editar:\n\n${blocks.join("\n\n")}\n\nEnvie o número correspondente (1-${sorted.length}).`;
     sessionEdit.set(userNorm, { awaiting: "index", rows: sorted, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-    await sendText(fromRaw, message);
-  } else {
-    const message =
+    aguardar sendText(fromRaw, mensagem);
+  } outro {
+    mensagem constante =
       "📋 Selecione o lançamento que deseja excluir:\n\n" +
       `${blocks.join("\n\n")}\n\n📋 Selecione os lançamentos que deseja excluir:\n\nEnvie os números separados por vírgula ou espaço.\nExemplo: 1, 3, 5 ou 2 4 6`;
     sessionDelete.set(userNorm, { awaiting: "index", rows: sorted, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-    await sendText(fromRaw, message);
+    aguardar sendText(fromRaw, mensagem);
   }
 }
 
 const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
 
-const selectionStopWords = new Set(
+const selectionStopWords = novo Set(
   [
     "excluir",
     "exclua",
-    "remover",
+    "removedor",
     "remova",
     "apagar",
     "apague",
     "deletar",
-    "delete",
+    "excluir",
     "editar",
-    "edita",
+    "editor",
     "lancamento",
     "lancamentos",
-    "numero",
-    "numeros",
+    "número",
+    "números",
     "número",
     "números",
     "item",
     "itens",
     "selecionar",
     "selecione",
-    "selecao",
+    "seleção",
     "escolher",
     "escolha",
     "confirmar",
-    "confirm",
+    "confirmar",
     "quero",
     "para",
     "pra",
     "de",
-    "do",
-    "da",
+    "fazer",
+    "e",
     "dos",
-    "das",
     "o",
-    "a",
+    "o",
+    "um",
     "os",
-    "as",
+    "como",
     "um",
     "uma",
-  ].map((word) => normalizeDiacritics(word))
+  ].map((palavra) => normalizeDiacritics(palavra))
 );
 
 const cleanSelectionTerms = (normalizedText) =>
-  normalizedText
+  texto normalizado
     .split(/[^a-z0-9]+/)
     .filter(Boolean)
     .filter((token) => !selectionStopWords.has(token))
-    .join(" ");
+    .juntar(" ");
 
 const parseSelectionIndexes = (text, max) => {
-  const normalized = normalizeDiacritics(text).toLowerCase();
-  const indexes = new Set();
+  const normalizado = normalizarDiacritics(texto).toLowerCase();
+  const indexes = novo Set();
   const rangeRegex = /(\d+)\s*(?:a|ate|até|ate|ao|à|\-|–|—)\s*(\d+)/g;
-  let rangeMatch;
-  while ((rangeMatch = rangeRegex.exec(normalized))) {
+  deixe rangeMatch;
+  enquanto ((rangeMatch = rangeRegex.exec(normalizado))) {
     const start = Number(rangeMatch[1]);
     const end = Number(rangeMatch[2]);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    se (!Número.éFinite(início) || !Número.éFinite(fim)) continue;
     const from = Math.min(start, end);
     const to = Math.max(start, end);
-    for (let i = from; i <= to; i += 1) {
-      indexes.add(i);
+    para (seja i = de; i <= até; i += 1) {
+      índices.adicionar(i);
     }
   }
   const numberRegex = /\b\d+\b/g;
-  let match;
-  while ((match = numberRegex.exec(normalized))) {
-    indexes.add(Number(match[0]));
+  que combine;
+  enquanto ((match = numberRegex.exec(normalizado))) {
+    índices.adicionar(Número(correspondência[0]));
   }
   const filtered = [...indexes].filter((idx) => Number.isFinite(idx) && idx >= 1 && idx <= max);
-  filtered.sort((a, b) => a - b);
-  return filtered;
+  filtrado.ordenar((a, b) => a - b);
+  retornar filtrado;
 };
 
 const parseSelectionByDescription = (text, rows) => {
-  const normalized = normalizeDiacritics(text).toLowerCase();
+  const normalizado = normalizarDiacritics(texto).toLowerCase();
   const cleaned = cleanSelectionTerms(normalized).replace(/\d+/g, " ").trim();
-  if (!cleaned) return [];
-  const words = cleaned.split(/\s+/).filter(Boolean);
-  if (!words.length) return [];
+  se (!limpo) retorne [];
+  const palavras = limpo.split(/\s+/).filter(Boolean);
+  se (!words.length) retorne [];
   const matches = [];
-  rows.forEach((row, idx) => {
+  linhas.forEach((linha, idx) => {
     const base = normalizeDiacritics(
       `${getVal(row, "descricao") || ""} ${getVal(row, "conta") || ""}`
     )
-      .toLowerCase()
+      .paraLowerCase()
       .replace(/\s+/g, " ");
-    if (words.every((word) => base.includes(word))) {
+    se (palavras.cada((palavra) => base.inclui(palavra))) {
       matches.push(idx + 1);
     }
   });
-  return matches;
+  retornar correspondências;
 };
 
 const resolveSelectionIndexes = (text, rows) => {
   const indexes = parseSelectionIndexes(text, rows.length);
-  if (indexes.length) return indexes;
+  Se (indexes.length) retornar índices;
   const byDescription = parseSelectionByDescription(text, rows);
-  return byDescription;
+  retornar por descrição;
 };
 
 const uniqueSelections = (selections) => {
-  const seen = new Set();
-  const list = [];
-  for (const item of selections) {
-    if (!item || !item.row) continue;
+  const visto = novo Conjunto();
+  const lista = [];
+  para (item constante de seleções) {
+    se (!item || !item.linha) continue;
     const rowId = getVal(item.row, "row_id") || getVal(item.row, "timestamp") || `${item.displayIndex}-${Math.random()}`;
-    if (seen.has(rowId)) continue;
-    seen.add(rowId);
-    list.push(item);
+    se (visto.tem(rowId)) continue;
+    visto.adicionar(rowId);
+    lista.push(item);
   }
-  return list;
+  retornar lista;
 };
 
 const setDeleteState = (userNorm, state) => {
@@ -2467,28 +2566,28 @@ const resetDeleteTimeout = (state) => ({ ...state, expiresAt: Date.now() + SESSI
 
 const deleteStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
 
-async function promptNextDeleteConfirmation(to, userNorm) {
+função assíncrona promptNextDeleteConfirmation(para, userNorm) {
   const state = sessionDelete.get(userNorm);
   if (!state || !Array.isArray(state.queue) || !state.queue.length) return;
   const currentIndex = state.currentIndex || 0;
   const currentItem = state.queue[currentIndex];
-  if (!currentItem || !currentItem.row) {
+  se (!currentItem || !currentItem.row) {
     sessionDelete.delete(userNorm);
-    return;
+    retornar;
   }
   const summary = formatEntrySummary(currentItem.row, { headerLabel: "🧾 Lançamento selecionado:" });
   const body = `⚠ Confirmar exclusão do lançamento:\n\n${summary}\n\nDeseja realmente excluir este lançamento?`;
   const nextState = resetDeleteTimeout({ ...state, awaiting: "confirm", currentIndex });
   sessionDelete.set(userNorm, nextState);
-  await sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: body },
-      action: {
-        buttons: [
+  aguardar sendWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
+      corpo: { texto: corpo },
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: "DEL:CONFIRM:YES", title: "✅ Sim, excluir" } },
           { type: "reply", reply: { id: "DEL:CONFIRM:NO", title: "❌ Cancelar" } },
         ],
@@ -2497,302 +2596,302 @@ async function promptNextDeleteConfirmation(to, userNorm) {
   });
 }
 
-async function confirmDeleteRows(fromRaw, userNorm, selections) {
+função assíncrona confirmDeleteRows(fromRaw, userNorm, selections) {
   const validSelections = uniqueSelections(selections || []);
-  if (!validSelections.length) return;
+  Se (!validSelections.length) retornar;
   setDeleteState(userNorm, {
-    awaiting: "confirm",
-    queue: validSelections,
+    aguardando: "confirmar",
+    fila: seleções válidas,
     currentIndex: 0,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await promptNextDeleteConfirmation(fromRaw, userNorm);
+  aguardar promptNextDeleteConfirmation(fromRaw, userNorm);
 }
 
-async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
+função assíncrona finalizarConfirmaçãoDeExclusão(deRaw, userNorm, confirmado) {
   const state = sessionDelete.get(userNorm);
-  if (!state || state.awaiting !== "confirm") return false;
-  if (deleteStateExpired(state)) {
+  Se (!estado || estado.aguardando !== "confirmar") retornar falso;
+  se (deleteStateExpired(state)) {
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  if (!confirmed) {
+  se (!confirmado) {
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada.");
-    return true;
+    retornar verdadeiro;
   }
   const currentIndex = state.currentIndex || 0;
   const currentItem = state.queue?.[currentIndex];
-  if (!currentItem || !currentItem.row) {
+  se (!currentItem || !currentItem.row) {
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "Nenhum lançamento selecionado para excluir.");
-    return true;
+    retornar verdadeiro;
   }
-  await deleteRow(currentItem.row);
-  await sendText(
-    fromRaw,
+  aguarde deleteRow(currentItem.row);
+  aguardar enviarTexto(
+    do Raw,
     "🗑 Lançamento excluído com sucesso!\n\n💡 Dica: envie *Meus lançamentos* para visualizar sua lista atualizada."
   );
   const nextIndex = currentIndex + 1;
-  if (!state.queue || nextIndex >= state.queue.length) {
+  se (!state.queue || nextIndex >= state.queue.length) {
     sessionDelete.delete(userNorm);
-    return true;
+    retornar verdadeiro;
   }
   setDeleteState(userNorm, {
-    queue: state.queue,
+    fila: state.queue,
     currentIndex: nextIndex,
-    awaiting: "confirm",
+    aguardando: "confirmar",
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await promptNextDeleteConfirmation(fromRaw, userNorm);
-  return true;
+  aguardar promptNextDeleteConfirmation(fromRaw, userNorm);
+  retornar verdadeiro;
 }
 
-async function handleDeleteConfirmation(fromRaw, userNorm, text) {
-  const normalized = normalizeDiacritics(text).toLowerCase().trim();
-  if (!normalized) return false;
-  if (/^(s|sim)(\b|\s)/.test(normalized) || /excluir/.test(normalized) || /confirm/.test(normalized)) {
-    return finalizeDeleteConfirmation(fromRaw, userNorm, true);
+função assíncrona handleDeleteConfirmation(fromRaw, userNorm, text) {
+  const normalizado = normalizeDiacritics(texto).toLowerCase().trim();
+  se (!normalizado) retorne falso;
+  se (/^(s|sim)(\b|\s)/.test(normalizado) || /excluir/.test(normalizado) || /confirmar/.test(normalizado)) {
+    retornar finalizeDeleteConfirmation(fromRaw, userNorm, true);
   }
-  if (/^(nao|não|n)(\b|\s)/.test(normalized) || /cancel/.test(normalized) || /parar/.test(normalized)) {
-    return finalizeDeleteConfirmation(fromRaw, userNorm, false);
+  se (/^(nao|não|n)(\b|\s)/.test(normalized) || /cancel/.test(normalized) || /parar/.test(normalized)) {
+    retornar finalizeDeleteConfirmation(fromRaw, userNorm, false);
   }
-  return false;
+  retornar falso;
 }
 
-async function handleEditFlow(fromRaw, userNorm, text) {
+função assíncrona handleEditFlow(fromRaw, userNorm, text) {
   const state = sessionEdit.get(userNorm);
-  if (!state) return false;
-  if (state.expiresAt && Date.now() > state.expiresAt) {
+  se (!estado) retorne falso;
+  se (state.expiresAt && Date.now() > state.expiresAt) {
     sessionEdit.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  if (state.awaiting === "index") {
+  se (estado.aguardando === "índice") {
     const indexes = resolveSelectionIndexes(text, state.rows || []);
-    if (!indexes.length) {
+    se (!indexes.length) {
       await sendText(fromRaw, "Não entendi qual lançamento deseja editar. Informe o número ou o nome.");
-      return true;
+      retornar verdadeiro;
     }
-    const selections = indexes
+    const seleções = índices
       .map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }))
       .filter((item) => item.row);
-    if (!selections.length) {
+    se (!selections.length) {
       await sendText(fromRaw, "Não encontrei os lançamentos informados. Tente novamente.");
-      return true;
+      retornar verdadeiro;
     }
     const first = selections[0];
     sessionEdit.set(userNorm, {
-      awaiting: "field",
-      rows: state.rows,
-      queue: selections,
+      aguardando: "campo",
+      linhas: estado.linhas,
+      fila: seleções,
       currentIndex: 0,
-      row: first.row,
-      displayIndex: first.displayIndex,
+      linha: primeira.linha,
+      displayIndex: primeiro.displayIndex,
       expiresAt: Date.now() + SESSION_TIMEOUT_MS,
     });
     const summary = formatEntrySummary(first.row, { headerLabel: "🧾 Lançamento selecionado:" });
-    await sendText(
-      fromRaw,
+    aguardar enviarTexto(
+      do Raw,
       `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
     );
-    return true;
+    retornar verdadeiro;
   }
-  if (state.awaiting === "field") {
+  se (estado.aguardando === "campo") {
     const field = text.trim().toLowerCase();
-    if (/^cancelar/.test(field)) {
+    se (/^cancelar/.test(campo)) {
       sessionEdit.delete(userNorm);
       await sendText(fromRaw, "Operação cancelada.");
-      return true;
+      retornar verdadeiro;
     }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
-    if (!valid.includes(field)) {
+    se (!valid.includes(campo)) {
       await sendText(fromRaw, "Campo inválido. Tente novamente.");
-      return true;
+      retornar verdadeiro;
     }
     sessionEdit.set(userNorm, {
-      ...state,
-      awaiting: "value",
-      field,
+      ...estado,
+      aguardando: "valor",
+      campo,
       expiresAt: Date.now() + SESSION_TIMEOUT_MS,
     });
-    if (field === "status") {
+    se (campo === "status") {
       await sendText(fromRaw, "Digite a nova situação para status.");
-    } else {
+    } outro {
       await sendText(fromRaw, `Digite o novo valor para *${field}*.`);
     }
-    return true;
+    retornar verdadeiro;
   }
-  if (state.awaiting === "value") {
-    if (/^cancelar/i.test(text.trim())) {
+  se (estado.aguardando === "valor") {
+    se (/^cancelar/i.test(text.trim())) {
       sessionEdit.delete(userNorm);
       await sendText(fromRaw, "Operação cancelada.");
-      return true;
+      retornar verdadeiro;
     }
-    const { row, field } = state;
-    if (field === "valor") {
-      setVal(row, "valor", toNumber(text));
+    const { linha, campo } = estado;
+    se (campo === "valor") {
+      setVal(linha, "valor", toNumber(texto));
     } else if (field === "data") {
       const date = parseDateToken(text.trim());
-      if (!date) {
+      se (!data) {
         await sendText(fromRaw, "Data inválida. Use dd/mm/aaaa ou palavras como hoje/amanhã.");
-        return true;
+        retornar verdadeiro;
       }
       const iso = date.toISOString();
       setVal(row, "vencimento_iso", iso);
       setVal(row, "vencimento_br", formatBRDate(date));
-      setVal(row, "timestamp", date.toISOString());
+      setVal(linha, "timestamp", date.toISOString());
     } else if (field === "status") {
       const lower = text.trim().toLowerCase();
       const validStatus = ["pago", "pendente", "recebido"];
-      if (!validStatus.includes(lower)) {
+      se (!validStatus.include(lower)) {
         await sendText(fromRaw, "Status inválido. Use pago, pendente ou recebido.");
-        return true;
+        retornar verdadeiro;
       }
-      setVal(row, "status", lower);
+      definirValor(linha, "status", inferior);
     } else if (field === "categoria") {
-      const categoria = text.trim();
+      const categoria = texto.trim();
       const detected = await resolveCategory(categoria, getVal(row, "tipo"));
-      setVal(row, "categoria", detected.slug);
+      setVal(linha, "categoria", detected.slug);
       setVal(row, "categoria_emoji", detected.emoji);
-    } else {
+    } outro {
       setVal(row, field === "conta" ? "conta" : "descricao", text.trim());
     }
-    await saveRow(row);
+    aguardar salvarLinha(linha);
     await sendText(fromRaw, "✅ Lançamento atualizado com sucesso!");
-    const queue = state.queue || [];
+    const fila = estado.fila || [];
     const nextIndex = (state.currentIndex || 0) + 1;
-    if (queue.length && nextIndex < queue.length) {
-      const next = queue[nextIndex];
+    se (queue.length && nextIndex < queue.length) {
+      const next = fila[nextIndex];
       sessionEdit.set(userNorm, {
-        ...state,
-        awaiting: "field",
+        ...estado,
+        aguardando: "campo",
         currentIndex: nextIndex,
-        row: next.row,
-        displayIndex: next.displayIndex,
-        field: undefined,
+        linha: próxima.linha,
+        displayIndex: próximo.displayIndex,
+        campo: indefinido,
         expiresAt: Date.now() + SESSION_TIMEOUT_MS,
       });
       const summary = formatEntrySummary(next.row, { headerLabel: "🧾 Lançamento selecionado:" });
-      await sendText(
-        fromRaw,
+      aguardar enviarTexto(
+        do Raw,
         `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
       );
-    } else {
+    } outro {
       sessionEdit.delete(userNorm);
     }
-    return true;
+    retornar verdadeiro;
   }
-  return false;
+  retornar falso;
 }
 
-async function handleFixedDeleteFlow(fromRaw, userNorm, text) {
+função assíncrona handleFixedDeleteFlow(fromRaw, userNorm, text) {
   const state = sessionFixedDelete.get(userNorm);
-  if (!state || state.awaiting !== "index") return false;
+  Se (!estado || estado.aguardando !== "índice") retorne falso;
   const idx = Number(text.trim());
-  if (!idx || idx < 1 || idx > state.rows.length) {
+  se (!idx || idx < 1 || idx > state.rows.length) {
     await sendText(fromRaw, "Número inválido. Tente novamente.");
-    return true;
+    retornar verdadeiro;
   }
   const row = state.rows[idx - 1];
   sessionFixedDelete.delete(userNorm);
   const parentId = getVal(row, "fix_parent_id") || getVal(row, "row_id");
   const allRows = await allRowsForUser(userNorm);
   const related = allRows.filter(
-    (candidate) =>
+    (candidato) =>
       isFixedAccount(candidate) && (getVal(candidate, "fix_parent_id") || getVal(candidate, "row_id")) === parentId
   );
-  if (related.length > 1) {
+  se (related.length > 1) {
     await sendText(fromRaw, "A exclusão removerá todas as recorrências desta conta fixa.");
   }
   const selections = related.map((item) => ({ row: item, displayIndex: idx }));
-  await confirmDeleteRows(fromRaw, userNorm, selections);
-  return true;
+  aguardar confirmDeleteRows(fromRaw, userNorm, selections);
+  retornar verdadeiro;
 }
 
-async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
+função assíncrona handleFixedRegisterFlow(fromRaw, userNorm, text) {
   const state = sessionFixedRegister.get(userNorm);
-  if (!state) return false;
-  if (state.expiresAt && Date.now() > state.expiresAt) {
+  se (!estado) retorne falso;
+  se (state.expiresAt && Date.now() > state.expiresAt) {
     sessionFixedRegister.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  const trimmed = (text || "").trim();
-  if (!trimmed) {
+  const aparado = (texto || "").aparar();
+  se (!aparado) {
     await sendText(fromRaw, "Envie os detalhes da conta fixa ou escreva cancelar.");
-    return true;
+    retornar verdadeiro;
   }
-  if (/^cancelar/i.test(trimmed)) {
+  se (/^cancelar/i.test(aparado)) {
     sessionFixedRegister.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada.");
-    return true;
+    retornar verdadeiro;
   }
-  const parsed = parseFixedAccountCommand(text);
-  if (!parsed) {
-    await sendText(
-      fromRaw,
+  const analisado = analisarComandoContaFixada(texto);
+  se (!analisado) {
+    aguardar enviarTexto(
+      do Raw,
       "Não consegui entender. Informe algo como \"Internet 120 todo dia 05\" ou \"Aluguel 150 a cada 15 dias\"."
     );
     sessionFixedRegister.set(userNorm, { expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-    return true;
+    retornar verdadeiro;
   }
   sessionFixedRegister.delete(userNorm);
-  await registerFixedAccount(fromRaw, userNorm, parsed);
-  return true;
+  aguardar registroFixedAccount(fromRaw, userNorm, parsed);
+  retornar verdadeiro;
 }
 
-async function handleDeleteFlow(fromRaw, userNorm, text) {
+função assíncrona handleDeleteFlow(fromRaw, userNorm, text) {
   const state = sessionDelete.get(userNorm);
-  if (!state) return false;
-  if (deleteStateExpired(state)) {
+  se (!estado) retorne falso;
+  se (deleteStateExpired(state)) {
     sessionDelete.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  if (state.awaiting === "index") {
+  se (estado.aguardando === "índice") {
     const indexes = resolveSelectionIndexes(text, state.rows || []);
-    if (!indexes.length) {
+    se (!indexes.length) {
       await sendText(fromRaw, "Não entendi quais lançamentos você deseja excluir. Informe os números ou o nome.");
-      return true;
+      retornar verdadeiro;
     }
-    const selections = indexes
+    const seleções = índices
       .map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }))
       .filter((item) => item.row);
-    if (!selections.length) {
+    se (!selections.length) {
       await sendText(fromRaw, "Não encontrei os lançamentos informados. Tente novamente.");
-      return true;
+      retornar verdadeiro;
     }
-    await confirmDeleteRows(fromRaw, userNorm, selections);
-    return true;
+    aguardar confirmDeleteRows(fromRaw, userNorm, selections);
+    retornar verdadeiro;
   }
-  if (state.awaiting === "confirm") {
-    return handleDeleteConfirmation(fromRaw, userNorm, text);
+  se (estado.aguardando === "confirmar") {
+    retornar handleDeleteConfirmation(fromRaw, userNorm, text);
   }
-  return false;
+  retornar falso;
 }
 
 // ============================
 // Registro de lançamentos helpers
 // ============================
-const setStatusState = (userNorm, state) => {
+const setStatusState = (userNorm, estado) => {
   const current = sessionStatusConfirm.get(userNorm) || {};
   sessionStatusConfirm.set(userNorm, { ...current, ...state });
 };
 
 const statusStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
 
-async function sendStatusConfirmationPrompt(to) {
-  await sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+função assíncrona enviarPromptDeConfirmaçãoDeStatus(para) {
+  aguardar sendWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: "Esse lançamento já foi pago ou ainda está pendente?" },
-      action: {
-        buttons: [
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: "REG:STATUS:PAGO", title: "Pago" } },
           { type: "reply", reply: { id: "REG:STATUS:PENDENTE", title: "Pendente" } },
         ],
@@ -2802,16 +2901,16 @@ async function sendStatusConfirmationPrompt(to) {
 }
 
 const sendRegistrationEditPrompt = async (to, rowId, statusLabel) => {
-  if (!rowId) return;
-  await sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+  se (!rowId) retornar;
+  aguardar sendWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: `Status identificado automaticamente: ${statusLabel}.\n\nDeseja editar este lançamento?` },
-      action: {
-        buttons: [{ type: "reply", reply: { id: `REG:EDIT:${rowId}`, title: "✏ Editar" } }],
+      Ação: {
+        botões: [{ tipo: "responder", resposta: { id: `REG:EDIT:${rowId}`, título: "✏ Editar" } }],
       },
     },
   });
@@ -2819,7 +2918,7 @@ const sendRegistrationEditPrompt = async (to, rowId, statusLabel) => {
 
 const setPaymentCodeState = (userNorm, state) => {
   const current = sessionPaymentCode.get(userNorm) || {};
-  sessionPaymentCode.set(userNorm, { ...current, ...state });
+  sessionPaymentCode.set(userNorm, { ...atual, ...estado });
 };
 
 const paymentCodeStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
@@ -2828,70 +2927,70 @@ const promptAttachPaymentCode = async (to, userNorm, entry, statusSource) => {
   const method = (entry.tipo_pagamento || "").toLowerCase();
   if (!["pix", "boleto"].includes(method)) return;
   setPaymentCodeState(userNorm, {
-    awaiting: "choice",
+    aguardando: "escolha",
     rowId: entry.row_id,
-    metodo: method,
+    método: método,
     statusSource,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
+  aguardar sendWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
       body: { text: "💳 Deseja anexar o código do Pix ou boleto para facilitar o pagamento?" },
-      action: {
-        buttons: [
+      Ação: {
+        botões: [
           { type: "reply", reply: { id: `PAYCODE:ADD:${entry.row_id}`, title: "🔗 Adicionar código" } },
-          { type: "reply", reply: { id: `PAYCODE:SKIP:${entry.row_id}`, title: "🚫 Pular" } },
+          { type: "reply", reply: { id: `PAYCODE:SKIP:${entry.row_id}`, title: "🚫 Popular" } },
         ],
       },
     },
   });
 };
 
-async function scheduleNextFixedOccurrence(row) {
-  if (!isRowFixed(row)) return;
+função assíncrona agendarPróximaOcorrênciaFixa(linha) {
+  se (!isRowFixed(linha)) retorne;
   const recType = (getVal(row, "recorrencia_tipo") || "").toString().toLowerCase();
-  if (!recType) return;
+  se (!recType) retornar;
   const userRaw = getVal(row, "user_raw") || getVal(row, "user");
   const userNorm = normalizeUser(getVal(row, "user"));
-  if (!userRaw || !userNorm) return;
+  Se (!userRaw || !userNorm) retorne;
   const currentDueIso = getVal(row, "vencimento_iso");
   const currentDue = currentDueIso ? new Date(currentDueIso) : new Date();
-  let nextDue = null;
-  if (recType === "monthly") {
+  seja nextDue = nulo;
+  se (recType === "mensal") {
     const storedDay = Number(getVal(row, "recorrencia_valor"));
-    const day = Number.isFinite(storedDay) && storedDay > 0 ? storedDay : currentDue.getDate();
-    nextDue = nextMonthlyDate(day, addDays(currentDue, 1), { inclusive: true });
+    const dia = Number.isFinite(storedDay) && storedDay > 0 ? storedDay : currentDue.getDate();
+    próximoDue = próximaDataMensal(dia, adicionarDias(currentDue, 1), { inclusive: true });
   } else if (recType === "interval") {
     const stored = Number(getVal(row, "recorrencia_valor"));
-    const days = Number.isFinite(stored) && stored > 0 ? Math.round(stored) : 0;
-    if (days > 0) nextDue = addDays(startOfDay(currentDue), days);
+    const dias = Number.isFinite(armazenado) && armazenado > 0 ? Math.round(armazenado) : 0;
+    se (dias > 0) próximoDia = adicionarDias(inícioDoDia(diaAtualDia), dias);
   }
-  if (!nextDue) return;
+  se (!nextDue) retornar;
 
-  let categoriaSlug = getVal(row, "categoria");
+  let qualSlug = getVal(row, "categoria");
   let categoriaEmoji = getVal(row, "categoria_emoji");
-  if (!categoriaSlug) {
+  se (!categoriaSlug) {
     const detected = await resolveCategory(
       getVal(row, "descricao") || getVal(row, "conta"),
       getVal(row, "tipo") || "conta_pagar",
     );
-    categoriaSlug = detected.slug;
-    categoriaEmoji = detected.emoji;
+    CategoriaSlug = slug detectado;
+    categoriaEmoji = detectado.emoji;
   }
 
   const parentId = getVal(row, "fix_parent_id") || getVal(row, "row_id");
-  const newRow = {
-    row_id: generateRowId(),
+  const novaLinha = {
+    row_id: gerarIdDaLinha(),
     timestamp: new Date().toISOString(),
-    user: getVal(row, "user"),
+    usuário: getVal(linha, "usuário"),
     user_raw: userRaw,
     tipo: getVal(row, "tipo") || "conta_pagar",
     conta: getVal(row, "conta"),
-    valor: getVal(row, "valor"),
+    valor: getVal(linha, "valor"),
     vencimento_iso: nextDue.toISOString(),
     vencimento_br: formatBRDate(nextDue),
     tipo_pagamento: getVal(row, "tipo_pagamento") || "",
@@ -2900,312 +2999,312 @@ async function scheduleNextFixedOccurrence(row) {
     fixa: "sim",
     fix_parent_id: parentId,
     vencimento_dia: nextDue.getDate(),
-    categoria: categoriaSlug,
+    categoria: lesma,
     categoria_emoji: categoriaEmoji,
     descricao: getVal(row, "descricao") || getVal(row, "conta") || "Conta fixa",
-    recorrencia_tipo: recType,
-    recorrencia_valor: getVal(row, "recorrencia_valor") || (recType === "monthly" ? String(nextDue.getDate()) : ""),
+    tipo_de_recorrência: recType,
+    valor_recurso: getVal(linha, "valor_recurso") || (recType === "monthly" ? String(nextDue.getDate()) : ""),
   };
-  await createRow(newRow);
+  aguardar criarLinha(novaLinha);
   const resumo = formatEntrySummary(newRow, { headerLabel: "📘 Próximo lançamento fixo:" });
   await sendText(userRaw, `♻ Próxima cobrança gerada automaticamente!\n\n${resumo}`);
   if (["pix", "boleto"].includes((newRow.tipo_pagamento || "").toLowerCase())) {
-    await promptAttachPaymentCode(userRaw, userNorm, newRow, "fixed_cycle");
+    aguarde promptAttachPaymentCode(userRaw, userNorm, newRow, "fixed_cycle");
   }
 }
 
 const setPayState = (userNorm, state) => {
   const current = sessionPayConfirm.get(userNorm) || {};
-  sessionPayConfirm.set(userNorm, { ...current, ...state });
+  sessionPayConfirm.set(userNorm, { ...atual, ...estado });
 };
 
 const payStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
 
-async function promptNextPaymentConfirmation(to, userNorm) {
+função assíncrona promptNextPaymentConfirmation(para, userNorm) {
   const state = sessionPayConfirm.get(userNorm);
   if (!state || !Array.isArray(state.queue) || !state.queue.length) return;
   const currentIndex = state.currentIndex || 0;
   const currentItem = state.queue[currentIndex];
-  if (!currentItem || !currentItem.row) {
+  se (!currentItem || !currentItem.row) {
     sessionPayConfirm.delete(userNorm);
-    return;
+    retornar;
   }
   const summary = formatEntrySummary(currentItem.row, { headerLabel: "🧾 Lançamento selecionado:" });
   const rowId = getRowIdentifier(currentItem.row);
   const code = (getVal(currentItem.row, "codigo_pagamento") || "").toString().trim();
   const metodo = (getVal(currentItem.row, "tipo_pagamento") || "").toLowerCase();
   const buttons = [{ type: "reply", reply: { id: `PAY:MARK:${rowId}`, title: "✅ Pago" } }];
-  if (code) {
+  se (código) {
     const copyTitle = metodo === "boleto" ? "📋 Copiar boleto" : "📋 Copiar Pix";
-    buttons.push({ type: "reply", reply: { id: `PAY:COPY:${rowId}`, title: copyTitle } });
+    buttons.push({ type: "responder", reply: { id: `PAGAR:CÓPIA:${rowId}`, title: copyTitle } });
   }
   buttons.push({ type: "reply", reply: { id: "PAY:CANCEL", title: "❌ Cancelar" } });
   setPayState(userNorm, {
-    ...state,
-    awaiting: "confirm",
-    currentIndex,
+    ...estado,
+    aguardando: "confirmar",
+    índiceAtual,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
     currentRowId: rowId,
   });
   const body = `✅ Confirmar pagamento?\n\n${summary}\n\nDeseja marcar como pago agora?`;
-  await sendWA({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: body },
-      action: { buttons },
+  aguardar sendWA({
+    produto_de_mensagens: "whatsapp",
+    para,
+    tipo: "interativo",
+    interativo: {
+      tipo: "botão",
+      corpo: { texto: corpo },
+      ação: { botões },
     },
   });
 }
 
-async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
+função assíncrona finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
   const statusSource = options.statusSource || "auto";
-  await createRow(entry);
+  aguardar criarLinha(entrada);
   const resumo = formatEntrySummary(entry);
   const statusLabel = statusIconLabel(entry.status);
-  if (entry.tipo === "conta_receber") {
+  if (entry.type === "conta_receber") {
     let message = `💵 Recebimento registrado com sucesso!\n\n${resumo}\n\n🎯 O saldo foi atualizado automaticamente, refletindo sua nova entrada.`;
-    if (options.autoStatus) {
-      message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
+    se (opções.autoStatus) {
+      mensagem += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
-    await sendText(fromRaw, message);
-  } else {
+    aguardar sendText(fromRaw, mensagem);
+  } outro {
     let message = `✅ Pagamento registrado com sucesso!\n\n${resumo}\n\n💡 A FinPlanner IA já atualizou seu saldo e adicionou este pagamento ao relatório do período.`;
-    if (options.autoStatus) {
-      message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
+    se (opções.autoStatus) {
+      mensagem += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
-    await sendText(fromRaw, message);
+    aguardar sendText(fromRaw, mensagem);
   }
 
-  if (options.autoStatus) {
+  se (opções.autoStatus) {
     await sendRegistrationEditPrompt(fromRaw, entry.row_id, statusLabel);
   }
 
-  if (
+  se (
     entry.tipo === "conta_pagar" &&
     entry.status === "pendente" &&
     ["pix", "boleto"].includes((entry.tipo_pagamento || "").toLowerCase()) &&
     (options.autoStatus || statusSource === "user_confirm")
   ) {
-    await promptAttachPaymentCode(fromRaw, userNorm, entry, statusSource);
+    aguarde promptAttachPaymentCode(fromRaw, userNorm, entry, statusSource);
   }
 
-  await sendMainMenu(fromRaw);
+  aguardar sendMainMenu(fromRaw);
 }
 
-async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
+função assíncrona handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   const state = sessionStatusConfirm.get(userNorm);
-  if (!state) return;
-  if (statusStateExpired(state)) {
+  se (!estado) retornar;
+  se (statusStateExpired(state)) {
     sessionStatusConfirm.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return;
+    retornar;
   }
   const entry = { ...state.entry };
-  if (!entry) {
+  se (!entrada) {
     sessionStatusConfirm.delete(userNorm);
-    return;
+    retornar;
   }
-  let status = selectedStatus;
-  if (entry.tipo === "conta_receber" && status === "pago") status = "recebido";
-  entry.status = status;
+  seja status = selectedStatus;
+  if (entry.type === "conta_receber" && status === "pago") status = "recebido";
+  entrada.status = status;
   entry.timestamp = new Date().toISOString();
   sessionStatusConfirm.delete(userNorm);
   await finalizeRegisterEntry(fromRaw, userNorm, entry, { statusSource: "user_confirm", autoStatus: false });
 }
 
-async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
+função assíncrona handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   const state = sessionStatusConfirm.get(userNorm);
-  if (!state) return false;
-  if (statusStateExpired(state)) {
+  se (!estado) retorne falso;
+  se (statusStateExpired(state)) {
     sessionStatusConfirm.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  const normalized = normalizeDiacritics(text).toLowerCase().trim();
-  if (!normalized) {
+  const normalizado = normalizeDiacritics(texto).toLowerCase().trim();
+  se (!normalizado) {
     await sendText(fromRaw, "Não entendi. Toque em Pago ou Pendente para continuar.");
-    return true;
+    retornar verdadeiro;
   }
-  if (/\b(pago|pagou|paguei|pagamos|recebido|recebi|quitado|liquidado)\b/.test(normalized)) {
-    await handleStatusSelection(fromRaw, userNorm, "pago");
-    return true;
+  se (/\b(pago|pagou|paguei|pagamos|recebido|recebi|quitado|liquidado)\b/.test(normalizado)) {
+    aguardar handleStatusSelection(fromRaw, userNorm, "pago");
+    retornar verdadeiro;
   }
   if (/\b(pendente|a pagar|pagar|em aberto)\b/.test(normalized)) {
-    await handleStatusSelection(fromRaw, userNorm, "pendente");
-    return true;
+    aguardar handleStatusSelection(fromRaw, userNorm, "pendente");
+    retornar verdadeiro;
   }
   await sendText(fromRaw, "Por favor, informe se o lançamento está Pago ou Pendente.");
-  return true;
+  retornar verdadeiro;
 }
 
-async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
+função assíncrona handlePaymentCodeFlow(fromRaw, userNorm, text) {
   const state = sessionPaymentCode.get(userNorm);
-  if (!state) return false;
-  if (paymentCodeStateExpired(state)) {
+  se (!estado) retorne falso;
+  se (paymentCodeStateExpired(state)) {
     sessionPaymentCode.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  if (state.awaiting !== "input") return false;
+  se (state.awaiting !== "input") retornar falso;
   const code = text.trim();
-  if (!code) {
+  se (!código) {
     await sendText(fromRaw, "Não entendi o código. Envie novamente ou escreva cancelar.");
-    return true;
+    retornar verdadeiro;
   }
-  if (/^cancelar/i.test(code)) {
+  se (/^cancelar/i.test(código)) {
     sessionPaymentCode.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada.");
-    return true;
+    retornar verdadeiro;
   }
   const row = await findRowById(userNorm, state.rowId);
-  if (!row) {
+  se (!linha) {
     sessionPaymentCode.delete(userNorm);
     await sendText(fromRaw, "Não encontrei o lançamento para salvar o código.");
-    return true;
+    retornar verdadeiro;
   }
   setVal(row, "codigo_pagamento", code);
-  await saveRow(row);
+  aguardar salvarLinha(linha);
   sessionPaymentCode.delete(userNorm);
   const descricao = getVal(row, "descricao") || getVal(row, "conta") || "Lançamento";
-  await sendText(
-    fromRaw,
+  aguardar enviarTexto(
+    do Raw,
     `✅ Código anexado com sucesso!\n\nDescrição do lançamento\n\n📝 Descrição: ${descricao}\n📎 Código armazenado com segurança.`
   );
-  return true;
+  retornar verdadeiro;
 }
 
-async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
+função assíncrona handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   const state = sessionPayConfirm.get(userNorm);
-  if (!state) return false;
-  if (payStateExpired(state)) {
+  se (!estado) retorne falso;
+  se (payStateExpired(estado)) {
     sessionPayConfirm.delete(userNorm);
     await sendText(fromRaw, "Operação cancelada por tempo excedido.");
-    return true;
+    retornar verdadeiro;
   }
-  const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
-  if (state.awaiting === "index") {
-    if (/cancel/.test(normalizedText)) {
+  const textoNormalizado = normalizarDiacritics(texto).toLowerCase().trim();
+  se (estado.aguardando === "índice") {
+    se (/cancelar/.teste(textonormalizado)) {
       sessionPayConfirm.delete(userNorm);
       await sendText(fromRaw, "Operação cancelada.");
-      return true;
+      retornar verdadeiro;
     }
     const indexes = resolveSelectionIndexes(text, state.rows || []);
-    if (!indexes.length) {
+    se (!indexes.length) {
       await sendText(fromRaw, "Não entendi quais contas deseja confirmar. Informe os números.");
-      return true;
+      retornar verdadeiro;
     }
-    const selections = indexes
+    const seleções = índices
       .map((idx) => ({ row: state.rows[idx - 1], displayIndex: idx }))
       .filter((item) => item.row);
-    if (!selections.length) {
+    se (!selections.length) {
       await sendText(fromRaw, "Não encontrei os lançamentos informados. Tente novamente.");
-      return true;
+      retornar verdadeiro;
     }
     setPayState(userNorm, {
-      rows: state.rows,
-      queue: selections,
+      linhas: estado.linhas,
+      fila: seleções,
       currentIndex: 0,
-      awaiting: "confirm",
+      aguardando: "confirmar",
       expiresAt: Date.now() + SESSION_TIMEOUT_MS,
     });
-    await promptNextPaymentConfirmation(fromRaw, userNorm);
-    return true;
+    aguardar confirmação de pagamento futura (de Raw, userNorm);
+    retornar verdadeiro;
   }
-  if (state.awaiting === "confirm") {
-    if (!normalizedText) {
+  se (estado.aguardando === "confirmar") {
+    se (!textonormalizado) {
       await sendText(fromRaw, "Responda com Pago ou Cancelar para continuar.");
-      return true;
+      retornar verdadeiro;
     }
-    if (/pago|confirm/.test(normalizedText)) {
+    se (/pago|confirmar/.teste(textonormalizado)) {
       const current = state.queue?.[state.currentIndex || 0];
-      if (!current || !current.row) {
+      se (!atual || !atual.linha) {
         sessionPayConfirm.delete(userNorm);
-        return true;
+        retornar verdadeiro;
       }
-      await markPaymentAsPaid(fromRaw, userNorm, current.row);
-      return true;
+      aguarde marcarPagamentoComoPago(deRaw, userNorm, linhaAtual);
+      retornar verdadeiro;
     }
-    if (/cancel/.test(normalizedText)) {
+    se (/cancelar/.teste(textonormalizado)) {
       sessionPayConfirm.delete(userNorm);
       await sendText(fromRaw, "Operação cancelada.");
-      return true;
+      retornar verdadeiro;
     }
-    if (/copiar|codigo|boleto|pix/.test(normalizedText)) {
+    se (/copiar|código|boleto|pix/.test(textonormalizado)) {
       const current = state.queue?.[state.currentIndex || 0];
-      if (current?.row) {
-        await sendPaymentCode(fromRaw, current.row);
+      se (linha atual?) {
+        aguardar sendPaymentCode(fromRaw, current.row);
         setPayState(userNorm, { ...state, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
       }
-      return true;
+      retornar verdadeiro;
     }
     await sendText(fromRaw, "Responda com Pago ou escolha uma opção nos botões.");
-    return true;
+    retornar verdadeiro;
   }
-  return false;
+  retornar falso;
 }
 
-async function sendPaymentCode(to, row) {
+função assíncrona enviarCódigoDePagamento(para, linha) {
   const code = (getVal(row, "codigo_pagamento") || "").toString().trim();
-  if (!code) {
+  se (!código) {
     await sendText(to, "Não há código salvo para este lançamento.");
-    return;
+    retornar;
   }
   const metodo = (getVal(row, "tipo_pagamento") || "").toLowerCase();
   const label = metodo === "boleto" ? "código de barras" : "chave Pix";
   await sendText(to, `📎 Aqui está o ${label}:\n${code}`);
 }
 
-async function markPaymentAsPaid(fromRaw, userNorm, row) {
-  if (!row) return;
-  setVal(row, "status", "pago");
+função assíncrona marcarPagamentoComoPago(deRaw, userNorm, linha) {
+  se (!linha) retornar;
+  setVal(linha, "status", "pago");
   setVal(row, "timestamp", new Date().toISOString());
-  await saveRow(row);
+  aguardar salvarLinha(linha);
   await sendText(fromRaw, `✅ Pagamento confirmado com sucesso!\n\n${formatEntrySummary(row)}`);
-  await scheduleNextFixedOccurrence(row);
+  aguardar agendamentoNextFixedOccurrence(linha);
   const state = sessionPayConfirm.get(userNorm);
-  if (!state) {
+  se (!estado) {
     sessionPayConfirm.delete(userNorm);
-    return;
+    retornar;
   }
   const nextIndex = (state.currentIndex || 0) + 1;
-  if (!state.queue || nextIndex >= state.queue.length) {
+  se (!state.queue || nextIndex >= state.queue.length) {
     sessionPayConfirm.delete(userNorm);
-    return;
+    retornar;
   }
   setPayState(userNorm, {
-    ...state,
+    ...estado,
     currentIndex: nextIndex,
-    awaiting: "confirm",
+    aguardando: "confirmar",
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await promptNextPaymentConfirmation(fromRaw, userNorm);
+  aguardar confirmação de pagamento futura (de Raw, userNorm);
 }
 
 // ============================
 // Registro de lançamentos
 // ============================
-async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
+função assíncrona registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   const parsed = parseRegisterText(text);
-  if (tipoPreferencial) parsed.tipo = tipoPreferencial;
-  if (!parsed.valor) {
+  se (tipoPreferencial) analisado.tipo = tipoPreferencial;
+  se (!parsed.valor) {
     await sendText(fromRaw, "Não consegui identificar o valor. Informe algo como 150, R$150,00 ou \"cem reais\".");
-    return;
+    retornar;
   }
   let data = parsed.data instanceof Date ? parsed.data : null;
   if (!data || Number.isNaN(data.getTime())) data = new Date();
   const iso = data.toISOString();
   const categoria = await resolveCategory(parsed.descricao, parsed.tipo);
   const payload = {
-    row_id: generateRowId(),
+    row_id: gerarIdDaLinha(),
     timestamp: new Date().toISOString(),
-    user: userNorm,
+    usuário: userNorm,
     user_raw: fromRaw,
-    tipo: parsed.tipo,
+    tipo: tipo analisado,
     conta: parsed.descricao,
-    valor: parsed.valor,
+    valor: analisado.valor,
     vencimento_iso: iso,
     vencimento_br: formatBRDate(data),
     tipo_pagamento: parsed.tipoPagamento || "",
@@ -3214,125 +3313,125 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     fixa: "nao",
     fix_parent_id: "",
     vencimento_dia: data.getDate(),
-    recorrencia_tipo: "",
-    recorrencia_valor: "",
+    tipo_de_recorrência: "",
+    valor_de_recorrência: "",
     categoria: categoria.slug,
     categoria_emoji: categoria.emoji,
     descricao: parsed.descricao,
   };
-  if (!parsed.statusDetected) {
+  se (!parsed.statusDetectado) {
     payload.status = "pendente";
     setStatusState(userNorm, { entry: { ...payload }, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-    await sendStatusConfirmationPrompt(fromRaw);
-    return;
+    aguarde sendStatusConfirmationPrompt(fromRaw);
+    retornar;
   }
 
   await finalizeRegisterEntry(fromRaw, userNorm, payload, { autoStatus: true, statusSource: "auto" });
 }
 
 const computeInitialFixedDueDate = (recurrence, startDate) => {
-  if (!recurrence) return null;
+  se (!recorrência) retorne nulo;
   const now = startOfDay(new Date());
-  if (recurrence.type === "monthly") {
-    const base =
+  se (recorrência.tipo === "mensal") {
+    base constante =
       startDate instanceof Date && !Number.isNaN(startDate?.getTime()) && startOfDay(startDate).getTime() >= now.getTime()
-        ? startDate
-        : now;
-    return nextMonthlyDate(recurrence.value, base, { inclusive: true });
+        ? data de início
+        : agora;
+    retornar nextMonthlyDate(recurrence.value, base, { inclusive: true });
   }
-  if (recurrence.type === "interval") {
-    if (startDate instanceof Date && !Number.isNaN(startDate?.getTime())) {
-      return nextIntervalDate(recurrence.value, startDate, now);
+  se (recorrência.tipo === "intervalo") {
+    se (startDate instanceof Date && !Number.isNaN(startDate?.getTime())) {
+      retornar nextIntervalDate(recursão.valor, startDate, agora);
     }
-    return addDays(now, recurrence.value);
+    retornar adicionarDias(agora, recorrência.valor);
   }
-  return null;
+  retornar nulo;
 };
 
-const parseFixedAccountCommand = (text) => {
-  const original = (text || "").toString();
-  if (!original.trim()) return null;
+const parseFixedAccountCommand = (texto) => {
+  const original = (texto || "").toString();
+  Se (!original.trim()) retorne nulo;
   const amountInfo = extractAmountFromText(original);
-  if (!amountInfo.amount) return null;
-  const normalized = normalizeDiacritics(original).toLowerCase();
+  Se (!amountInfo.amount) retornar nulo;
+  const normalizado = normalizarDiacritics(original).toLowerCase();
 
   const removalPatterns = [];
   const addRemoval = (match) => {
     if (match && match[0]) removalPatterns.push(match[0]);
   };
 
-  let recurrence = null;
+  seja recorrência = nula;
   const dayMatch = normalized.match(/todo\s+dia\s+(\d{1,2})/);
-  if (dayMatch) {
-    recurrence = { type: "monthly", value: Number(dayMatch[1]) };
-    addRemoval(dayMatch);
+  se (diaMatch) {
+    recorrência = { tipo: "mensal", valor: Number(dayMatch[1]) };
+    adicionarRemoção(diaMatch);
   }
-  if (!recurrence) {
+  se (!recorrência) {
     const monthMatch = normalized.match(/(?:todo|cada)\s+(?:o\s+)?mes(?:\s+dia\s*(\d{1,2}))?/);
-    if (monthMatch) {
-      recurrence = { type: "monthly", value: monthMatch[1] ? Number(monthMatch[1]) : null };
-      addRemoval(monthMatch);
+    se (mêsMatch) {
+      recorrência = { tipo: "mensal", valor: monthMatch[1] ? Número(monthMatch[1]) : nulo };
+      adicionarRemoção(correspondência de mês);
     }
   }
-  if (!recurrence && /\bmensal\b/.test(normalized)) {
-    recurrence = { type: "monthly", value: null };
+  se (!recorrência && /\bmensal\b/.test(normalizado)) {
+    recorrência = { tipo: "mensal", valor: nulo };
     removalPatterns.push("mensal");
   }
-  if (!recurrence) {
+  se (!recorrência) {
     const eachDays = normalized.match(/a\s+cada\s+(\d+)\s+dias?/);
-    if (eachDays) {
-      recurrence = { type: "interval", value: Number(eachDays[1]) };
-      addRemoval(eachDays);
+    se (cadaDia) {
+      recorrência = { tipo: "intervalo", valor: Número(cadaDia[1]) };
+      adicionarRemoção(cadaDia);
     }
   }
-  if (!recurrence) {
+  se (!recorrência) {
     const eachWeeks = normalized.match(/a\s+cada\s+(\d+)\s+semanas?/);
-    if (eachWeeks) {
-      recurrence = { type: "interval", value: Number(eachWeeks[1]) * 7 };
-      addRemoval(eachWeeks);
+    se (cadaSemana) {
+      recorrência = { tipo: "intervalo", valor: Número(cadaSemana[1]) * 7 };
+      adicionarRemoção(cadaSemana);
     }
   }
-  if (!recurrence && /\bsemanal\b/.test(normalized)) {
-    recurrence = { type: "interval", value: 7 };
+  se (!recorrência && /\bsemanal\b/.test(normalizado)) {
+    recorrência = { tipo: "intervalo", valor: 7 };
     removalPatterns.push("semanal");
   }
-  if (!recurrence && /toda\s+semana/.test(normalized)) {
-    recurrence = { type: "interval", value: 7 };
+  se (!recorrência && /toda\s+semana/.test(normalizado)) {
+    recorrência = { tipo: "intervalo", valor: 7 };
     removalPatterns.push("toda semana");
   }
-  if (!recurrence && /\bquinzenal\b/.test(normalized)) {
-    recurrence = { type: "interval", value: 15 };
+  se (!recorrência && /\bquinzenal\b/.test(normalizado)) {
+    recorrência = { tipo: "intervalo", valor: 15 };
     removalPatterns.push("quinzenal");
   }
 
-  if (!recurrence) return null;
+  se (!recorrência) retorne nulo;
 
   const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
-  const startDate = dateMatch ? parseDateToken(dateMatch[1]) : null;
+  const datainicial=dataMatch? parseDateToken(dateMatch[1]) : null;
 
-  if (recurrence.type === "monthly") {
-    let day = Number(recurrence.value);
-    if (!Number.isFinite(day) || day <= 0) {
-      if (startDate instanceof Date && !Number.isNaN(startDate?.getTime())) {
-        day = startDate.getDate();
-      } else {
+  se (recorrência.tipo === "mensal") {
+    seja dia = Número(recorrência.valor);
+    se (!Número.éFinite(dia) || dia <= 0) {
+      se (startDate instanceof Date && !Number.isNaN(startDate?.getTime())) {
+        dia = dataInicial.getDate();
+      } outro {
         const extra = normalized.match(/dia\s+(\d{1,2})/);
-        if (extra) day = Number(extra[1]);
+        se (dia extra) = Número(extra[1]);
       }
     }
     if (!Number.isFinite(day) || day <= 0) day = new Date().getDate();
-    recurrence.value = clamp(Math.round(day), 1, 31);
+    recorrência.valor = clamp(Math.round(dia), 1, 31);
   } else if (recurrence.type === "interval") {
-    const days = Number(recurrence.value);
-    if (!Number.isFinite(days) || days <= 0) return null;
-    recurrence.value = Math.max(Math.round(days), 1);
+    const dias = Número(recorrência.valor);
+    Se (!Number.isFinite(days) || days <= 0) retorne nulo;
+    recorrência.valor = Math.max(Math.round(dias), 1);
   }
 
   const dueDate = computeInitialFixedDueDate(recurrence, startDate);
-  if (!dueDate) return null;
+  se (!dueDate) retornar nulo;
 
   let descricao = original;
-  if (amountInfo.raw) {
+  se (amountInfo.raw) {
     const rawRegex = new RegExp(escapeRegex(amountInfo.raw), "i");
     descricao = descricao.replace(rawRegex, " ");
   }
@@ -3341,7 +3440,7 @@ const parseFixedAccountCommand = (text) => {
     descricao = descricao.replace(dateRegex, " ");
   }
   removalPatterns.forEach((pattern) => {
-    if (!pattern) return;
+    se (!padrão) retornar;
     const regex = new RegExp(escapeRegex(pattern), "gi");
     descricao = descricao.replace(regex, " ");
   });
@@ -3358,39 +3457,39 @@ const parseFixedAccountCommand = (text) => {
     .replace(/\bquinzenal\b/gi, " ")
     .replace(/\bpagar\b/gi, " ")
     .replace(/\s+/g, " ")
-    .trim();
+    .aparar();
   if (!descricao) descricao = "Conta fixa";
 
   let tipoPagamento = "";
-  if (/\bpix\b/.test(normalized)) tipoPagamento = "pix";
+  se (/\bpix\b/.test(normalizado)) tipoPagamento = "pix";
   else if (/\bboleto\b/.test(normalized)) tipoPagamento = "boleto";
-  else if (/\b(cart[aã]o\s*de\s*cr[eé]dito|cart[aã]o\s*cr[eé]dito|cr[eé]dito\s*no?\s*cart[aã]o)\b/.test(normalized))
+  senão se (/\b(cart[aã]o\s*de\s*cr[eé]dito|cart[aã]o\s*cr[eé]dito|cr[eé]dito\s*no?\s*cart[aã]o)\b/.test(normalized))
     tipoPagamento = "cartao_credito";
-  else if (/\b(cart[aã]o\s*de\s*d[eé]bito|cart[aã]o\s*d[eé]bito|d[eé]bito\s*no?\s*cart[aã]o)\b/.test(normalized))
+  senão se (/\b(cart[aã]o\s*de\s*d[eé]bito|cart[aã]o\s*d[eé]bito|d[eé]bito\s*no?\s*cart[aã]o)\b/.test(normalized))
     tipoPagamento = "cartao_debito";
 
-  return {
+  retornar {
     descricao,
     valor: amountInfo.amount,
-    recurrence,
-    dueDate,
+    recorrência,
+    data de vencimento,
     tipoPagamento,
   };
 };
 
-async function registerFixedAccount(fromRaw, userNorm, parsed) {
-  if (!parsed) return;
+função assíncrona registerFixedAccount(fromRaw, userNorm, parsed) {
+  se (!analisado) retorne;
   const categoria = await resolveCategory(parsed.descricao, "conta_pagar");
   const rowId = generateRowId();
   const due = parsed.dueDate instanceof Date ? parsed.dueDate : new Date();
   const payload = {
-    row_id: rowId,
+    id_da_linha: id_da_linha,
     timestamp: new Date().toISOString(),
-    user: userNorm,
+    usuário: userNorm,
     user_raw: fromRaw,
     tipo: "conta_pagar",
     conta: parsed.descricao,
-    valor: parsed.valor,
+    valor: analisado.valor,
     vencimento_iso: due.toISOString(),
     vencimento_br: formatBRDate(due),
     tipo_pagamento: parsed.tipoPagamento || "",
@@ -3402,30 +3501,30 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
     categoria: categoria.slug,
     categoria_emoji: categoria.emoji,
     descricao: parsed.descricao,
-    recorrencia_tipo: parsed.recurrence.type,
+    tipo_de_recorrência: tipo.de.recorrência.analisado,
     recorrencia_valor: parsed.recurrence.value?.toString() || "",
   };
-  await createRow(payload);
+  aguardar criarLinha(carga útil);
   const resumo = formatEntrySummary(payload);
   const recurrenceLabel = describeRecurrence(payload);
   let message = `♻ Conta fixa cadastrada com sucesso!\n\n${resumo}`;
   if (recurrenceLabel) message += `\n\n🔄 Recorrência: ${recurrenceLabel}`;
   message += `\n\n📅 Próximo vencimento: ${formatBRDate(due)}.`;
   message += `\n\n✅ Para confirmar pagamento depois, envie "Confirmar 1".`;
-  await sendText(fromRaw, message);
+  aguardar sendText(fromRaw, mensagem);
   if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
-    await promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
+    aguarde promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
   }
-  await sendMainMenu(fromRaw);
+  aguardar sendMainMenu(fromRaw);
 }
 
 // ============================
-// Intent detection
+// Detecção de intenção
 // ============================
-const KNOWN_INTENTS = new Set([
+const INTENÇÕES_CONHECIDAS = novo Conjunto([
   "boas_vindas",
   "mostrar_menu",
-  "relatorios_menu",
+  "relatórios_menu",
   "relatorio_pagamentos_mes",
   "relatorio_recebimentos_mes",
   "relatorio_contas_pagar_mes",
@@ -3440,9 +3539,9 @@ const KNOWN_INTENTS = new Set([
   "desconhecido",
 ]);
 
-const detectIntentHeuristic = (text) => {
-  const lower = (text || "").toLowerCase();
-  const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const detectarHeurísticaDeIntenção = (texto) => {
+  const lower = (texto || "").toLowerCase();
+  const normalizado = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
@@ -3454,49 +3553,49 @@ const detectIntentHeuristic = (text) => {
   if (/contas?\s+a\s+pagar.*mes|pendentes? desse mes|pendentes? do mes/.test(normalized)) {
     return "relatorio_contas_pagar_mes";
   }
-  if (/\brelat[óo]rios?\b/.test(lower)) return "relatorios_menu";
+  se (/\brelat[óo]rios?\b/.test(lower)) retorne "relatorios_menu";
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
   if (/contas?\s+a\s+pagar|pendentes|a pagar/.test(lower)) return "listar_pendentes";
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
-  if (/editar lan[cç]amentos?/.test(lower)) return "editar";
+  if (/edit lan[cc]amento?/.test(lower)) return "edit";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
   if (/registrar recebimento|\brecebimento\b/.test(lower)) return "registrar_recebimento";
   if (/registrar pagamento|\bpagamento\b|\bpagar\b/.test(lower)) return "registrar_pagamento";
   return "desconhecido";
 };
 
-const normalizeIntent = (value) => {
-  if (!value) return null;
-  const formatted = value
+const normalizeIntent = (valor) => {
+  Se (!valor) retornar nulo;
+  const formatado = valor
     .toString()
-    .toLowerCase()
-    .trim()
+    .paraLowerCase()
+    .aparar()
     .replace(/[^a-z0-9_]+/g, "_")
-    .replace(/_{2,}/g, "_")
+    .replace(/_{2,}/g, ​​"_")
     .replace(/^_|_$/g, "");
-  return KNOWN_INTENTS.has(formatted) ? formatted : null;
+  retornar INTENÇÕES_CONHECIDAS.tem(formatado) ? formatado : nulo;
 };
 
-const buildIntentPrompt = (text) => {
+const buildIntentPrompt = (texto) => {
   const options = Array.from(KNOWN_INTENTS).join(", ");
-  return [
+  retornar [
     {
-      role: "system",
-      content: [
+      função: "sistema",
+      contente: [
         {
-          type: "text",
-          text:
+          tipo: "texto",
+          texto:
             "Você é um classificador de intenções para um assistente financeiro no WhatsApp. Responda apenas com uma das intenções disponíveis, sem explicações.",
         },
       ],
     },
     {
-      role: "user",
-      content: [
+      função: "usuário",
+      contente: [
         {
-          type: "text",
-          text:
+          tipo: "texto",
+          texto:
             `Opções válidas: ${options}.\n\n` +
             "Exemplos:\n" +
             '- "quanto eu gastei esse mês?" -> relatorio_pagamentos_mes\n' +
@@ -3512,23 +3611,23 @@ const buildIntentPrompt = (text) => {
   ];
 };
 
-const detectIntent = async (text) => {
-  const fallback = detectIntentHeuristic(text);
-  if (!text) return fallback;
-  if (!openaiClient) return fallback;
-  try {
+const detectarIntenção = async (texto) => {
+  const fallback = detectIntentHeuristic(texto);
+  se (!texto) retornar fallback;
+  se (!openaiClient) retornar fallback;
+  tentar {
     const output = await callOpenAI({
-      model: OPENAI_INTENT_MODEL,
-      input: buildIntentPrompt(text),
-      temperature: 0,
+      modelo: OPENAI_INTENT_MODEL,
+      entrada: buildIntentPrompt(texto),
+      temperatura: 0,
       maxOutputTokens: 50,
     });
     const predicted = normalizeIntent(output);
-    if (predicted) return predicted;
-  } catch (error) {
+    se (previsto) retornar previsto;
+  } catch (erro) {
     console.error("Falha ao consultar OpenAI para intenção:", error?.message || error);
   }
-  return fallback;
+  retornar opção alternativa;
 };
 
 // ============================
@@ -3537,552 +3636,559 @@ const detectIntent = async (text) => {
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+  const desafio = req.query["hub.desafio"];
+  se (modo === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
+    retornar res.status(200).send(challenge);
   }
-  return res.sendStatus(403);
+  retornar res.sendStatus(403);
 });
 
-async function handleInteractiveMessage(from, payload) {
-  const { type } = payload;
+função assíncrona handleInteractiveMessage(de, payload) {
+  const { tipo } = payload;
   const userNorm = normalizeUser(from);
-  recordUserInteraction(userNorm);
-  if (type === "button_reply") {
+  registrarInteraçãoDoUsuário(normaDoUsuário);
+  se (tipo === "botão_responder") {
     const id = payload.button_reply.id;
     const payloadId = payload.button_reply?.payload;
     const title = payload.button_reply?.title?.toLowerCase?.() || "";
-    if (
+    se (
       id === TEMPLATE_REMINDER_BUTTON_ID ||
       payloadId === TEMPLATE_REMINDER_BUTTON_ID ||
       title === "ver meus lembretes"
     ) {
-      await listPendingPayments(from, userNorm);
-      return;
+      aguardar listPendingPayments(de, userNorm);
+      retornar;
     }
-    if (id === "REG:STATUS:PAGO") {
-      await handleStatusSelection(from, userNorm, "pago");
-      return;
+    se (id === "REG:STATUS:PAGO") {
+      aguardar handleStatusSelection(de, userNorm, "pago");
+      retornar;
     }
-    if (id === "REG:STATUS:PENDENTE") {
-      await handleStatusSelection(from, userNorm, "pendente");
-      return;
+    se (id === "REG:STATUS:PENDENTE") {
+      aguardar handleStatusSelection(de, userNorm, "pendente");
+      retornar;
     }
-    if (id.startsWith("REG:EDIT:")) {
+    se (id.startsWith("REG:EDIT:")) {
       const [, , rowId] = id.split(":");
       const row = await findRowById(userNorm, rowId);
-      if (!row) {
+      se (!linha) {
         await sendText(from, "Não encontrei o lançamento para editar.");
-        return;
+        retornar;
       }
       sessionEdit.set(userNorm, {
-        awaiting: "field",
-        rows: [row],
-        queue: [{ row, displayIndex: 1 }],
+        aguardando: "campo",
+        linhas: [linha],
+        fila: [{ linha, displayIndex: 1 }],
         currentIndex: 0,
-        row,
+        linha,
         displayIndex: 1,
         expiresAt: Date.now() + SESSION_TIMEOUT_MS,
       });
       const summary = formatEntrySummary(row, { headerLabel: "🧾 Lançamento selecionado:" });
-      await sendText(
-        from,
+      aguardar enviarTexto(
+        de,
         `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
       );
-      return;
+      retornar;
     }
-    if (id.startsWith("PAYCODE:ADD:")) {
+    se (id.startsWith("PAYCODE:ADD:")) {
       const [, , rowId] = id.split(":");
       const state = sessionPaymentCode.get(userNorm);
-      if (state && state.rowId === rowId) {
+      se (estado && estado.rowId === rowId) {
         setPaymentCodeState(userNorm, { awaiting: "input", rowId, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-      } else {
+      } outro {
         setPaymentCodeState(userNorm, { awaiting: "input", rowId, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
       }
       await sendText(from, "🔗 Envie o código do Pix (cópia e cola ou chave Pix) ou o código de barras do boleto.");
-      return;
+      retornar;
     }
-    if (id.startsWith("PAYCODE:SKIP:")) {
+    se (id.startsWith("PAYCODE:SKIP:")) {
       sessionPaymentCode.delete(userNorm);
       await sendText(from, "Tudo bem! Se precisar anexar depois, é só me avisar.");
-      return;
+      retornar;
     }
-    if (id.startsWith("PAY:MARK:")) {
+    se (id.startsWith("PAY:MARK:")) {
       const [, , rowId] = id.split(":");
       const state = sessionPayConfirm.get(userNorm);
       const current = state?.queue?.[state.currentIndex || 0];
-      if (current?.row && getRowIdentifier(current.row) === rowId) {
-        await markPaymentAsPaid(from, userNorm, current.row);
-      } else {
+      se (linha atual && obterIdentificadorDaLinha(linha atual) === rowId) {
+        aguarde marcarPagamentoComoPago(de, userNorm, linhaAtual);
+      } outro {
         await sendText(from, "Não encontrei o lançamento selecionado para confirmar.");
       }
-      return;
+      retornar;
     }
-    if (id === "PAY:CANCEL") {
+    se (id === "PAGAR:CANCELAR") {
       sessionPayConfirm.delete(userNorm);
       await sendText(from, "Operação cancelada.");
-      return;
+      retornar;
     }
-    if (id.startsWith("PAY:COPY:")) {
+    se (id.startsWith("PAY:COPY:")) {
       const [, , rowId] = id.split(":");
       const row = await findRowById(userNorm, rowId);
-      if (row) {
-        await sendPaymentCode(from, row);
-      } else {
+      se (linha) {
+        aguardar sendPaymentCode(de, linha);
+      } outro {
         await sendText(from, "Não encontrei um código salvo para este lançamento.");
       }
       const state = sessionPayConfirm.get(userNorm);
-      if (state) setPayState(userNorm, { ...state, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-      return;
+      se (estado) definirPayState(userNorm, { ...estado, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+      retornar;
     }
-    if (id === "DEL:CONFIRM:YES") {
+    se (id === "DEL:CONFIRM:SIM") {
       const handled = await finalizeDeleteConfirmation(from, userNorm, true);
-      if (!handled) {
+      se (!tratado) {
         await sendText(from, "Nenhum lançamento selecionado para excluir.");
       }
-      return;
+      retornar;
     }
-    if (id === "DEL:CONFIRM:NO") {
-      await finalizeDeleteConfirmation(from, userNorm, false);
-      return;
+    se (id === "DEL:CONFIRM:NO") {
+      aguardar finalizeDeleteConfirmation(de, userNorm, falso);
+      retornar;
     }
-    if (id.startsWith("REL:CAT:")) {
+    se (id.startsWith("REL:CAT:")) {
       const [, , cat] = id.split(":");
-      await startReportCategoryFlow(from, userNorm, cat);
-      return;
+      aguardar iniciarReportCategoryFlow(de, userNorm, cat);
+      retornar;
     }
-    if (id.startsWith("REL:PER:")) {
+    se (id.startsWith("REL:PER:")) {
       const [, , cat, opt] = id.split(":");
       const now = new Date();
-      if (opt === "mes_atual") {
+      se (opt === "mes_atual") {
         const range = {
-          start: startOfMonth(now.getFullYear(), now.getMonth()),
-          end: endOfMonth(now.getFullYear(), now.getMonth()),
+          início: inícioDoMês(agora.obterAnoCompleto(), agora.obterMês()),
+          fim: fimDoMês(agora.obterAnoCompleto(), agora.obterMês()),
         };
-        await showReportByCategory(from, userNorm, cat, range);
+        aguardar showReportByCategory(de, userNorm, cat, range);
         sessionPeriod.delete(userNorm);
       }
-      if (opt === "todo_periodo") {
-        const rows = await allRowsForUser(userNorm);
-        let min = null;
-        rows.forEach((row) => {
+      se (opt === "todo_periodo") {
+        const linhas = await todasAsLinhasParaUsuário(userNorm);
+        seja min = nulo;
+        linhas.forEach((linha) => {
           const dt = getEffectiveDate(row);
-          if (dt && (!min || dt < min)) min = dt;
+          se (dt && (!min || dt < min)) min = dt;
         });
-        const start = min ? startOfDay(min) : startOfDay(new Date());
+        const início = min? startOfDay(min): startOfDay(new Date());
         const end = endOfDay(new Date());
         await showReportByCategory(from, userNorm, cat, { start, end });
         sessionPeriod.delete(userNorm);
       }
-      if (opt === "personalizado") {
+      se (opt === "personalizado") {
         sessionPeriod.set(userNorm, { mode: "report", category: cat, awaiting: "range" });
-        await sendText(
-          from,
+        aguardar enviarTexto(
+          de,
           `🗓️ *Selecione um período personalizado*\n\nEnvie no formato:\n01/10/2025 a 31/10/2025\n\n💡 Dica: você pode usar "a", "-", "até".`
         );
       }
-      return;
+      retornar;
     }
-    if (id.startsWith("LANC:PER:")) {
+    se (id.startsWith("LANC:PER:")) {
       const [, , opt] = id.split(":");
       const now = new Date();
-      if (opt === "hoje") {
+      se (opt === "hoje") {
         const start = startOfDay(now);
-        const end = endOfDay(now);
+        const end = fimDoDia(agora);
         await showLancamentos(from, userNorm, { start, end });
       } else if (opt === "mes_atual") {
         const range = {
-          start: startOfMonth(now.getFullYear(), now.getMonth()),
-          end: endOfMonth(now.getFullYear(), now.getMonth()),
+          início: inícioDoMês(agora.obterAnoCompleto(), agora.obterMês()),
+          fim: fimDoMês(agora.obterAnoCompleto(), agora.obterMês()),
         };
-        await showLancamentos(from, userNorm, range);
-      } else if (opt === "personalizado") {
+        aguardar showLancamentos(de, userNorm, intervalo);
+      } else if (opt === "custom") {
         sessionPeriod.set(userNorm, { mode: "lanc", awaiting: "range" });
-        await sendText(
-          from,
+        aguardar enviarTexto(
+          de,
           `🗓️ *Selecione um período personalizado*\n\nEnvie no formato:\n01/10/2025 a 31/10/2025\n\n💡 Dica: você pode usar "a", "-", "até".`
         );
       }
-      return;
+      retornar;
     }
-    if (id === "DEL:LAST") {
-      const rows = await allRowsForUser(userNorm);
+    se (id === "DEL:ÚLTIMO") {
+      const linhas = await todasAsLinhasParaUsuário(userNorm);
       const sorted = rows.sort((a, b) => new Date(getVal(b, "timestamp")) - new Date(getVal(a, "timestamp")));
-      const last = sorted[0];
-      if (!last) {
+      const último = classificado[0];
+      se (!último) {
         await sendText(from, "Não há lançamentos para excluir.");
-        return;
+        retornar;
       }
       await confirmDeleteRows(from, userNorm, [{ row: last, displayIndex: 1 }]);
-      return;
+      retornar;
     }
-    if (id === "DEL:LIST") {
+    se (id === "DEL:LIST") {
       await listRowsForSelection(from, userNorm, "delete");
-      return;
+      retornar;
     }
-    if (id === "CFIX:CAD") {
+    se (id === "CFIX:CAD") {
       sessionFixedRegister.set(userNorm, { expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-      await sendCadastrarContaFixaMessage(from);
-      return;
+      aguardar sendCadastrarContaFixaMessage(de);
+      retornar;
     }
-    if (id === "CFIX:LIST") {
+    se (id === "CFIX:LIST") {
       await sendListarContasFixasMessage(from, userNorm);
-      return;
+      retornar;
     }
-    if (id === "CFIX:DEL") {
-      await sendExcluirContaFixaMessage(from, userNorm);
-      return;
+    se (id === "CFIX:DEL") {
+      aguardar envioExcluirContaFixaMessage(de, userNorm);
+      retornar;
     }
   }
 
-  if (type === "list_reply") {
+  se (tipo === "lista_resposta") {
     const id = payload.list_reply.id;
-    if (id.startsWith("REL:CAT:")) {
+    se (id.startsWith("REL:CAT:")) {
       const [, , cat] = id.split(":");
-      await startReportCategoryFlow(from, userNorm, cat);
-      return;
+      aguardar iniciarReportCategoryFlow(de, userNorm, cat);
+      retornar;
     }
-    if (id === "MENU:registrar_pagamento") {
+    if (id === "MENU:cadastro_pagamento") {
       sessionRegister.set(userNorm, { tipo: "conta_pagar" });
-      await sendText(
-        from,
+      aguardar enviarTexto(
+        de,
         `💰 Novo lançamento de pagamento ou gasto\n\nInforme os detalhes abaixo para registrar corretamente:\n\n📝 Descrição: O que foi pago?\n(ex: Conta de luz, Internet, Academia)\n\n💰 Valor: Quanto custou?\n(ex: 120,00)\n\n📅 Data: Quando foi pago ou deve ser pago?\n(ex: hoje, amanhã ou 25/10/2025)\n\n🏷 Status: Já foi pago ou ainda está pendente?\n(ex: pago / pendente)\n\n📂 Categoria: (opcional)\nA FinPlanner identifica automaticamente, mas você pode informar (ex: Internet, Energia, Alimentação).\n\n💡 Dica: Você também pode escrever tudo em uma linha!\nExemplo:\n➡ Pagar internet 120 amanhã\n➡ Academia 80,00 pago hoje`
       );
-      return;
+      retornar;
     }
     if (id === "MENU:registrar_recebimento") {
       sessionRegister.set(userNorm, { tipo: "conta_receber" });
-      await sendText(
-        from,
+      aguardar enviarTexto(
+        de,
         `💵 Novo lançamento de recebimento\n\nInforme os detalhes abaixo para registrar sua entrada de dinheiro:\n\n📝 Descrição: O que você recebeu?\n(ex: Venda de peças, Salário, Reembolso)\n\n💰 Valor: Quanto foi recebido?\n(ex: 300,00)\n\n📅 Data: Quando foi ou será recebido?\n(ex: hoje, amanhã ou 30/10/2025)\n\n🏷 Status: Já recebeu ou ainda está pendente?\n(ex: recebido / pendente)\n\n📂 Categoria: (opcional)\nA FinPlanner identifica automaticamente (ex: Venda, Salário, Transferência).\n\n💡 Dica: Você pode enviar tudo de uma vez!\nExemplo:\n➡ Receber venda 300 amanhã\n➡ Pix recebido cliente 150 hoje`
       );
-      return;
+      retornar;
     }
     if (id === "MENU:contas_pagar") {
-      await listPendingPayments(from, userNorm);
-      return;
+      aguardar listPendingPayments(de, userNorm);
+      retornar;
     }
     if (id === "MENU:contas_fixas") {
-      await sendContasFixasMenu(from);
-      return;
+      aguardar enviarContasFixasMenu(de);
+      retornar;
     }
-    if (id === "MENU:relatorios") {
-      await sendRelatoriosButtons(from);
-      return;
+    if (id === "MENU:relatórios") {
+      aguardar sendRelatóriosButtons(de);
+      retornar;
     }
     if (id === "MENU:lancamentos") {
-      await sendLancPeriodoButtons(from);
-      return;
+      aguardar sendLancPeriodoButtons(de);
+      retornar;
     }
-    if (id === "MENU:editar") {
-      await listRowsForSelection(from, userNorm, "edit");
-      return;
+    se (id === "MENU:editar") {
+      aguarde listRowsForSelection(from, userNorm, "edit");
+      retornar;
     }
-    if (id === "MENU:excluir") {
-      await sendDeleteMenu(from);
-      return;
+    se (id === "MENU:excluir") {
+      aguardar sendDeleteMenu(de);
+      retornar;
     }
-    if (id === "MENU:ajuda") {
-      await sendText(
-        from,
+    se (id === "MENU:ajuda") {
+      aguardar enviarTexto(
+        de,
         `⚙️ *Ajuda & Exemplos*\n\n🧾 Registrar pagamento\nEx.: Internet 120 pago hoje\n\n💵 Registrar recebimento\nEx.: Venda curso 200 recebido hoje\n\n📊 Relatórios\nToque em Relatórios → escolha *Contas a pagar*, *Recebimentos* ou *Pagamentos* → selecione o período.\n\n🧾 Meus lançamentos\nToque em Meus lançamentos → escolha *Mês atual* ou *Data personalizada*.\n\n✏️ Editar lançamentos\nToque em Editar lançamentos → escolha pelo número → selecione o que deseja alterar.\n\n🗑️ Excluir lançamento\nToque em Excluir lançamento → Último lançamento ou Listar lançamentos.`
       );
-      return;
+      retornar;
     }
   }
 }
 
-function parseRangeMessage(text) {
+função parseRangeMessage(texto) {
   const match = text.match(/(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}).*(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/);
-  if (!match) return null;
+  se (!match) retorne nulo;
   const start = parseDateToken(match[1]);
   const end = parseDateToken(match[2]);
-  if (!start || !end) return null;
-  return { start: startOfDay(start), end: endOfDay(end) };
+  se (!início || !fim) retorne nulo;
+  retornar { início: inícioDoDia(início), fim: fimDoDia(fim) };
 }
 
-async function handleUserText(fromRaw, text) {
+função assíncrona handleUserText(fromRaw, texto) {
   const userNorm = normalizeUser(fromRaw);
-  console.log("📩 Inbound:", { fromRaw, userNorm });
-  recordUserInteraction(userNorm);
-  const trimmed = (text || "").trim();
+  console.log("📩 Entrada:", { fromRaw, userNorm });
+  registrarInteraçãoDoUsuário(normaDoUsuário);
+  const aparado = (texto || "").aparar();
+  const mensagemNormalizada = normalizarDiacritics(trimmed).toLowerCase();
 
-  if (!userNorm || userNorm !== ADMIN_NUMBER_NORM) {
+  se (userNorm && ADMIN_NUMBER_NORM && userNorm === ADMIN_NUMBER_NORM) {
+    if (/^(cron teste|teste cron|cron agora|aviso cron)$/i.test(normalizedMessage)) {
+      await sendCronReminderForUser(userNorm, fromRaw, { bypassWindow: true });
+      retornar;
+    }
+  }
+
+  se (!userNorm || userNorm !== ADMIN_NUMBER_NORM) {
     const active = await isUsuarioAtivo(userNorm);
-    if (!active) {
+    se (!ativo) {
       const nome = getStoredFirstName(userNorm);
       const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
-      await sendText(
-        fromRaw,
+      aguardar enviarTexto(
+        do Raw,
         `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
         { bypassWindow: true }
       );
-      return;
+      retornar;
     }
   }
 
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
-  if (await handleStatusConfirmationFlow(fromRaw, userNorm, trimmed)) return;
+  se (aguardar handleStatusConfirmationFlow(fromRaw, userNorth, trimmed)) retornar;
   if (await handlePaymentConfirmFlow(fromRaw, userNorm, trimmed)) return;
-  if (await handleFixedDeleteFlow(fromRaw, userNorm, trimmed)) return;
-  if (await handleFixedRegisterFlow(fromRaw, userNorm, trimmed)) return;
-  if (await handleEditFlow(fromRaw, userNorm, trimmed)) return;
-  if (await handleDeleteFlow(fromRaw, userNorm, trimmed)) return;
+  se (aguardar handleFixedDeleteFlow(fromRaw, userNorm, trimmed)) retornar;
+  se (aguardar handleFixedRegisterFlow(fromRaw, userNorm, trimmed)) retornar;
+  se (aguardar handleEditFlow(fromRaw, userNorm, trimmed)) retornar;
+  se (aguardar handleDeleteFlow(fromRaw, userNorm, trimmed)) retornar;
 
   const regState = sessionRegister.get(userNorm);
-  if (regState) {
+  se (regState) {
     await registerEntry(fromRaw, userNorm, text, regState.tipo);
     sessionRegister.delete(userNorm);
-    return;
+    retornar;
   }
 
   const perState = sessionPeriod.get(userNorm);
-  if (perState && perState.awaiting === "range") {
-    const range = parseRangeMessage(trimmed.replace(/até/gi, "-").replace(/a/gi, "-"));
-    if (!range) {
+  se (porEstado && porEstado.aguardando === "intervalo") {
+    intervalo const = parseRangeMessage(trimmed.replace(/até/gi, "-").replace(/a/gi, "-"));
+    se (!intervalo) {
       await sendText(fromRaw, "Formato inválido. Use 01/10/2025 a 31/10/2025.");
-      return;
+      retornar;
     }
-    if (perState.mode === "report") {
-      await showReportByCategory(fromRaw, userNorm, perState.category, range);
+    se (perState.mode === "report") {
+      aguardar showReportByCategory(fromRaw, userNorm, perState.category, range);
     } else if (perState.mode === "lanc") {
-      await showLancamentos(fromRaw, userNorm, range);
+      aguardar showLancamentos(fromRaw, userNorm, range);
     }
     sessionPeriod.delete(userNorm);
-    return;
+    retornar;
   }
 
-  const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
-  if (
+  se (
     normalizedMessage === "ver meus lembretes" ||
     normalizedMessage === "meus lembretes" ||
     normalizedMessage.startsWith("ver meus lembretes")
   ) {
-    await listPendingPayments(fromRaw, userNorm);
-    return;
+    aguardar listPendingPayments(fromRaw, userNorm);
+    retornar;
   }
 
   const intent = await detectIntent(trimmed);
   switch (intent) {
     case "boas_vindas":
-      await sendWelcomeList(fromRaw);
-      break;
+      aguardar sendWelcomeList(fromRaw);
+      quebrar;
     case "mostrar_menu":
-      await sendMainMenu(fromRaw);
-      break;
-    case "relatorios_menu":
-      await sendRelatoriosButtons(fromRaw);
-      break;
+      aguardar sendMainMenu(fromRaw);
+      quebrar;
+    caso "relatorios_menu":
+      aguardar sendRelatóriosButtons(fromRaw);
+      quebrar;
     case "relatorio_pagamentos_mes": {
       const now = new Date();
       const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
+        início: inícioDoMês(agora.obterAnoCompleto(), agora.obterMês()),
+        fim: fimDoMês(agora.obterAnoCompleto(), agora.obterMês()),
       };
-      await showReportByCategory(fromRaw, userNorm, "pag", range);
-      break;
+      aguardar showReportByCategory(fromRaw, userNorm, "pag", range);
+      quebrar;
     }
     case "relatorio_recebimentos_mes": {
       const now = new Date();
       const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
+        início: inícioDoMês(agora.obterAnoCompleto(), agora.obterMês()),
+        fim: fimDoMês(agora.obterAnoCompleto(), agora.obterMês()),
       };
-      await showReportByCategory(fromRaw, userNorm, "rec", range);
-      break;
+      aguardar showReportByCategory(fromRaw, userNorm, "rec", range);
+      quebrar;
     }
     case "relatorio_contas_pagar_mes": {
       const now = new Date();
       const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
+        início: inícioDoMês(agora.obterAnoCompleto(), agora.obterMês()),
+        fim: fimDoMês(agora.obterAnoCompleto(), agora.obterMês()),
       };
-      await showReportByCategory(fromRaw, userNorm, "cp", range);
-      break;
+      aguardar showReportByCategory(fromRaw, userNorm, "cp", range);
+      quebrar;
     }
     case "relatorio_completo": {
       const now = new Date();
       const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
+        início: inícioDoMês(agora.obterAnoCompleto(), agora.obterMês()),
+        fim: fimDoMês(agora.obterAnoCompleto(), agora.obterMês()),
       };
-      await showReportByCategory(fromRaw, userNorm, "all", range);
-      break;
+      aguardar showReportByCategory(fromRaw, userNorm, "all", range);
+      quebrar;
     }
     case "listar_lancamentos":
-      await sendLancPeriodoButtons(fromRaw);
-      break;
+      aguardar sendLancPeriodoButtons(fromRaw);
+      quebrar;
     case "listar_pendentes":
-      await listPendingPayments(fromRaw, userNorm);
-      break;
+      aguardar listPendingPayments(fromRaw, userNorm);
+      quebrar;
     case "contas_fixas":
-      await sendContasFixasMenu(fromRaw);
-      break;
+      aguardar sendContasFixasMenu(fromRaw);
+      quebrar;
     case "editar":
-      await listRowsForSelection(fromRaw, userNorm, "edit");
-      break;
+      aguarde listRowsForSelection(fromRaw, userNorm, "edit");
+      quebrar;
     case "excluir":
-      await sendDeleteMenu(fromRaw);
-      break;
+      aguardar sendDeleteMenu(fromRaw);
+      quebrar;
     case "registrar_recebimento":
       await registerEntry(fromRaw, userNorm, text, "conta_receber");
-      break;
+      quebrar;
     case "registrar_pagamento":
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
-      break;
-    default:
-      const fixedParsed = parseFixedAccountCommand(text);
-      if (fixedParsed) {
-        await registerFixedAccount(fromRaw, userNorm, fixedParsed);
+      quebrar;
+    padrão:
+      const fixoParsed = parseFixedAccountCommand(texto);
+      se (fixedParsed) {
+        aguardar registroFixedAccount(fromRaw, userNorm, fixedParsed);
       } else if (extractAmountFromText(trimmed).amount) {
-        await registerEntry(fromRaw, userNorm, text);
-      } else {
-        await sendMainMenu(fromRaw);
+        aguarde registrarEntrada(deRaw, userNorm, texto);
+      } outro {
+        aguardar sendMainMenu(fromRaw);
       }
-      break;
+      quebrar;
   }
 }
 
-async function handleStripeWebhook(req, res) {
+função assíncrona handleStripeWebhook(req, res) {
   if (!stripe || !STRIPE_WEBHOOK_SECRET) {
     console.error("Stripe não configurado corretamente.");
     res.sendStatus(200);
-    return;
+    retornar;
   }
 
   const sig = req.headers["stripe-signature"];
-  if (!sig) {
-    console.error("stripe-signature ausente");
+  se (!sig) {
+    console.error("assinatura stripe ausente");
     res.sendStatus(400);
-    return;
+    retornar;
   }
-  if (!Buffer.isBuffer(req.body)) {
+  se (!Buffer.isBuffer(req.body)) {
     console.error("Webhook Stripe sem raw Buffer — verifique se a rota está antes do express.json()");
     res.sendStatus(400);
-    return;
+    retornar;
   }
-  let event;
+  deixe o evento;
 
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
+  tentar {
+    evento = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (erro) {
     console.error("⚠️ Stripe raw body inválido:", {
       isBuffer: Buffer.isBuffer(req.body),
       contentType: req.headers["content-type"],
-      error: err.message,
+      erro: err.message,
     });
-    res.status(400).send(`Webhook error: ${err.message}`);
-    return;
+    res.status(400).send(`Erro no webhook: ${err.message}`);
+    retornar;
   }
 
-  try {
-    if (event.type === "checkout.session.completed") {
+  tentar {
+    se (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const subMeta = await getSubscriptionMetadata(stripe, session.subscription);
       const planoRaw = pickFirst(session.metadata?.plano, subMeta?.plano);
-      let plano = normalizePlan(planoRaw);
-      let priceId = "";
+      deixe plano = normalizePlan(planoRaw);
+      seja priceId = "";
 
-      if (!plano) {
-        try {
+      se (!plano) {
+        tentar {
           const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 5 });
-          priceId = lineItems?.data?.[0]?.price?.id || "";
-          console.log("🔎 Stripe line items:", { sessionId: session.id, priceId });
-          if (priceId) {
+          preçoId = lineItems?.dados?.[0]?.preço?.id || "";
+          console.log("🔎 Itens da linha Stripe:", { sessionId: session.id, priceId });
+          se (priceId) {
             if (priceId === STRIPE_PRICE_MENSAL) plano = "mensal";
-            else if (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
+            senão se (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
             else if (priceId === STRIPE_PRICE_ANUAL) plano = "anual";
           }
-          if (plano) {
+          se (plano) {
             console.log("✅ Plano resolvido via priceId:", { plano, priceId });
           }
-        } catch (error) {
+        } catch (erro) {
           console.error("Erro ao buscar line items do Stripe:", error.message);
         }
       }
 
-      if (!plano) {
+      se (!plano) {
         console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw, "priceId =", priceId);
-        return res.sendStatus(200);
+        retornar res.sendStatus(200);
       }
 
       const whatsapp = session.metadata?.whatsapp;
-      if (!whatsapp) {
+      se (!whatsapp) {
         console.log("⚠️ Evento Stripe sem whatsapp metadata.");
-        return res.sendStatus(200);
+        retornar res.sendStatus(200);
       }
 
       const userNorm = normalizeUser(whatsapp);
-      if (!userNorm) {
-        return res.sendStatus(200);
+      se (!userNorm) {
+        retornar res.sendStatus(200);
       }
 
       const nome = session.customer_details?.name || session.customer_name || session.metadata?.nome || "";
       const email = session.customer_details?.email || session.customer_email || session.metadata?.email || "";
       console.log("🧾 Upsert usuario:", { userNorm, plano, ativo: true });
-      await upsertUsuarioFromSubscription({
+      aguarde upsertUsuarioFromSubscription({
         userNorm,
         nome,
         plano,
-        email,
+        e-mail,
         checkout_id: session.id || session.subscription || session.payment_intent || "",
-        data_inicio: formatISODate(new Date()),
+        data_inicio: formatoISODate(nova Data()),
         ativo: true,
-        extendVencimento: true,
+        estenderVencimento: verdadeiro,
       });
     }
 
-    if (event.type === "invoice.payment_succeeded") {
+    se (event.type === "invoice.payment_succeeded") {
       const invoice = event.data.object;
       const subMeta = await getSubscriptionMetadata(stripe, invoice.subscription);
       const planoRaw = pickFirst(subMeta?.plano);
-      const plano = normalizePlan(planoRaw);
+      const plane = normalizePlan(planeRaw);
 
-      if (!plano) {
+      se (!plano) {
         console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw);
-        return res.sendStatus(200);
+        retornar res.sendStatus(200);
       }
 
       const whatsapp = subMeta?.whatsapp;
-      if (!whatsapp) {
+      se (!whatsapp) {
         console.log("⚠️ Evento Stripe sem whatsapp metadata.");
-        return res.sendStatus(200);
+        retornar res.sendStatus(200);
       }
 
       const userNorm = normalizeUser(whatsapp);
-      if (!userNorm) {
-        return res.sendStatus(200);
+      se (!userNorm) {
+        retornar res.sendStatus(200);
       }
 
       console.log("🧾 Upsert usuario:", { userNorm, plano, ativo: true });
-      await upsertUsuarioFromSubscription({
+      aguarde upsertUsuarioFromSubscription({
         userNorm,
         plano,
         ativo: true,
-        extendVencimento: true,
+        estenderVencimento: verdadeiro,
       });
     }
 
-    if (event.type === "customer.subscription.deleted" || event.type === "invoice.payment_failed") {
+    se (event.type === "customer.subscription.deleted" || event.type === "invoice.payment_failed") {
       const payload = event.data.object || {};
       const subMeta = await getSubscriptionMetadata(stripe, payload.subscription);
       const whatsapp = pickFirst(payload.metadata?.whatsapp, subMeta?.whatsapp);
-      if (!whatsapp) {
+      se (!whatsapp) {
         console.log("⚠️ Evento Stripe sem whatsapp metadata.");
-        return res.sendStatus(200);
+        retornar res.sendStatus(200);
       }
       const userNorm = normalizeUser(whatsapp);
-      if (!userNorm) {
-        return res.sendStatus(200);
+      se (!userNorm) {
+        retornar res.sendStatus(200);
       }
       console.log("🧾 Upsert usuario:", { userNorm, plano: null, ativo: false });
-      await upsertUsuarioFromSubscription({
+      aguarde upsertUsuarioFromSubscription({
         userNorm,
         ativo: false,
         extendVencimento: false,
       });
     }
-  } catch (error) {
+  } catch (erro) {
     console.error("Erro ao processar evento Stripe:", error.message);
   }
 
@@ -4090,53 +4196,53 @@ async function handleStripeWebhook(req, res) {
 }
 
 app.post("/webhook", async (req, res) => {
-  try {
+  tentar {
     const body = req.body;
-    if (body?.object === "whatsapp_business_account") {
-      const entry = body.entry || [];
-      for (const ent of entry) {
+    se (body?.object === "whatsapp_business_account") {
+      const entrada = corpo.entrada || [];
+      para (constante de entrada) {
         const changes = ent.changes || [];
-        for (const change of changes) {
+        para (const mudança de mudanças) {
           const value = change.value || {};
-          const messages = value.messages || [];
+          const mensagens = valor.mensagens || [];
           const statuses = value.statuses || [];
-          const contacts = value.contacts || [];
+          const contatos = valor.contatos || [];
 
-          for (const contact of contacts) {
+          para (constante contato de contatos) {
             const waId = normalizeUser(contact.wa_id || contact.waId || contact.id || contact.input);
             const displayName =
               contact.profile?.name || contact.profile?.pushname || contact.profile?.display_name || contact.profile?.first_name;
-            if (waId) rememberUserName(waId, displayName);
+            se (waId) lembre-se do nome de usuário (waId, nome de exibição);
           }
 
-          for (const status of statuses) {
-            if (status.status === "failed" && ADMIN_WA_NUMBER) {
-              await sendText(
-                ADMIN_WA_NUMBER,
+          para (const status de statuses) {
+            se (status.status === "falhou" && ADMIN_WA_NUMBER) {
+              aguardar enviarTexto(
+                NÚMERO_ADMIN_WA,
                 `⚠️ Falha ao entregar mensagem para ${status.recipient_id}: ${status.errors?.[0]?.title || ""}`
               );
             }
           }
 
-          for (const message of messages) {
-            const from = message.from;
+          para (constante mensagem de mensagens) {
+            const from = mensagem.from;
             const messageId = message.id;
-            if (isDuplicateMessage(messageId)) {
+            se (isDuplicateMessage(messageId)) {
               if (DEBUG_SHEETS) console.log(`[Webhook] Ignorando mensagem duplicada ${messageId}`);
-              continue;
+              continuar;
             }
             const type = message.type;
             const fromNorm = normalizeUser(from);
             const profileName =
-              message.profile?.name || message.profile?.pushname || message.profile?.display_name || message.profile?.first_name;
-            if (fromNorm) rememberUserName(fromNorm, profileName);
-            if (type === "text") {
+              mensagem.profile?.nome || mensagem.profile?.pushname || mensagem.profile?.display_name || mensagem.profile?.first_name;
+            se (fromNorm) lembre-se do nome de usuário (fromNorm, nome do perfil);
+            se (tipo === "texto") {
               await handleUserText(from, message.text?.body || "");
-            } else if (type === "interactive") {
+            } senão se (tipo === "interativo") {
               await handleInteractiveMessage(from, message.interactive);
             } else if (type === "button") {
               await handleInteractiveMessage(from, { type: "button_reply", button_reply: message.button });
-            } else {
+            } outro {
               await sendText(from, "Ainda não entendi esse tipo de mensagem, envie texto ou use o menu.");
             }
           }
@@ -4144,7 +4250,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
     res.sendStatus(200);
-  } catch (error) {
+  } catch (erro) {
     console.error("Erro no webhook:", error.message);
     res.sendStatus(200);
   }
@@ -4155,11 +4261,11 @@ app.post("/webhook", async (req, res) => {
 // ============================
 cron.schedule(
   "0 8 * * *",
-  async () => {
-    try {
+  assíncrono () => {
+    tentar {
       const sheet = await ensureSheet();
       const rows = await withRetry(() => sheet.getRows(), "get-finplanner-cron");
-      const today = startOfDay(new Date());
+      const hoje = inícioDoDia(novo Date());
       const todayMs = today.getTime();
 
       const dueByUser = new Map();
@@ -4168,58 +4274,58 @@ cron.schedule(
         const dueIso = getVal(row, "vencimento_iso");
         const dueBr = getVal(row, "vencimento_br");
         const dueDate = dueIso ? new Date(dueIso) : parseDateToken(dueBr);
-        if (!dueDate || Number.isNaN(dueDate.getTime())) {
+        se (!dueDate || Number.isNaN(dueDate.getTime())) {
           console.log("⚠️ Cron skip (data inválida):", {
-            user: getVal(row, "user") || getVal(row, "user_raw"),
-            tipo: getVal(row, "tipo"),
+            usuário: getVal(linha, "usuário") || getVal(linha, "usuário_bruto"),
+            tipo: getVal(linha, "tipo"),
             vencimento_iso: dueIso,
             vencimento_br: dueBr,
           });
-          return;
+          retornar;
         }
         const dueMs = startOfDay(dueDate).getTime();
-        if (dueMs > todayMs) {
+        se (dueMs > todayMs) {
           console.log("ℹ️ Cron skip (vencimento futuro):", {
-            user: getVal(row, "user") || getVal(row, "user_raw"),
-            tipo: getVal(row, "tipo"),
+            usuário: getVal(linha, "usuário") || getVal(linha, "usuário_bruto"),
+            tipo: getVal(linha, "tipo"),
             vencimento_iso: dueIso,
             vencimento_br: dueBr,
           });
-          return;
+          retornar;
         }
         const toRaw = getVal(row, "user_raw") || getVal(row, "user");
         const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
-        if (!toRaw || !userNorm) {
+        se (!toRaw || !userNorm) {
           console.log("⚠️ Cron skip (usuário inválido):", {
-            user: getVal(row, "user") || getVal(row, "user_raw"),
-            tipo: getVal(row, "tipo"),
+            usuário: getVal(linha, "usuário") || getVal(linha, "usuário_bruto"),
+            tipo: getVal(linha, "tipo"),
           });
-          return;
+          retornar;
         }
         const bucket = dueByUser.get(userNorm) || { to: toRaw, items: [] };
-        if (!bucket.to) bucket.to = toRaw;
+        se (!bucket.to) bucket.to = toRaw;
         bucket.items.push({ row, kind, dueMs });
         dueByUser.set(userNorm, bucket);
       };
 
-      for (const row of rows) {
+      para (const linha de linhas) {
         const tipo = (getVal(row, "tipo") || "").toString().toLowerCase();
         const status = (getVal(row, "status") || "").toString().toLowerCase();
         if (tipo === "conta_pagar" && status !== "pago") enqueueReminder(row, "pagar");
         if (tipo === "conta_receber" && !["pago", "recebido"].includes(status)) enqueueReminder(row, "receber");
       }
 
-      if (!dueByUser.size) {
+      se (!dueByUser.size) {
         console.log("ℹ️ Cron: nenhum lançamento pendente para hoje ou vencido.");
       }
 
-      for (const [userNorm, bucket] of dueByUser.entries()) {
-        const { to, items } = bucket;
+      para (const [userNorm, bucket] de dueByUser.entries()) {
+        const { para, itens } = balde;
         if (!items.length || !to) continue;
         const ativo = await isUsuarioAtivo(userNorm);
         if (!ativo) {
           console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
-          continue;
+          continuar;
         }
 
         const pagar = items
@@ -4230,68 +4336,68 @@ cron.schedule(
           .sort((a, b) => a.dueMs - b.dueMs);
 
         const sections = [];
-        let counter = 1;
+        seja contador = 1;
 
-        if (pagar.length) {
+        se (comprimento da cerca) {
           const blocks = pagar.map((item) => {
             const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
             const dueLabel = dueRaw || "—";
             const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
-            return formatEntryBlock(item.row, { index: counter++, dateText: label });
+            retornar formatEntryBlock(item.row, { index: counter++, dateText: label });
           });
           sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
         }
 
-        if (receber.length) {
+        se (receber.length) {
           const blocks = receber.map((item) => {
             const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
             const dueLabel = dueRaw || "—";
             const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
-            return formatEntryBlock(item.row, { index: counter++, dateText: label });
+            retornar formatEntryBlock(item.row, { index: counter++, dateText: label });
           });
           sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
         }
 
-        if (!sections.length) continue;
+        se (!sections.length) continue;
 
         const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
         const withinWindow = hasRecentUserInteraction(userNorm);
-        console.log("⏰ Cron send attempt:", {
+        console.log("⏰ Tentativa de envio do cron:", {
           userNorm,
-          to,
-          total: items.length,
-          pagar: pagar.length,
+          para,
+          total: itens.comprimento,
+          pagamento: duração do pagamento,
           receber: receber.length,
-          withinWindow,
+          dentro da janela,
         });
         const delivered = withinWindow
           ? await sendText(to, message)
-          : await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
-        if (!delivered || !withinWindow) {
-          console.log("⚠️ Cron delivery halted:", { userNorm, to, delivered, withinWindow });
-          continue;
+          : aguarde sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
+        se (!entregue || !dentro da janela) {
+          console.log("⚠️ Entrega do Cron interrompida:", { userNorm, to, delivered, withinWindow });
+          continuar;
         }
 
-        for (const item of items) {
+        para (constante item de itens) {
           const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
           const code = getVal(item.row, "codigo_pagamento");
-          if (!code) continue;
+          se (!código) continue;
           if (paymentType === "pix") await sendCopyButton(to, "💳 Chave Pix:", code, "Copiar Pix");
           if (paymentType === "boleto") await sendCopyButton(to, "🧾 Código de barras:", code, "Copiar boleto");
         }
       }
-    } catch (error) {
-      console.error("Erro no CRON:", error.message);
+    } catch (erro) {
+      console.error("Erro CRON:", error.message);
     }
   },
   { timezone: "America/Maceio" }
 );
 
 // ============================
-// Server
+// Servidor
 // ============================
 const port = PORT || 10000;
 app.listen(port, () => {
   console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
-  migrateUserSheets();
+  migrarPlanilhasDoUsuário();
 });
