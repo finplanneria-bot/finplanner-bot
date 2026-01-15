@@ -979,7 +979,8 @@ const WA_API = `https://graph.facebook.com/${WA_API_VERSION}/${WA_PHONE_NUMBER_I
 const WA_TEXT_LIMIT = 4000;
 const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
-const ADMIN_NUMBER_NORM = ADMIN_WA_NUMBER ? normalizeUser(ADMIN_WA_NUMBER) : null;
+const ADMIN_FALLBACK_NUMBER = "5579998023759";
+const ADMIN_NUMBER_NORM = normalizeUser(ADMIN_WA_NUMBER || ADMIN_FALLBACK_NUMBER);
 
 const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   if (!text) return [];
