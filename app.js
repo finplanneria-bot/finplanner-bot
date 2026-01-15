@@ -981,6 +981,28 @@ const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const ADMIN_FALLBACK_NUMBER = "5579998023759";
 const ADMIN_NUMBER_NORM = normalizeUser(ADMIN_WA_NUMBER || ADMIN_FALLBACK_NUMBER);
+const ADMIN_NUMBERS = new Set();
+
+function registerAdminNumber(value) {
+  const norm = normalizeUser(value);
+  if (!norm) return;
+  ADMIN_NUMBERS.add(norm);
+  const candidates = getUserCandidates(norm);
+  for (const candidate of candidates) {
+    ADMIN_NUMBERS.add(candidate);
+  }
+}
+
+function isAdminUser(userNorm) {
+  const norm = normalizeUser(userNorm);
+  if (!norm) return false;
+  if (ADMIN_NUMBERS.has(norm)) return true;
+  const candidates = getUserCandidates(norm);
+  return candidates.some((candidate) => ADMIN_NUMBERS.has(candidate));
+}
+
+registerAdminNumber(ADMIN_WA_NUMBER);
+registerAdminNumber(ADMIN_FALLBACK_NUMBER);
 
 const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   if (!text) return [];
@@ -1065,7 +1087,7 @@ const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
 const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = false }) => {
   if (!to) return false;
   if (bypassWindow) return true;
-  if (userNorm && ADMIN_NUMBER_NORM && userNorm === ADMIN_NUMBER_NORM) {
+  if (isAdminUser(userNorm)) {
     return true;
   }
   if (hasRecentUserInteraction(userNorm)) {
@@ -3907,15 +3929,19 @@ async function handleUserText(fromRaw, text) {
   recordUserInteraction(userNorm);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
+  const adminCronCommand =
+    /\baviso\s*cron\b/i.test(normalizedMessage) ||
+    /\bcron\s*(teste|agora)?\b/i.test(normalizedMessage);
 
-  if (userNorm && ADMIN_NUMBER_NORM && userNorm === ADMIN_NUMBER_NORM) {
-    if (/^(cron teste|teste cron|cron agora|aviso cron)$/i.test(normalizedMessage)) {
+  if (isAdminUser(userNorm)) {
+    if (adminCronCommand) {
+      console.log("🧪 Admin cron command received:", { fromRaw, normalizedMessage });
       await sendCronReminderForUser(userNorm, fromRaw, { bypassWindow: true });
       return;
     }
   }
 
-  if (!userNorm || userNorm !== ADMIN_NUMBER_NORM) {
+  if (!userNorm || !isAdminUser(userNorm)) {
     const active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
