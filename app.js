@@ -149,9 +149,6 @@ app.get("/internal/wake", (_req, res) => {
 app.post("/internal/cron-aviso", async (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  console.log("[CRON] authStartsWithBearer?", auth.startsWith("Bearer "));
-  console.log("[CRON] tokenLen/envLen", token.length, (process.env.CRON_SECRET || "").length);
-  console.log("[CRON] tokenHash/envHash", hash6(token), hash6(process.env.CRON_SECRET));
   if (!process.env.CRON_SECRET || token !== process.env.CRON_SECRET) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
@@ -4315,6 +4312,17 @@ app.post("/webhook", async (req, res) => {
 
 async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+  const reasons = {
+    invalid_date: 0,
+    future_due: 0,
+    invalid_user: 0,
+    inactive_plan: 0,
+    no_items: 0,
+    sent_ok: 0,
+    sent_text_ok: 0,
+    sent_template_ok: 0,
+    send_error: 0,
+  };
   let totalItems = 0;
   let sentCount = 0;
   let skippedCount = 0;
@@ -4338,6 +4346,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
           vencimento_iso: dueIso,
           vencimento_br: dueBr,
         });
+        reasons.invalid_date += 1;
         skippedCount += 1;
         return;
       }
@@ -4349,6 +4358,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
           vencimento_iso: dueIso,
           vencimento_br: dueBr,
         });
+        reasons.future_due += 1;
         skippedCount += 1;
         return;
       }
@@ -4359,6 +4369,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
           user: getVal(row, "user") || getVal(row, "user_raw"),
           tipo: getVal(row, "tipo"),
         });
+        reasons.invalid_user += 1;
         skippedCount += 1;
         return;
       }
@@ -4386,12 +4397,14 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
     for (const [userNorm, bucket] of dueByUser.entries()) {
       const { to, items } = bucket;
       if (!items.length || !to) {
+        reasons.no_items += 1;
         skippedCount += 1;
         continue;
       }
       const ativo = await isUsuarioAtivo(userNorm);
       if (!ativo) {
         console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
+        reasons.inactive_plan += 1;
         skippedCount += 1;
         continue;
       }
@@ -4441,16 +4454,42 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         receber: receber.length,
         withinWindow,
       });
-      const delivered = withinWindow
-        ? await sendText(to, message)
-        : await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
-      if (!delivered || !withinWindow) {
-        console.log("⚠️ Cron delivery halted:", { userNorm, to, delivered, withinWindow });
+      let delivered = false;
+      let threw = false;
+      let usedTemplate = false;
+      try {
+        if (withinWindow) {
+          delivered = await sendText(to, message);
+          if (delivered) {
+            sentCount += 1;
+            reasons.sent_ok += 1;
+            reasons.sent_text_ok += 1;
+          }
+        } else {
+          usedTemplate = true;
+          delivered = await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
+          if (delivered) {
+            sentCount += 1;
+            reasons.sent_ok += 1;
+            reasons.sent_template_ok += 1;
+          }
+        }
+      } catch (error) {
+        threw = true;
+        errorCount += 1;
+        reasons.send_error += 1;
+        console.error("Erro no envio do CRON:", error.message);
+      }
+      if (!delivered) {
+        console.log("⚠️ Cron delivery failed:", { userNorm, to, delivered, withinWindow, usedTemplate });
+        if (!threw) {
+          errorCount += 1;
+          reasons.send_error += 1;
+        }
         skippedCount += 1;
         continue;
       }
-
-      sentCount += 1;
+      console.log("✅ Cron delivery ok:", { userNorm, to, via: usedTemplate ? "template" : "text" });
 
       for (const item of items) {
         const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
@@ -4465,14 +4504,16 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
     console.error("Erro no CRON:", error.message);
   }
 
-  console.log("[CRON] runAvisoCron end:", {
+  const resumo = {
     users: dueByUser.size,
     reminders: totalItems,
     sent: sentCount,
     skipped: skippedCount,
     errors: errorCount,
-  });
-  return { users: dueByUser.size, reminders: totalItems, sent: sentCount, skipped: skippedCount, errors: errorCount };
+    reasons,
+  };
+  console.log("[CRON] runAvisoCron done", resumo);
+  return resumo;
 }
 
 // ============================
