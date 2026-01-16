@@ -11,6 +11,10 @@ import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import cron from "node-cron";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const crypto = require("crypto");
 
 dotenv.config();
 
@@ -27,6 +31,8 @@ const STRIPE_PRICE_TRIMESTRAL = process.env.STRIPE_PRICE_TRIMESTRAL;
 const STRIPE_PRICE_ANUAL = process.env.STRIPE_PRICE_ANUAL;
 const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL;
 const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL;
+
+const hash6 = (s) => crypto.createHash("sha256").update(String(s || "")).digest("hex").slice(0, 6);
 
 const {
   PORT,
@@ -143,6 +149,9 @@ app.get("/internal/wake", (_req, res) => {
 app.post("/internal/cron-aviso", async (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  console.log("[CRON] authStartsWithBearer?", auth.startsWith("Bearer "));
+  console.log("[CRON] tokenLen/envLen", token.length, (process.env.CRON_SECRET || "").length);
+  console.log("[CRON] tokenHash/envHash", hash6(token), hash6(process.env.CRON_SECRET));
   if (!process.env.CRON_SECRET || token !== process.env.CRON_SECRET) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
