@@ -135,6 +135,11 @@ app.post("/webhook/stripe", express.raw({ type: "application/json" }), handleStr
 
 app.use(express.json());
 
+app.get("/internal/wake", (_req, res) => {
+  console.log(`[WAKE] Servidor acordado em ${new Date().toISOString()}`);
+  res.status(200).json({ ok: true, status: "awake" });
+});
+
 app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
 });
