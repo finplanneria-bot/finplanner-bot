@@ -140,6 +140,22 @@ app.get("/internal/wake", (_req, res) => {
   res.status(200).json({ ok: true, status: "awake" });
 });
 
+app.post("/internal/cron-aviso", async (req, res) => {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!process.env.CRON_SECRET || token !== process.env.CRON_SECRET) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+
+  try {
+    const resumo = await runAvisoCron({ requestedBy: "cron-job" });
+    return res.status(200).json({ ok: true, resumo });
+  } catch (e) {
+    console.error("[CRON] endpoint error:", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
 app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
 });
@@ -4288,6 +4304,168 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
+  console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+  let totalItems = 0;
+  let sentCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+  const dueByUser = new Map();
+
+  try {
+    const sheet = await ensureSheet();
+    const rows = await withRetry(() => sheet.getRows(), "get-finplanner-cron");
+    const today = startOfDay(new Date());
+    const todayMs = today.getTime();
+
+    const enqueueReminder = (row, kind) => {
+      const dueIso = getVal(row, "vencimento_iso");
+      const dueBr = getVal(row, "vencimento_br");
+      const dueDate = dueIso ? new Date(dueIso) : parseDateToken(dueBr);
+      if (!dueDate || Number.isNaN(dueDate.getTime())) {
+        console.log("⚠️ Cron skip (data inválida):", {
+          user: getVal(row, "user") || getVal(row, "user_raw"),
+          tipo: getVal(row, "tipo"),
+          vencimento_iso: dueIso,
+          vencimento_br: dueBr,
+        });
+        skippedCount += 1;
+        return;
+      }
+      const dueMs = startOfDay(dueDate).getTime();
+      if (dueMs > todayMs) {
+        console.log("ℹ️ Cron skip (vencimento futuro):", {
+          user: getVal(row, "user") || getVal(row, "user_raw"),
+          tipo: getVal(row, "tipo"),
+          vencimento_iso: dueIso,
+          vencimento_br: dueBr,
+        });
+        skippedCount += 1;
+        return;
+      }
+      const toRaw = getVal(row, "user_raw") || getVal(row, "user");
+      const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
+      if (!toRaw || !userNorm) {
+        console.log("⚠️ Cron skip (usuário inválido):", {
+          user: getVal(row, "user") || getVal(row, "user_raw"),
+          tipo: getVal(row, "tipo"),
+        });
+        skippedCount += 1;
+        return;
+      }
+      const bucket = dueByUser.get(userNorm) || { to: toRaw, items: [] };
+      if (!bucket.to) bucket.to = toRaw;
+      bucket.items.push({ row, kind, dueMs });
+      dueByUser.set(userNorm, bucket);
+    };
+
+    for (const row of rows) {
+      const tipo = (getVal(row, "tipo") || "").toString().toLowerCase();
+      const status = (getVal(row, "status") || "").toString().toLowerCase();
+      if (tipo === "conta_pagar" && status !== "pago") enqueueReminder(row, "pagar");
+      if (tipo === "conta_receber" && !["pago", "recebido"].includes(status)) enqueueReminder(row, "receber");
+    }
+
+    for (const bucket of dueByUser.values()) {
+      totalItems += bucket.items.length;
+    }
+
+    if (!dueByUser.size) {
+      console.log("ℹ️ Cron: nenhum lançamento pendente para hoje ou vencido.");
+    }
+
+    for (const [userNorm, bucket] of dueByUser.entries()) {
+      const { to, items } = bucket;
+      if (!items.length || !to) {
+        skippedCount += 1;
+        continue;
+      }
+      const ativo = await isUsuarioAtivo(userNorm);
+      if (!ativo) {
+        console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
+        skippedCount += 1;
+        continue;
+      }
+
+      const pagar = items
+        .filter((item) => item.kind === "pagar")
+        .sort((a, b) => a.dueMs - b.dueMs);
+      const receber = items
+        .filter((item) => item.kind === "receber")
+        .sort((a, b) => a.dueMs - b.dueMs);
+
+      const sections = [];
+      let counter = 1;
+
+      if (pagar.length) {
+        const blocks = pagar.map((item) => {
+          const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
+          const dueLabel = dueRaw || "—";
+          const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+          return formatEntryBlock(item.row, { index: counter++, dateText: label });
+        });
+        sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
+      }
+
+      if (receber.length) {
+        const blocks = receber.map((item) => {
+          const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
+          const dueLabel = dueRaw || "—";
+          const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+          return formatEntryBlock(item.row, { index: counter++, dateText: label });
+        });
+        sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
+      }
+
+      if (!sections.length) {
+        skippedCount += 1;
+        continue;
+      }
+
+      const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
+      const withinWindow = hasRecentUserInteraction(userNorm);
+      console.log("⏰ Cron send attempt:", {
+        userNorm,
+        to,
+        total: items.length,
+        pagar: pagar.length,
+        receber: receber.length,
+        withinWindow,
+      });
+      const delivered = withinWindow
+        ? await sendText(to, message)
+        : await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
+      if (!delivered || !withinWindow) {
+        console.log("⚠️ Cron delivery halted:", { userNorm, to, delivered, withinWindow });
+        skippedCount += 1;
+        continue;
+      }
+
+      sentCount += 1;
+
+      for (const item of items) {
+        const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
+        const code = getVal(item.row, "codigo_pagamento");
+        if (!code) continue;
+        if (paymentType === "pix") await sendCopyButton(to, "💳 Chave Pix:", code, "Copiar Pix");
+        if (paymentType === "boleto") await sendCopyButton(to, "🧾 Código de barras:", code, "Copiar boleto");
+      }
+    }
+  } catch (error) {
+    errorCount += 1;
+    console.error("Erro no CRON:", error.message);
+  }
+
+  console.log("[CRON] runAvisoCron end:", {
+    users: dueByUser.size,
+    reminders: totalItems,
+    sent: sentCount,
+    skipped: skippedCount,
+    errors: errorCount,
+  });
+  return { users: dueByUser.size, reminders: totalItems, sent: sentCount, skipped: skippedCount, errors: errorCount };
+}
+
 // ============================
 // CRON diário 08:00 (America/Maceio)
 // ============================
@@ -4295,131 +4473,9 @@ cron.schedule(
   "0 8 * * *",
   async () => {
     try {
-      const sheet = await ensureSheet();
-      const rows = await withRetry(() => sheet.getRows(), "get-finplanner-cron");
-      const today = startOfDay(new Date());
-      const todayMs = today.getTime();
-
-      const dueByUser = new Map();
-
-      const enqueueReminder = (row, kind) => {
-        const dueIso = getVal(row, "vencimento_iso");
-        const dueBr = getVal(row, "vencimento_br");
-        const dueDate = dueIso ? new Date(dueIso) : parseDateToken(dueBr);
-        if (!dueDate || Number.isNaN(dueDate.getTime())) {
-          console.log("⚠️ Cron skip (data inválida):", {
-            user: getVal(row, "user") || getVal(row, "user_raw"),
-            tipo: getVal(row, "tipo"),
-            vencimento_iso: dueIso,
-            vencimento_br: dueBr,
-          });
-          return;
-        }
-        const dueMs = startOfDay(dueDate).getTime();
-        if (dueMs > todayMs) {
-          console.log("ℹ️ Cron skip (vencimento futuro):", {
-            user: getVal(row, "user") || getVal(row, "user_raw"),
-            tipo: getVal(row, "tipo"),
-            vencimento_iso: dueIso,
-            vencimento_br: dueBr,
-          });
-          return;
-        }
-        const toRaw = getVal(row, "user_raw") || getVal(row, "user");
-        const userNorm = normalizeUser(getVal(row, "user") || getVal(row, "user_raw"));
-        if (!toRaw || !userNorm) {
-          console.log("⚠️ Cron skip (usuário inválido):", {
-            user: getVal(row, "user") || getVal(row, "user_raw"),
-            tipo: getVal(row, "tipo"),
-          });
-          return;
-        }
-        const bucket = dueByUser.get(userNorm) || { to: toRaw, items: [] };
-        if (!bucket.to) bucket.to = toRaw;
-        bucket.items.push({ row, kind, dueMs });
-        dueByUser.set(userNorm, bucket);
-      };
-
-      for (const row of rows) {
-        const tipo = (getVal(row, "tipo") || "").toString().toLowerCase();
-        const status = (getVal(row, "status") || "").toString().toLowerCase();
-        if (tipo === "conta_pagar" && status !== "pago") enqueueReminder(row, "pagar");
-        if (tipo === "conta_receber" && !["pago", "recebido"].includes(status)) enqueueReminder(row, "receber");
-      }
-
-      if (!dueByUser.size) {
-        console.log("ℹ️ Cron: nenhum lançamento pendente para hoje ou vencido.");
-      }
-
-      for (const [userNorm, bucket] of dueByUser.entries()) {
-        const { to, items } = bucket;
-        if (!items.length || !to) continue;
-        const ativo = await isUsuarioAtivo(userNorm);
-        if (!ativo) {
-          console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
-          continue;
-        }
-
-        const pagar = items
-          .filter((item) => item.kind === "pagar")
-          .sort((a, b) => a.dueMs - b.dueMs);
-        const receber = items
-          .filter((item) => item.kind === "receber")
-          .sort((a, b) => a.dueMs - b.dueMs);
-
-        const sections = [];
-        let counter = 1;
-
-        if (pagar.length) {
-          const blocks = pagar.map((item) => {
-            const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
-            const dueLabel = dueRaw || "—";
-            const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
-            return formatEntryBlock(item.row, { index: counter++, dateText: label });
-          });
-          sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
-        }
-
-        if (receber.length) {
-          const blocks = receber.map((item) => {
-            const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
-            const dueLabel = dueRaw || "—";
-            const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
-            return formatEntryBlock(item.row, { index: counter++, dateText: label });
-          });
-          sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
-        }
-
-        if (!sections.length) continue;
-
-        const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
-        const withinWindow = hasRecentUserInteraction(userNorm);
-        console.log("⏰ Cron send attempt:", {
-          userNorm,
-          to,
-          total: items.length,
-          pagar: pagar.length,
-          receber: receber.length,
-          withinWindow,
-        });
-        const delivered = withinWindow
-          ? await sendText(to, message)
-          : await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
-        if (!delivered || !withinWindow) {
-          console.log("⚠️ Cron delivery halted:", { userNorm, to, delivered, withinWindow });
-          continue;
-        }
-
-        for (const item of items) {
-          const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
-          const code = getVal(item.row, "codigo_pagamento");
-          if (!code) continue;
-          if (paymentType === "pix") await sendCopyButton(to, "💳 Chave Pix:", code, "Copiar Pix");
-          if (paymentType === "boleto") await sendCopyButton(to, "🧾 Código de barras:", code, "Copiar boleto");
-        }
-      }
-    } catch (error) {
-      console.error("Erro no CRON:", error.message);
+      await runAvisoCron({ requestedBy: "node-cron" });
+    } catch (e) {
+      console.error("[CRON] node-cron error:", e);
     }
   },
   { timezone: "America/Maceio" }
