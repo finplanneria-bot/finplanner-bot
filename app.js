@@ -1061,7 +1061,7 @@ const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   return parts;
 };
 
-async function sendWA(payload) {
+async function sendWA(payload, context = {}) {
   try {
     await axios.post(WA_API, payload, {
       headers: {
@@ -1071,13 +1071,17 @@ async function sendWA(payload) {
     });
     return true;
   } catch (error) {
-    console.error("Erro WA:", error.response?.data || error.message);
+    console.error("[WA] error", {
+      kind: context.kind || payload?.type,
+      response: error.response?.data || error.message,
+    });
     return false;
   }
 }
 
 const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
   const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
+  const safeName = firstName || "-";
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -1088,7 +1092,7 @@ const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
       components: [
         {
           type: "body",
-          parameters: [{ type: "text", text: firstName }],
+          parameters: [{ type: "text", text: safeName }],
         },
         {
           type: "button",
@@ -1099,7 +1103,14 @@ const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
       ],
     },
   };
-  const success = await sendWA(payload);
+  console.log("[WA] sending", {
+    to,
+    kind: "template",
+    withinWindow: false,
+    hasBody: false,
+    templateName: TEMPLATE_REMINDER_NAME,
+  });
+  const success = await sendWA(payload, { kind: "template" });
   if (success) {
     console.log("✅ Template de reengajamento enviado para", to);
   }
@@ -1120,7 +1131,11 @@ const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = fals
 };
 
 const sendText = async (to, body, options = {}) => {
-  if (!to || !body) return false;
+  const trimmedBody = typeof body === "string" ? body.trim() : "";
+  if (!to || !trimmedBody) {
+    console.log("[WA] skip empty text", { to, context: options.context || null });
+    return { ok: false, skipped: true, reason: "empty_text" };
+  }
   const userNorm = normalizeUser(to);
   const nameHint = options.nameHint || getStoredFirstName(userNorm);
   const canSend = await ensureSessionWindow({
@@ -1129,19 +1144,29 @@ const sendText = async (to, body, options = {}) => {
     nameHint,
     bypassWindow: options.bypassWindow || false,
   });
-  if (!canSend) return false;
-  const segments = splitLongMessage(body);
+  if (!canSend) return { ok: false, skipped: true, reason: "outside_window" };
+  const segments = splitLongMessage(trimmedBody);
   let allDelivered = true;
   const total = segments.length || 1;
-  if (total === 0) return false;
+  if (total === 0) return { ok: false, skipped: true, reason: "empty_text" };
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
-    const success = await sendWA({
-      messaging_product: "whatsapp",
+    console.log("[WA] sending", {
       to,
-      type: "text",
-      text: { body: segment },
+      kind: "text",
+      withinWindow: options.withinWindow ?? null,
+      hasBody: Boolean(segment && segment.trim()),
+      templateName: null,
     });
+    const success = await sendWA(
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: segment },
+      },
+      { kind: "text" }
+    );
     if (success) {
       const suffix = total > 1 ? ` (parte ${index + 1}/${total})` : "";
       console.log("💬 Mensagem enviada normalmente para", to, suffix);
@@ -1150,7 +1175,7 @@ const sendText = async (to, body, options = {}) => {
       break;
     }
   }
-  return allDelivered;
+  return { ok: allDelivered, skipped: false };
 };
 
 const sendCopyButton = (to, title, code, btnTitle) => {
@@ -4454,7 +4479,8 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       let usedTemplate = false;
       try {
         if (withinWindow) {
-          delivered = await sendText(to, message);
+          const result = await sendText(to, message, { withinWindow });
+          delivered = result?.ok === true;
           if (delivered) {
             sentCount += 1;
             reasons.sent_ok += 1;
