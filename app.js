@@ -323,23 +323,37 @@ const persistLastInteraction = async (userNorm) => {
     const cacheKey = canonical;
     const cached = usuarioRowCache.get(cacheKey);
     let rows;
+    let rowMap;
     if (cached && cached.expiresAt > Date.now()) {
       rows = cached.rows;
+      rowMap = cached.rowMap;
     } else {
       rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
-      usuarioRowCache.set(cacheKey, { rows, expiresAt: Date.now() + USUARIO_ROW_CACHE_TTL_MS });
+      rowMap = new Map();
+      rows.forEach((row) => {
+        const key = normalizeUser(getVal(row, "user"));
+        if (key) rowMap.set(key, row);
+      });
+      usuarioRowCache.set(cacheKey, { rows, rowMap, expiresAt: Date.now() + USUARIO_ROW_CACHE_TTL_MS });
     }
     const candidates = getUserCandidates(canonical);
     const target =
+      rowMap?.get(canonical) ||
+      candidates.map((candidate) => rowMap?.get(candidate)).find(Boolean) ||
       rows.find((row) => normalizeUser(getVal(row, "user")) === canonical) ||
       rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
-    if (!target) return;
     const nowIso = new Date().toISOString();
-    setVal(target, "last_interaction", nowIso);
-    await target.save();
+    if (target) {
+      setVal(target, "last_interaction", nowIso);
+      await target.save();
+    } else {
+      const newRow = await sheet.addRow({ user: canonical, last_interaction: nowIso });
+      rows.push(newRow);
+      rowMap?.set(canonical, newRow);
+    }
     console.log("[INBOUND] last_interaction saved", {
       canonicalUserId: canonical,
-      matchedUser: getVal(target, "user"),
+      matchedUser: target ? getVal(target, "user") : canonical,
       iso: nowIso,
     });
   } catch (err) {
