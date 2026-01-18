@@ -3,17 +3,16 @@
 // Versão: app.js v2025-10-23.1
 // ============================
 
+import "dotenv/config";
+
 import express from "express";
 import Stripe from "stripe";
 import OpenAI from "openai";
 import axios from "axios";
-import dotenv from "dotenv";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import path from "path";
 import { fileURLToPath } from "url";
-
-dotenv.config();
 
 // ============================
 // ENV
@@ -4546,6 +4545,10 @@ const isCronMode = process.argv.includes("--cron-aviso");
 if (isCronMode) {
   (async () => {
     console.log(`[CRON] cron-aviso start at ${new Date().toISOString()}`);
+    console.log("[CRON] env check", {
+      hasGoogleEmail: !!GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      hasGoogleKey: !!GOOGLE_SERVICE_ACCOUNT_KEY,
+    });
     try {
       await runAvisoCron({ requestedBy: "linux-cron" });
       console.log(`[CRON] cron-aviso done at ${new Date().toISOString()}`);
