@@ -313,6 +313,65 @@ function hasRecentUserInteraction(userNorm) {
   return Date.now() - info.lastMs <= WA_SESSION_WINDOW_MS;
 }
 
+const persistLastInteraction = async (userNorm) => {
+  const canonical = getCanonicalUserId(userNorm);
+  if (!canonical) return;
+  const sheet = await ensureSheetUsuarios();
+  const rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
+  const candidates = getUserCandidates(canonical);
+  const target =
+    rows.find((row) => normalizeUser(getVal(row, "user")) === canonical) ||
+    rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
+  if (!target) return;
+  const nowIso = new Date().toISOString();
+  setVal(target, "last_interaction", nowIso);
+  await target.save();
+  console.log("[INBOUND] last_interaction saved", {
+    canonicalUserId: canonical,
+    matchedUser: getVal(target, "user"),
+    iso: nowIso,
+  });
+};
+
+const loadLastInteractionFromUsuarios = async () => {
+  const sheet = await ensureSheetUsuarios();
+  const rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
+  const map = new Map();
+  for (const row of rows) {
+    const rawUser = normalizeUser(getVal(row, "user"));
+    const canonical = getCanonicalUserId(rawUser);
+    if (!canonical) continue;
+    const lastIso = getVal(row, "last_interaction");
+    const lastDate = lastIso ? new Date(lastIso) : null;
+    if (!lastDate || Number.isNaN(lastDate.getTime())) continue;
+    const lastMs = lastDate.getTime();
+    const candidates = getUserCandidates(canonical);
+    for (const candidate of candidates) {
+      const prev = map.get(candidate);
+      if (!prev || lastMs > prev) map.set(candidate, lastMs);
+    }
+  }
+  return map;
+};
+
+const getLastInteractionFromMap = (userNorm, map) => {
+  const canonical = getCanonicalUserId(userNorm);
+  if (!canonical) return { canonicalUserId: "", lastMs: null, lastIso: "" };
+  const candidates = getUserCandidates(canonical);
+  let lastMs = null;
+  for (const candidate of candidates) {
+    const stored = map.get(candidate);
+    if (typeof stored === "number" && (lastMs === null || stored > lastMs)) {
+      lastMs = stored;
+    }
+  }
+  return {
+    canonicalUserId: canonical,
+    lastMs,
+    lastIso: typeof lastMs === "number" ? new Date(lastMs).toISOString() : "",
+  };
+};
+
 const shouldNotifyAdminReminder = (userNorm) => {
   if (!userNorm) return false;
   const today = new Date().toISOString().split("T")[0];
@@ -1283,7 +1342,17 @@ const SHEET_HEADERS = [
   "descricao",
 ];
 
-const USUARIOS_HEADERS = ["user", "plano", "ativo", "data_inicio", "vencimento_plano", "email", "nome", "checkout_id"];
+const USUARIOS_HEADERS = [
+  "user",
+  "plano",
+  "ativo",
+  "data_inicio",
+  "vencimento_plano",
+  "email",
+  "nome",
+  "checkout_id",
+  "last_interaction",
+];
 const USER_LANC_HEADERS = [
   "row_id",
   "tipo",
@@ -3767,6 +3836,7 @@ async function handleInteractiveMessage(from, payload) {
     storedLastInteractionISO: interactionInfo.lastIso,
   });
   recordUserInteraction(userNorm);
+  await persistLastInteraction(userNorm);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
     const payloadId = payload.button_reply?.payload;
@@ -4030,6 +4100,7 @@ async function handleUserText(fromRaw, text) {
     storedLastInteractionISO: interactionInfo.lastIso,
   });
   recordUserInteraction(userNorm);
+  await persistLastInteraction(userNorm);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
   const adminCronCommand =
@@ -4404,9 +4475,11 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
   let skippedCount = 0;
   let errorCount = 0;
   const dueByUser = new Map();
+  let lastInteractionByUser = new Map();
 
   try {
     const sheet = await ensureSheet();
+    lastInteractionByUser = await loadLastInteractionFromUsuarios();
     const rows = await withRetry(() => sheet.getRows(), "get-finplanner-cron");
     const today = startOfDay(new Date());
     const todayMs = today.getTime();
@@ -4521,19 +4594,17 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       }
 
       const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
-      const interactionInfo = getLastInteractionInfo(userNorm);
+      const interactionInfo = getLastInteractionFromMap(userNorm, lastInteractionByUser);
       const nowMs = Date.now();
       const diffMinutes =
         typeof interactionInfo.lastMs === "number" ? Math.round((nowMs - interactionInfo.lastMs) / 60000) : null;
-      const withinWindow = hasRecentUserInteraction(userNorm);
-      console.log("⏰ Cron window check:", {
-        userNorm,
+      const withinWindow =
+        typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS;
+      console.log("[CRON] window check", {
         canonicalUserId: interactionInfo.canonicalUserId,
         lastInteractionISO: interactionInfo.lastIso,
-        nowISO: new Date(nowMs).toISOString(),
         diffMinutes,
         withinWindow,
-        to,
       });
       console.log("⏰ Cron send attempt:", {
         userNorm,
