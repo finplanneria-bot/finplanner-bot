@@ -244,6 +244,8 @@ const reminderAdminNotice = new Map();
 const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const usuarioStatusCache = new Map();
 const USUARIO_CACHE_TTL_MS = 60 * 1000;
+const USUARIO_ROW_CACHE_TTL_MS = 60 * 1000;
+const usuarioRowCache = new Map();
 
 function getCanonicalUserId(value) {
   const norm = normalizeUser(value);
@@ -316,21 +318,36 @@ function hasRecentUserInteraction(userNorm) {
 const persistLastInteraction = async (userNorm) => {
   const canonical = getCanonicalUserId(userNorm);
   if (!canonical) return;
-  const sheet = await ensureSheetUsuarios();
-  const rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
-  const candidates = getUserCandidates(canonical);
-  const target =
-    rows.find((row) => normalizeUser(getVal(row, "user")) === canonical) ||
-    rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
-  if (!target) return;
-  const nowIso = new Date().toISOString();
-  setVal(target, "last_interaction", nowIso);
-  await target.save();
-  console.log("[INBOUND] last_interaction saved", {
-    canonicalUserId: canonical,
-    matchedUser: getVal(target, "user"),
-    iso: nowIso,
-  });
+  try {
+    const sheet = await ensureSheetUsuarios();
+    const cacheKey = canonical;
+    const cached = usuarioRowCache.get(cacheKey);
+    let rows;
+    if (cached && cached.expiresAt > Date.now()) {
+      rows = cached.rows;
+    } else {
+      rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
+      usuarioRowCache.set(cacheKey, { rows, expiresAt: Date.now() + USUARIO_ROW_CACHE_TTL_MS });
+    }
+    const candidates = getUserCandidates(canonical);
+    const target =
+      rows.find((row) => normalizeUser(getVal(row, "user")) === canonical) ||
+      rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
+    if (!target) return;
+    const nowIso = new Date().toISOString();
+    setVal(target, "last_interaction", nowIso);
+    await target.save();
+    console.log("[INBOUND] last_interaction saved", {
+      canonicalUserId: canonical,
+      matchedUser: getVal(target, "user"),
+      iso: nowIso,
+    });
+  } catch (err) {
+    console.error("[INBOUND] last_interaction save failed", {
+      canonicalUserId: canonical,
+      err: String(err?.message || err),
+    });
+  }
 };
 
 const loadLastInteractionFromUsuarios = async () => {
@@ -3828,6 +3845,7 @@ app.get("/webhook", (req, res) => {
 async function handleInteractiveMessage(from, payload) {
   const { type } = payload;
   const userNorm = normalizeUser(from);
+  await persistLastInteraction(userNorm);
   const interactionInfo = getLastInteractionInfo(userNorm);
   console.log("📩 Inbound interactive:", {
     fromRaw: from,
@@ -3836,7 +3854,6 @@ async function handleInteractiveMessage(from, payload) {
     storedLastInteractionISO: interactionInfo.lastIso,
   });
   recordUserInteraction(userNorm);
-  await persistLastInteraction(userNorm);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
     const payloadId = payload.button_reply?.payload;
@@ -4092,6 +4109,7 @@ function parseRangeMessage(text) {
 
 async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
+  await persistLastInteraction(userNorm);
   const interactionInfo = getLastInteractionInfo(userNorm);
   console.log("📩 Inbound:", {
     fromRaw,
@@ -4100,7 +4118,6 @@ async function handleUserText(fromRaw, text) {
     storedLastInteractionISO: interactionInfo.lastIso,
   });
   recordUserInteraction(userNorm);
-  await persistLastInteraction(userNorm);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
   const adminCronCommand =
