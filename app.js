@@ -245,15 +245,72 @@ const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const usuarioStatusCache = new Map();
 const USUARIO_CACHE_TTL_MS = 60 * 1000;
 
+function getCanonicalUserId(value) {
+  const norm = normalizeUser(value);
+  if (!norm) return "";
+  const digits = String(norm);
+  if (digits.startsWith("55") && digits.length === 12) {
+    return digits.slice(0, 4) + "9" + digits.slice(4);
+  }
+  return digits;
+}
+
+function getUserCandidates(userNorm) {
+  const candidates = new Set();
+  if (userNorm) candidates.add(userNorm);
+  const digits = String(userNorm || "").replace(/\D/g, "");
+  if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
+    candidates.add(digits.slice(0, 4) + digits.slice(5));
+  }
+  if (digits.startsWith("55") && digits.length === 12) {
+    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
+  }
+  return Array.from(candidates);
+}
+
 const recordUserInteraction = (userNorm) => {
-  if (!userNorm) return;
-  lastInboundInteraction.set(userNorm, Date.now());
+  const canonical = getCanonicalUserId(userNorm);
+  if (!canonical) return;
+  const now = Date.now();
+  lastInboundInteraction.set(canonical, now);
+  const candidates = getUserCandidates(canonical);
+  for (const candidate of candidates) {
+    lastInboundInteraction.set(candidate, now);
+  }
+};
+
+function getLastInteractionInfo(userNorm) {
+  const canonical = getCanonicalUserId(userNorm);
+  if (!canonical) return { canonicalUserId: "", lastMs: null, lastIso: "" };
+  const candidates = getUserCandidates(canonical);
+  let lastMs = null;
+  for (const candidate of candidates) {
+    const stored = lastInboundInteraction.get(candidate);
+    if (typeof stored === "number" && (lastMs === null || stored > lastMs)) {
+      lastMs = stored;
+    }
+  }
+  return {
+    canonicalUserId: canonical,
+    lastMs,
+    lastIso: typeof lastMs === "number" ? new Date(lastMs).toISOString() : "",
+  };
+}
+
+const setLastInteractionForTest = (userNorm, timestampMs) => {
+  const canonical = getCanonicalUserId(userNorm);
+  if (!canonical || typeof timestampMs !== "number") return;
+  lastInboundInteraction.set(canonical, timestampMs);
+  const candidates = getUserCandidates(canonical);
+  for (const candidate of candidates) {
+    lastInboundInteraction.set(candidate, timestampMs);
+  }
 };
 
 function hasRecentUserInteraction(userNorm) {
-  if (!userNorm) return false;
-  const last = lastInboundInteraction.get(userNorm);
-  return typeof last === "number" && Date.now() - last <= WA_SESSION_WINDOW_MS;
+  const info = getLastInteractionInfo(userNorm);
+  if (!info.lastMs) return false;
+  return Date.now() - info.lastMs <= WA_SESSION_WINDOW_MS;
 }
 
 const shouldNotifyAdminReminder = (userNorm) => {
@@ -1490,19 +1547,6 @@ function parseDateLoose(v) {
   }
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function getUserCandidates(userNorm) {
-  const candidates = new Set();
-  if (userNorm) candidates.add(userNorm);
-  const digits = String(userNorm || "").replace(/\D/g, "");
-  if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
-    candidates.add(digits.slice(0, 4) + digits.slice(5));
-  }
-  if (digits.startsWith("55") && digits.length === 12) {
-    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
-  }
-  return Array.from(candidates);
 }
 
 const addMonthsSafe = (date, months) => {
@@ -3715,6 +3759,13 @@ app.get("/webhook", (req, res) => {
 async function handleInteractiveMessage(from, payload) {
   const { type } = payload;
   const userNorm = normalizeUser(from);
+  const interactionInfo = getLastInteractionInfo(userNorm);
+  console.log("📩 Inbound interactive:", {
+    fromRaw: from,
+    userNorm,
+    canonicalUserId: interactionInfo.canonicalUserId,
+    storedLastInteractionISO: interactionInfo.lastIso,
+  });
   recordUserInteraction(userNorm);
   if (type === "button_reply") {
     const id = payload.button_reply.id;
@@ -3971,7 +4022,13 @@ function parseRangeMessage(text) {
 
 async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
-  console.log("📩 Inbound:", { fromRaw, userNorm });
+  const interactionInfo = getLastInteractionInfo(userNorm);
+  console.log("📩 Inbound:", {
+    fromRaw,
+    userNorm,
+    canonicalUserId: interactionInfo.canonicalUserId,
+    storedLastInteractionISO: interactionInfo.lastIso,
+  });
   recordUserInteraction(userNorm);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
@@ -4464,7 +4521,20 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       }
 
       const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
+      const interactionInfo = getLastInteractionInfo(userNorm);
+      const nowMs = Date.now();
+      const diffMinutes =
+        typeof interactionInfo.lastMs === "number" ? Math.round((nowMs - interactionInfo.lastMs) / 60000) : null;
       const withinWindow = hasRecentUserInteraction(userNorm);
+      console.log("⏰ Cron window check:", {
+        userNorm,
+        canonicalUserId: interactionInfo.canonicalUserId,
+        lastInteractionISO: interactionInfo.lastIso,
+        nowISO: new Date(nowMs).toISOString(),
+        diffMinutes,
+        withinWindow,
+        to,
+      });
       console.log("⏰ Cron send attempt:", {
         userNorm,
         to,
@@ -4580,4 +4650,8 @@ export {
   sendTemplateReminder,
   getStoredFirstName,
   sendCopyButton,
+  getCanonicalUserId,
+  getLastInteractionInfo,
+  recordUserInteraction,
+  setLastInteractionForTest,
 };
