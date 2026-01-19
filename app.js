@@ -4712,10 +4712,10 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
 // Server
 // ============================
 const port = PORT || 10000;
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-const isCronMode = process.argv.includes("--cron-aviso");
-if (isCronMode) {
+const isCronAviso = process.argv.includes("--cron-aviso");
+if (isCronAviso) {
   (async () => {
+    console.log("[BOOT] cron-aviso mode");
     console.log(`[CRON] cron-aviso start at ${new Date().toISOString()}`);
     console.log("[CRON] env check", {
       hasGoogleEmail: !!GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -4730,7 +4730,8 @@ if (isCronMode) {
       process.exit(1);
     }
   })();
-} else if (isMain) {
+} else {
+  console.log("[BOOT] server starting on port", port);
   app.listen(port, () => {
     console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
     migrateUserSheets();
