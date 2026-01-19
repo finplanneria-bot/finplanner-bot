@@ -3,8 +3,7 @@
 // Versão: app.js v2025-10-23.1
 // ============================
 
-import "dotenv/config";
-
+import dotenv from "dotenv";
 import express from "express";
 import Stripe from "stripe";
 import OpenAI from "openai";
@@ -13,6 +12,8 @@ import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import path from "path";
 import { fileURLToPath } from "url";
+
+dotenv.config({ path: "/root/finplanner/.env" });
 
 // ============================
 // ENV
