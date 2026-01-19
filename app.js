@@ -36,9 +36,16 @@ const {
   WA_TOKEN,
   WA_PHONE_NUMBER_ID,
   ADMIN_WA_NUMBER,
-  WEBHOOK_VERIFY_TOKEN,
   STRIPE_WEBHOOK_SECRET,
 } = process.env;
+
+const WEBHOOK_VERIFY_TOKEN = String(
+  process.env.WA_VERIFY_TOKEN ||
+    process.env.WEBHOOK_VERIFY_TOKEN ||
+    process.env.WHATSAPP_VERIFY_TOKEN ||
+    process.env.VERIFY_TOKEN ||
+    ""
+).trim();
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
@@ -3848,8 +3855,9 @@ const detectIntent = async (text) => {
 // ============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
+  const token = String(req.query["hub.verify_token"] || "").trim();
   const challenge = req.query["hub.challenge"];
+  console.log("[WEBHOOK_VERIFY]", { mode, ok: mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN });
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
