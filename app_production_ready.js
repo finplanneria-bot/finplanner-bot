@@ -109,43 +109,6 @@ console.warn = (...args) => {
 
 process.on("unhandledRejection", (err) => {
 
-// ============================
-// CACHE DO GOOGLE SHEETS
-// ============================
-const sheetsCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
-
-function getCachedSheet(key) {
-  const cached = sheetsCache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    logger.info("[Cache] Usando dados em cache", { key });
-    return cached.data;
-  }
-  return null;
-}
-
-function setCachedSheet(key, data) {
-  sheetsCache.set(key, {
-    data,
-    timestamp: Date.now()
-  });
-  logger.info("[Cache] Dados armazenados em cache", { key });
-}
-
-// Limpa cache expirado a cada 10 minutos
-setInterval(() => {
-  const now = Date.now();
-  let cleaned = 0;
-  for (const [key, value] of sheetsCache.entries()) {
-    if (now - value.timestamp > CACHE_TTL) {
-      sheetsCache.delete(key);
-      cleaned++;
-    }
-  }
-  if (cleaned > 0) {
-    logger.info("[Cache] Limpeza automática", { removed: cleaned });
-  }
-}, 10 * 60 * 1000);
 
 // ============================
 // VALIDAÇÃO DE VARIÁVEIS OBRIGATÓRIAS
@@ -304,6 +267,43 @@ if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
 // ============================
 // APP
 // ============================
+// ============================
+// CACHE DO GOOGLE SHEETS
+// ============================
+const sheetsCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+function getCachedSheet(key) {
+  const cached = sheetsCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    logger.info("[Cache] Usando dados em cache", { key });
+    return cached.data;
+  }
+  return null;
+}
+
+function setCachedSheet(key, data) {
+  sheetsCache.set(key, {
+    data,
+    timestamp: Date.now()
+  });
+  logger.info("[Cache] Dados armazenados em cache", { key });
+}
+
+// Limpa cache expirado a cada 10 minutos
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [key, value] of sheetsCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      sheetsCache.delete(key);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    logger.info("[Cache] Limpeza automática", { removed: cleaned });
+  }
+}, 10 * 60 * 1000);
 const app = express();
 
 // ============================
