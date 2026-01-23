@@ -15,6 +15,13 @@ import { fileURLToPath } from "url";
 
 dotenv.config({ path: "/root/finplanner/.env" });
 
+process.on("unhandledRejection", (err) => {
+  console.error("[FATAL] unhandledRejection:", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] uncaughtException:", err);
+});
+
 // ============================
 // ENV
 // ============================
@@ -1166,6 +1173,7 @@ if (!WA_ACCESS_TOKEN) {
 const WA_TEXT_LIMIT = 4000;
 const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
+const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
 const ADMIN_FALLBACK_NUMBER = "5579998023759";
 const ADMIN_NUMBER_NORM = normalizeUser(ADMIN_WA_NUMBER || ADMIN_FALLBACK_NUMBER);
 const ADMIN_NUMBERS = new Set();
@@ -1243,6 +1251,45 @@ async function sendWA(payload, context = {}) {
     return false;
   }
 }
+
+const buildReminderText = (name) => {
+  const cleaned = (name || "").trim();
+  const greeting = cleaned ? `Olá, ${cleaned}.` : "Olá!";
+  return `${greeting}\nVocê possui contas que estão vencidas ou vencem hoje.\nToque no botão abaixo para visualizar.`;
+};
+
+const sendInteractiveReminder = async (to, userNorm) => {
+  const name = getStoredFirstName(userNorm);
+  const bodyText = buildReminderText(name);
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          {
+            type: "reply",
+            reply: {
+              id: REMINDER_PENDING_BUTTON_ID,
+              title: "Visualizar",
+            },
+          },
+        ],
+      },
+    },
+  };
+  console.log("[WA] sending", {
+    to,
+    kind: "interactive",
+    withinWindow: true,
+    hasBody: Boolean(bodyText),
+    templateName: null,
+  });
+  return sendWA(payload, { kind: "interactive" });
+};
 
 const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
   const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
@@ -3900,6 +3947,14 @@ async function handleInteractiveMessage(from, payload) {
       await listPendingPayments(from, userNorm);
       return;
     }
+    if (
+      id === REMINDER_PENDING_BUTTON_ID ||
+      payloadId === REMINDER_PENDING_BUTTON_ID ||
+      title === "visualizar"
+    ) {
+      await listPendingPayments(from, userNorm);
+      return;
+    }
     if (id === "REG:STATUS:PAGO") {
       await handleStatusSelection(from, userNorm, "pago");
       return;
@@ -4670,8 +4725,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       let usedTemplate = false;
       try {
         if (withinWindow) {
-          const result = await sendText(to, message, { withinWindow });
-          delivered = result?.ok === true;
+          delivered = await sendInteractiveReminder(to, userNorm);
           if (delivered) {
             sentCount += 1;
             reasons.sent_ok += 1;
