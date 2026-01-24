@@ -4034,8 +4034,7 @@ const computeInitialFixedDueDate = (recurrence, startDate) => {
 const parseFixedAccountCommand = (text) => {
   const original = (text || "").toString();
   if (!original.trim()) return null;
-  const amountInfo = extractAmountFromText(original);
-  if (!amountInfo.amount) return null;
+
   const normalized = normalizeDiacritics(original).toLowerCase();
 
   const removalPatterns = [];
@@ -4043,6 +4042,7 @@ const parseFixedAccountCommand = (text) => {
     if (match && match[0]) removalPatterns.push(match[0]);
   };
 
+  // Primeiro detecta a recorrência
   let recurrence = null;
   const dayMatch = normalized.match(/todo\s+dia\s+(\d{1,2})/);
   if (dayMatch) {
@@ -4089,6 +4089,29 @@ const parseFixedAccountCommand = (text) => {
 
   if (!recurrence) return null;
 
+  // Remove padrões de recorrência ANTES de extrair o valor
+  let cleanedText = original;
+  removalPatterns.forEach((pattern) => {
+    if (!pattern) return;
+    const regex = new RegExp(escapeRegex(pattern), "gi");
+    cleanedText = cleanedText.replace(regex, " ");
+  });
+  cleanedText = cleanedText
+    .replace(/todo\s+dia\s+\d{1,2}/gi, " ")
+    .replace(/\btodo\s+dia\b/gi, " ")
+    .replace(/\bdia\s+\d{1,2}\b/gi, " ")
+    .replace(/a\s+cada\s+\d+\s+dias?/gi, " ")
+    .replace(/a\s+cada\s+\d+\s+semanas?/gi, " ")
+    .replace(/\bmensal\b/gi, " ")
+    .replace(/\bsemanal\b/gi, " ")
+    .replace(/\bquinzenal\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Agora extrai o valor do texto limpo
+  const amountInfo = extractAmountFromText(cleanedText);
+  if (!amountInfo.amount) return null;
+
   const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   const startDate = dateMatch ? parseDateToken(dateMatch[1]) : null;
 
@@ -4113,37 +4136,23 @@ const parseFixedAccountCommand = (text) => {
   const dueDate = computeInitialFixedDueDate(recurrence, startDate);
   if (!dueDate) return null;
 
-  let descricao = original;
+  // Limpa a descrição (já tem recorrência removida do cleanedText)
+  let descricao = cleanedText;
   if (amountInfo.raw) {
-    const rawRegex = new RegExp(escapeRegex(amountInfo.raw), "i");
+    const rawRegex = new RegExp(escapeRegex(amountInfo.raw), "gi");
     descricao = descricao.replace(rawRegex, " ");
   }
   if (dateMatch && dateMatch[1]) {
     const dateRegex = new RegExp(escapeRegex(dateMatch[1]), "i");
     descricao = descricao.replace(dateRegex, " ");
   }
-  removalPatterns.forEach((pattern) => {
-    if (!pattern) return;
-    const regex = new RegExp(escapeRegex(pattern), "gi");
-    descricao = descricao.replace(regex, " ");
-  });
   descricao = descricao
     .replace(/conta\s+fixa/gi, " ")
     .replace(/\bfixa\b/gi, " ")
     .replace(/\brecorrente\b/gi, " ")
-    .replace(/a\s+cada\s+\d+\s+dias?/gi, " ")
-    .replace(/a\s+cada\s+\d+\s+semanas?/gi, " ")
-    .replace(/todo\s+dia\s+\d{1,2}/gi, " ")
-    .replace(/\btodo\s+dia\b/gi, " ")
-    .replace(/\bdia\s+\d{1,2}\b/gi, " ")
+    .replace(/\bpagar\b/gi, " ")
     .replace(/\btodo\b/gi, " ")
     .replace(/\bdia\b/gi, " ")
-    .replace(/toda\s+semana/gi, " ")
-    .replace(/todo\s+mes/gi, " ")
-    .replace(/\bmensal\b/gi, " ")
-    .replace(/\bsemanal\b/gi, " ")
-    .replace(/\bquinzenal\b/gi, " ")
-    .replace(/\bpagar\b/gi, " ")
     .replace(/\bcada\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
