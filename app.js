@@ -1326,6 +1326,16 @@ const CATEGORY_DEFINITIONS = [
   },
 ];
 
+// ============================
+// Helper para exibir categoria com emoji
+// ============================
+function getCategoryInfo(categorySlug) {
+  if (!categorySlug) return { emoji: "📝", label: "Sem categoria" };
+  const category = CATEGORY_DEFINITIONS.find(c => c.slug === categorySlug);
+  return category || { emoji: "📝", label: categorySlug };
+}
+
+
 const sanitizeCategoryKey = (value) => {
   if (!value) return "";
   return normalizeDiacritics(value.toString().toLowerCase())
@@ -2337,8 +2347,23 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `👋 Olá! Eu sou a FinPlanner IA.\n\n💡 Organizo seus pagamentos, ganhos e gastos de forma simples e automática.\n\nToque em *Abrir menu* ou digite o que deseja fazer.`
-          : "Toque em *Abrir menu* ou digite o que deseja fazer.",
+          ? `👋 *Olá! Bem-vindo à FinPlanner IA*
+
+Sua assistente financeira pessoal! 💰
+
+✅ Registrar gastos e ganhos
+✅ Gerenciar contas a pagar
+✅ Ver relatórios completos
+✅ Acompanhar seu saldo
+
+━━━━━━━━━━━━━━━━━━━━
+💬 Toque em *Abrir menu* ou fale:
+   _"Paguei 50 no mercado"_
+   _"Quanto gastei este mês?"_
+
+🚀 Vamos começar?`
+          : "💬 Toque em *Abrir menu* ou fale naturalmente.
+💡 Ex: _\"quero ver meu relatório\"_",
       },
       action: {
         button: "Abrir menu",
@@ -3635,13 +3660,54 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
   const resumo = formatEntrySummary(entry);
   const statusLabel = statusIconLabel(entry.status);
   if (entry.tipo === "conta_receber") {
-    let message = `💵 Recebimento registrado com sucesso!\n\n${resumo}\n\n🎯 O saldo foi atualizado automaticamente, refletindo sua nova entrada.`;
+    const categoryInfo = getCategoryInfo(entry.categoria);
+    let message = `💵 *Recebimento Registrado!*
+
+┏━━━━━━━━━━━━━━━━━━━━┓
+┃  💰 *Valor*
+┃  ${formatCurrencyBR(entry.valor)}
+┃
+┃  ${categoryInfo.emoji} *Categoria*
+┃  ${categoryInfo.label}
+┃
+┃  🏷️ *Descrição*
+┃  ${entry.descricao}
+┃
+┃  📅 *Data*
+┃  ${formatDate(entry.data)}
+┃
+┃  ${entry.status === "recebido" ? "✓" : "⏳"} *Status*
+┃  ${statusLabel}
+┗━━━━━━━━━━━━━━━━━━━━┛
+
+🎯 Saldo atualizado automaticamente!`;
     if (options.autoStatus) {
       message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
     await sendText(fromRaw, message);
   } else {
-    let message = `✅ Pagamento registrado com sucesso!\n\n${resumo}\n\n💡 A FinPlanner IA já atualizou seu saldo e adicionou este pagamento ao relatório do período.`;
+    const categoryInfo = getCategoryInfo(entry.categoria);
+    let message = `✅ *Pagamento Registrado!*
+
+┏━━━━━━━━━━━━━━━━━━━━┓
+┃  💸 *Valor*
+┃  ${formatCurrencyBR(entry.valor)}
+┃
+┃  ${categoryInfo.emoji} *Categoria*
+┃  ${categoryInfo.label}
+┃
+┃  🏷️ *Descrição*
+┃  ${entry.descricao}
+┃
+┃  📅 *Vencimento*
+┃  ${formatDate(entry.data_vencimento || entry.data)}
+┃
+┃  ${entry.status === "pago" ? "✓" : "⏳"} *Status*
+┃  ${statusLabel}
+┗━━━━━━━━━━━━━━━━━━━━┛
+
+💡 Lançamento adicionado ao
+relatório do período!`;
     if (options.autoStatus) {
       message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
@@ -4155,8 +4221,7 @@ const buildIntentPrompt = (text) => {
       content: [
         {
           type: "text",
-          text:
-            "Você é um classificador de intenções para um assistente financeiro no WhatsApp. Responda apenas com uma das intenções disponíveis, sem explicações.",
+          text: "Você é um classificador de intenções para um assistente financeiro no WhatsApp. Responda apenas com uma das intenções disponíveis, sem explicações. Seja flexível com variações naturais da linguagem.",
         },
       ],
     },
@@ -4166,15 +4231,27 @@ const buildIntentPrompt = (text) => {
         {
           type: "text",
           text:
-            `Opções válidas: ${options}.\n\n` +
-            "Exemplos:\n" +
-            '- "quanto eu gastei esse mês?" -> relatorio_pagamentos_mes\n' +
-            '- "quanto recebi este mês?" -> relatorio_recebimentos_mes\n' +
-            '- "contas a pagar deste mês" -> relatorio_contas_pagar_mes\n' +
-            '- "pagar escola 12/11 2.000" -> registrar_pagamento\n' +
-            '- "quero relatório completo" -> relatorio_completo\n' +
-            '- "abrir menu" -> mostrar_menu\n\n' +
-            `Mensagem: "${text}"\nResponda somente com uma das opções. Use "desconhecido" caso não tenha correspondência.`,
+            `Opções válidas: ${options}.
+
+` +
+            "📋 EXEMPLOS:
+
+" +
+            "GASTOS: \"quanto gastei\", \"meus gastos\", \"despesas\" -> relatorio_pagamentos_mes
+" +
+            "RECEBIMENTOS: \"quanto recebi\", \"minhas entradas\", \"ganhos\" -> relatorio_recebimentos_mes
+" +
+            "PENDENTES: \"contas pendentes\", \"o que vence\", \"minhas contas\" -> relatorio_contas_pagar_mes
+" +
+            "COMPLETO: \"resumo geral\", \"visão geral\", \"balanço\" -> relatorio_completo
+" +
+            "LISTAR: \"listar pendentes\", \"mostrar pendências\" -> listar_pendentes
+" +
+            "REGISTRAR: \"paguei 50\", \"gastei 100\", \"recebi 200\" -> registrar_pagamento ou registrar_recebimento
+
+" +
+            `Mensagem: "${text}"
+Responda SOMENTE com uma das opções.`,
         },
       ],
     },
