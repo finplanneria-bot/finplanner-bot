@@ -3729,7 +3729,7 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
 🏷️ *Descrição*: ${entry.descricao}
 
-📅 *Data*: ${formatBRDate(entry.data)}
+📅 *Data*: ${formatBRDate(entry.vencimento_iso)}
 
 ${entry.status === "recebido" ? "✓" : "⏳"} *Status*: ${statusLabel}
 
@@ -3748,7 +3748,7 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
 🏷️ *Descrição*: ${entry.descricao}
 
-📅 *Vencimento*: ${formatBRDate(entry.data_vencimento || entry.data)}
+📅 *Vencimento*: ${formatBRDate(entry.vencimento_iso)}
 
 ${entry.status === "pago" ? "✓" : "⏳"} *Status*: ${statusLabel}
 
@@ -3988,6 +3988,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     valor: parsed.valor,
     vencimento_iso: iso,
     vencimento_br: formatBRDate(data),
+    data: data,
     tipo_pagamento: parsed.tipoPagamento || "",
     codigo_pagamento: "",
     status: parsed.status || "pendente",
