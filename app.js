@@ -2347,7 +2347,7 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `👋 *Olá! Bem-vindo à FinPlanner IA*
+          ? `Olá! Bem-vindo à FinPlanner IA
 
 Sua assistente financeira pessoal! 💰
 
@@ -2356,13 +2356,11 @@ Sua assistente financeira pessoal! 💰
 ✅ Ver relatórios completos
 ✅ Acompanhar seu saldo
 
-━━━━━━━━━━━━━━━━━━━━
-💬 Toque em *Abrir menu* ou fale:
-   _"Paguei 50 no mercado"_
-   _"Quanto gastei este mês?"_
+Toque em Abrir menu ou digite o que deseja fazer!
 
 🚀 Vamos começar?`
-          : `💬 Toque em *Abrir menu* ou fale naturalmente.
+          : `Toque em Abrir menu ou fale naturalmente.
+
 💡 Ex: _"quero ver meu relatório"_`,
       },
       action: {
@@ -3663,24 +3661,24 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     const categoryInfo = getCategoryInfo(entry.categoria);
     let message = `💵 *Recebimento Registrado!*
 
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃  💰 *Valor*
+┏━━━━━━━━━━━━━━━━┓
+┃  💰 *Valor*:
 ┃  ${formatCurrencyBR(entry.valor)}
 ┃
-┃  ${categoryInfo.emoji} *Categoria*
+┃  ${categoryInfo.emoji} *Categoria*:
 ┃  ${categoryInfo.label}
 ┃
-┃  🏷️ *Descrição*
+┃  🏷️ *Descrição*:
 ┃  ${entry.descricao}
 ┃
-┃  📅 *Data*
+┃  📅 *Data*:
 ┃  ${formatBRDate(entry.data)}
 ┃
-┃  ${entry.status === "recebido" ? "✓" : "⏳"} *Status*
+┃  ${entry.status === "recebido" ? "✓" : "⏳"} *Status*:
 ┃  ${statusLabel}
-┗━━━━━━━━━━━━━━━━━━━━┛
+┗━━━━━━━━━━━━━━━━┛
 
-🎯 Saldo atualizado automaticamente!`;
+💡 Lançamento adicionado!`;
     if (options.autoStatus) {
       message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
@@ -3689,25 +3687,24 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     const categoryInfo = getCategoryInfo(entry.categoria);
     let message = `✅ *Pagamento Registrado!*
 
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃  💸 *Valor*
+┏━━━━━━━━━━━━━━━━┓
+┃  💸 *Valor*:
 ┃  ${formatCurrencyBR(entry.valor)}
 ┃
-┃  ${categoryInfo.emoji} *Categoria*
+┃  ${categoryInfo.emoji} *Categoria*:
 ┃  ${categoryInfo.label}
 ┃
-┃  🏷️ *Descrição*
+┃  🏷️ *Descrição*:
 ┃  ${entry.descricao}
 ┃
-┃  📅 *Vencimento*
+┃  📅 *Vencimento*:
 ┃  ${formatBRDate(entry.data_vencimento || entry.data)}
 ┃
-┃  ${entry.status === "pago" ? "✓" : "⏳"} *Status*
+┃  ${entry.status === "pago" ? "✓" : "⏳"} *Status*:
 ┃  ${statusLabel}
-┗━━━━━━━━━━━━━━━━━━━━┛
+┗━━━━━━━━━━━━━━━━┛
 
-💡 Lançamento adicionado ao
-relatório do período!`;
+💡 Lançamento adicionado!`;
     if (options.autoStatus) {
       message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
@@ -3748,7 +3745,7 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   entry.status = status;
   entry.timestamp = new Date().toISOString();
   sessionStatusConfirm.delete(userNorm);
-  await finalizeRegisterEntry(fromRaw, userNorm, entry, { statusSource: "user_confirm", autoStatus: false });
+  await finalizeRegisterEntry(fromRaw, userNorm, entry, { statusSource: "user_confirm", autoStatus: true });
 }
 
 async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
