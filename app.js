@@ -4134,11 +4134,17 @@ const parseFixedAccountCommand = (text) => {
     .replace(/a\s+cada\s+\d+\s+dias?/gi, " ")
     .replace(/a\s+cada\s+\d+\s+semanas?/gi, " ")
     .replace(/todo\s+dia\s+\d{1,2}/gi, " ")
+    .replace(/\btodo\s+dia\b/gi, " ")
+    .replace(/\bdia\s+\d{1,2}\b/gi, " ")
+    .replace(/\btodo\b/gi, " ")
+    .replace(/\bdia\b/gi, " ")
     .replace(/toda\s+semana/gi, " ")
     .replace(/todo\s+mes/gi, " ")
     .replace(/\bmensal\b/gi, " ")
+    .replace(/\bsemanal\b/gi, " ")
     .replace(/\bquinzenal\b/gi, " ")
     .replace(/\bpagar\b/gi, " ")
+    .replace(/\bcada\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!descricao) descricao = "Conta fixa";
@@ -4189,12 +4195,23 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
     recorrencia_valor: parsed.recurrence.value?.toString() || "",
   };
   await createRow(payload);
-  const resumo = formatEntrySummary(payload);
+  const categoryInfo = getCategoryInfo(payload.categoria);
   const recurrenceLabel = describeRecurrence(payload);
-  let message = `♻ Conta fixa cadastrada com sucesso!\n\n${resumo}`;
-  if (recurrenceLabel) message += `\n\n🔄 Recorrência: ${recurrenceLabel}`;
-  message += `\n\n📅 Próximo vencimento: ${formatBRDate(due)}.`;
-  message += `\n\n✅ Para confirmar pagamento depois, envie "Confirmar 1".`;
+
+  let message = `♻️ *Conta Fixa Cadastrada!*
+
+💸 *Valor*: ${formatCurrencyBR(payload.valor)}
+
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${payload.descricao}
+
+📅 *Próximo Vencimento*: ${formatBRDate(due)}
+
+🔄 *Recorrência*: ${recurrenceLabel}
+
+💡 A próxima cobrança será gerada automaticamente!`;
+
   await sendText(fromRaw, message);
   if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
     await promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
