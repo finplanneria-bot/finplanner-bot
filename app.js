@@ -4711,6 +4711,13 @@ async function handleUserText(fromRaw, text) {
     return;
   }
 
+  // Verificar se é uma conta fixa ANTES de detectar intenção
+  const fixedParsed = parseFixedAccountCommand(text);
+  if (fixedParsed) {
+    await registerFixedAccount(fromRaw, userNorm, fixedParsed);
+    return;
+  }
+
   const intent = await detectIntent(trimmed);
   switch (intent) {
     case "boas_vindas":
@@ -4780,10 +4787,7 @@ async function handleUserText(fromRaw, text) {
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
       break;
     default:
-      const fixedParsed = parseFixedAccountCommand(text);
-      if (fixedParsed) {
-        await registerFixedAccount(fromRaw, userNorm, fixedParsed);
-      } else if (extractAmountFromText(trimmed).amount) {
+      if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
       } else {
         await sendMainMenu(fromRaw);
