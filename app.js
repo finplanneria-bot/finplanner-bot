@@ -1080,7 +1080,9 @@ const withinRange = (dt, start, end) => {
 
 const parseDateToken = (token) => {
   if (!token) return null;
-  const lower = token.toLowerCase();
+  const lower = token.toLowerCase().trim();
+
+  // Palavras especiais
   if (lower === "hoje") return new Date();
   if (lower === "amanha" || lower === "amanhã") {
     const d = new Date();
@@ -1092,24 +1094,83 @@ const parseDateToken = (token) => {
     d.setDate(d.getDate() - 1);
     return d;
   }
-  const match = token.match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
-  if (match) {
-    const day = Number(match[1]);
-    const month = Number(match[2]) - 1;
-    const currentYear = new Date().getFullYear();
-    let year = currentYear;
-    if (match[3]) {
-      year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
-    } else {
-      const tentative = new Date(currentYear, month, day);
-      const now = new Date();
-      if (tentative < startOfDay(now)) {
-        year = currentYear + 1;
+
+  // "daqui a x dias" ou "daqui x dias"
+  const daquiMatch = lower.match(/daqui\s+a?\s*(\d+)\s*dias?/);
+  if (daquiMatch) {
+    const days = Number(daquiMatch[1]);
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+
+  // Formato: dd/mm/yyyy, dd/mm/yy, dd/mm, dd ou d
+  // Também aceita - no lugar de /
+  const dateMatch = token.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})|(\d{1,2})[\/-](\d{1,2})|(\d{1,2})(?![\/-])/);
+
+  if (dateMatch) {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    // Formato completo: dd/mm/yyyy ou dd/mm/yy
+    if (dateMatch[1] && dateMatch[2] && dateMatch[3]) {
+      const day = Number(dateMatch[1]);
+      const month = Number(dateMatch[2]) - 1;
+      let year = Number(dateMatch[3]);
+
+      // Se ano tem 2 dígitos, adiciona 20xx
+      if (year < 100) year += 2000;
+
+      const d = new Date(year, month, day);
+      if (!Number.isNaN(d.getTime()) && day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+        return d;
       }
     }
-    const d = new Date(year, month, day);
-    if (!Number.isNaN(d.getTime())) return d;
+
+    // Formato: dd/mm (sem ano - usa ano atual ou próximo)
+    if (dateMatch[4] && dateMatch[5]) {
+      const day = Number(dateMatch[4]);
+      const month = Number(dateMatch[5]) - 1;
+
+      if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+        let year = currentYear;
+        const tentative = new Date(year, month, day);
+
+        // Se a data já passou este ano, usa ano que vem
+        if (tentative < startOfDay(now)) {
+          year = currentYear + 1;
+        }
+
+        const d = new Date(year, month, day);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+    }
+
+    // Formato: apenas dd (usa mês e ano atuais ou próximo mês)
+    if (dateMatch[6] && !dateMatch[4] && !dateMatch[1]) {
+      const day = Number(dateMatch[6]);
+
+      if (day >= 1 && day <= 31) {
+        let month = currentMonth;
+        let year = currentYear;
+        const tentative = new Date(year, month, day);
+
+        // Se a data já passou este mês, usa próximo mês
+        if (tentative < startOfDay(now)) {
+          month += 1;
+          if (month > 11) {
+            month = 0;
+            year += 1;
+          }
+        }
+
+        const d = new Date(year, month, day);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+    }
   }
+
   return null;
 };
 
@@ -2778,7 +2839,7 @@ const parseRegisterText = (text) => {
   const valor = amountInfo.amount || 0;
 
   let data = null;
-  const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
+  const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   if (dateMatch) data = parseDateToken(dateMatch[1]);
 
   if (!data) {
@@ -2803,6 +2864,7 @@ const parseRegisterText = (text) => {
     descricao = descricao.replace(new RegExp(rawEscaped, "i"), "");
   }
   descricao = descricao
+    .replace(/daqui\s+a?\s*\d+\s*dias?/gi, "")
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
     .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
     .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
@@ -3661,22 +3723,15 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     const categoryInfo = getCategoryInfo(entry.categoria);
     let message = `💵 *Recebimento Registrado!*
 
-┏━━━━━━━━━━━━━━━━┓
-┃  💰 *Valor*:
-┃  ${formatCurrencyBR(entry.valor)}
-┃
-┃  ${categoryInfo.emoji} *Categoria*:
-┃  ${categoryInfo.label}
-┃
-┃  🏷️ *Descrição*:
-┃  ${entry.descricao}
-┃
-┃  📅 *Data*:
-┃  ${formatBRDate(entry.data)}
-┃
-┃  ${entry.status === "recebido" ? "✓" : "⏳"} *Status*:
-┃  ${statusLabel}
-┗━━━━━━━━━━━━━━━━┛
+💰 *Valor*: ${formatCurrencyBR(entry.valor)}
+
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${entry.descricao}
+
+📅 *Data*: ${formatBRDate(entry.data)}
+
+${entry.status === "recebido" ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
     if (options.autoStatus) {
@@ -3687,22 +3742,15 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     const categoryInfo = getCategoryInfo(entry.categoria);
     let message = `✅ *Pagamento Registrado!*
 
-┏━━━━━━━━━━━━━━━━┓
-┃  💸 *Valor*:
-┃  ${formatCurrencyBR(entry.valor)}
-┃
-┃  ${categoryInfo.emoji} *Categoria*:
-┃  ${categoryInfo.label}
-┃
-┃  🏷️ *Descrição*:
-┃  ${entry.descricao}
-┃
-┃  📅 *Vencimento*:
-┃  ${formatBRDate(entry.data_vencimento || entry.data)}
-┃
-┃  ${entry.status === "pago" ? "✓" : "⏳"} *Status*:
-┃  ${statusLabel}
-┗━━━━━━━━━━━━━━━━┛
+💸 *Valor*: ${formatCurrencyBR(entry.valor)}
+
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${entry.descricao}
+
+📅 *Vencimento*: ${formatBRDate(entry.data_vencimento || entry.data)}
+
+${entry.status === "pago" ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
     if (options.autoStatus) {
