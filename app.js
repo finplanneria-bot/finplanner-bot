@@ -2362,8 +2362,8 @@ Sua assistente financeira pessoal! 💰
    _"Quanto gastei este mês?"_
 
 🚀 Vamos começar?`
-          : "💬 Toque em *Abrir menu* ou fale naturalmente.
-💡 Ex: _\"quero ver meu relatório\"_",
+          : `💬 Toque em *Abrir menu* ou fale naturalmente.
+💡 Ex: _"quero ver meu relatório"_`,
       },
       action: {
         button: "Abrir menu",
@@ -3674,7 +3674,7 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
 ┃  ${entry.descricao}
 ┃
 ┃  📅 *Data*
-┃  ${formatDate(entry.data)}
+┃  ${formatBRDate(entry.data)}
 ┃
 ┃  ${entry.status === "recebido" ? "✓" : "⏳"} *Status*
 ┃  ${statusLabel}
@@ -3700,7 +3700,7 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
 ┃  ${entry.descricao}
 ┃
 ┃  📅 *Vencimento*
-┃  ${formatDate(entry.data_vencimento || entry.data)}
+┃  ${formatBRDate(entry.data_vencimento || entry.data)}
 ┃
 ┃  ${entry.status === "pago" ? "✓" : "⏳"} *Status*
 ┃  ${statusLabel}
@@ -4221,7 +4221,44 @@ const buildIntentPrompt = (text) => {
       content: [
         {
           type: "text",
-          text: "Você é um classificador de intenções para um assistente financeiro no WhatsApp. Responda apenas com uma das intenções disponíveis, sem explicações. Seja flexível com variações naturais da linguagem.",
+          text: `Você é um assistente de IA especializado em detectar intenções de mensagens financeiras no WhatsApp.
+
+🎯 OBJETIVO: Classificar a mensagem do usuário em UMA das intenções disponíveis.
+
+⚠️ REGRAS IMPORTANTES:
+1. Responda APENAS com o slug da intenção (ex: "registrar_pagamento")
+2. Seja MUITO flexível - usuários falam naturalmente, não seguem scripts
+3. Entenda contexto e sinônimos (ex: "comprei" = "paguei" = "gastei")
+4. Para valores numéricos, sempre prefira "registrar_pagamento" ou "registrar_recebimento"
+5. Use "desconhecido" SOMENTE se realmente não souber
+
+📊 CATEGORIAS PRINCIPAIS:
+
+🔹 REGISTROS (maior prioridade quando há valor):
+   • registrar_pagamento: "paguei 50", "gastei 100", "comprei X por Y"
+   • registrar_recebimento: "recebi 200", "vendi por 150", "ganhei X"
+
+🔹 RELATÓRIOS:
+   • relatorio_pagamentos_mes: "quanto gastei", "meus gastos este mês"
+   • relatorio_recebimentos_mes: "quanto recebi", "minhas entradas"
+   • relatorio_contas_pagar_mes: "contas pendentes", "o que devo"
+   • relatorio_completo: "resumo geral", "balanço do mês"
+
+🔹 LISTAGENS:
+   • listar_pendentes: "mostrar pendentes", "o que vence"
+   • listar_lancamentos: "meus lançamentos", "histórico"
+
+🔹 AÇÕES:
+   • editar: "editar lançamento", "alterar registro"
+   • excluir: "excluir lançamento", "apagar registro"
+   • contas_fixas: "contas fixas", "cadastrar conta fixa"
+
+🔹 NAVEGAÇÃO:
+   • boas_vindas: "oi", "olá", "bom dia"
+   • mostrar_menu: "menu", "opções"
+   • relatorios_menu: "relatórios", "ver relatórios"
+
+✨ DICA: Se houver VALOR MONETÁRIO na mensagem, sempre priorize "registrar_pagamento" ou "registrar_recebimento"!`,
         },
       ],
     },
@@ -4230,28 +4267,11 @@ const buildIntentPrompt = (text) => {
       content: [
         {
           type: "text",
-          text:
-            `Opções válidas: ${options}.
+          text: `Opções válidas: ${options}
 
-` +
-            "📋 EXEMPLOS:
+Mensagem do usuário: "${text}"
 
-" +
-            "GASTOS: \"quanto gastei\", \"meus gastos\", \"despesas\" -> relatorio_pagamentos_mes
-" +
-            "RECEBIMENTOS: \"quanto recebi\", \"minhas entradas\", \"ganhos\" -> relatorio_recebimentos_mes
-" +
-            "PENDENTES: \"contas pendentes\", \"o que vence\", \"minhas contas\" -> relatorio_contas_pagar_mes
-" +
-            "COMPLETO: \"resumo geral\", \"visão geral\", \"balanço\" -> relatorio_completo
-" +
-            "LISTAR: \"listar pendentes\", \"mostrar pendências\" -> listar_pendentes
-" +
-            "REGISTRAR: \"paguei 50\", \"gastei 100\", \"recebi 200\" -> registrar_pagamento ou registrar_recebimento
-
-" +
-            `Mensagem: "${text}"
-Responda SOMENTE com uma das opções.`,
+Responda SOMENTE com o slug da intenção mais adequada.`,
         },
       ],
     },
