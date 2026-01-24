@@ -3648,6 +3648,7 @@ async function scheduleNextFixedOccurrence(row) {
     valor: getVal(row, "valor"),
     vencimento_iso: nextDue.toISOString(),
     vencimento_br: formatBRDate(nextDue),
+    data: nextDue,
     tipo_pagamento: getVal(row, "tipo_pagamento") || "",
     codigo_pagamento: "",
     status: "pendente",
@@ -4088,7 +4089,7 @@ const parseFixedAccountCommand = (text) => {
 
   if (!recurrence) return null;
 
-  const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
+  const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   const startDate = dateMatch ? parseDateToken(dateMatch[1]) : null;
 
   if (recurrence.type === "monthly") {
@@ -4174,6 +4175,7 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
     valor: parsed.valor,
     vencimento_iso: due.toISOString(),
     vencimento_br: formatBRDate(due),
+    data: due,
     tipo_pagamento: parsed.tipoPagamento || "",
     codigo_pagamento: "",
     status: "pendente",
