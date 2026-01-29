@@ -2679,8 +2679,13 @@ const createRow = async (payload) => {
 
 const deleteRow = async (row) => {
   if (!row) return;
-  if (DEBUG_SHEETS) console.log("[Sheets] Removing row", getVal(row, "row_id"));
-  if (typeof row.delete === "function") await row.delete();
+  try {
+    if (DEBUG_SHEETS) console.log("[Sheets] Removing row", getVal(row, "row_id"));
+    if (typeof row.delete === "function") await row.delete();
+  } catch (error) {
+    console.error("[Sheets] Erro ao excluir linha:", error.message);
+    throw error; // Re-throw para que o caller saiba que falhou
+  }
 };
 
 const generateRowId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3283,14 +3288,41 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
     await sendText(fromRaw, "Nenhum lançamento selecionado para excluir.");
     return true;
   }
-  await deleteRow(currentItem.row);
-  await sendText(
-    fromRaw,
-    "🗑 Lançamento excluído com sucesso!\n\n💡 Dica: envie *Meus lançamentos* para visualizar sua lista atualizada."
-  );
+
+  // Tenta excluir com tratamento de erro
+  try {
+    await deleteRow(currentItem.row);
+
+    // Mensagem de sucesso
+    const totalQueue = state.queue?.length || 0;
+    const isLast = (currentIndex + 1) >= totalQueue;
+
+    if (totalQueue === 1 || isLast) {
+      await sendText(fromRaw, "🗑 Lançamento excluído com sucesso!");
+    } else {
+      // Se tem mais, envia mensagem compacta
+      await sendText(fromRaw, `🗑 Excluído (${currentIndex + 1}/${totalQueue})`);
+    }
+
+    // Pequeno delay para evitar rate limit em exclusões múltiplas
+    if (!isLast && totalQueue > 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  } catch (error) {
+    console.error("[Delete] Erro ao excluir lançamento:", error.message);
+    sessionDelete.delete(userNorm);
+    await sendText(fromRaw, `❌ Erro ao excluir lançamento. Tente novamente.\n\nDetalhes: ${error.message}`);
+    return true;
+  }
+
   const nextIndex = currentIndex + 1;
   if (!state.queue || nextIndex >= state.queue.length) {
     sessionDelete.delete(userNorm);
+
+    // Mensagem final consolidada para múltiplas exclusões
+    if (state.queue?.length > 1) {
+      await sendText(fromRaw, `✅ ${state.queue.length} lançamentos excluídos com sucesso!\n\n💡 Envie *Meus lançamentos* para ver a lista atualizada.`);
+    }
     return true;
   }
   setDeleteState(userNorm, {
