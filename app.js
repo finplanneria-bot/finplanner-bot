@@ -5109,6 +5109,11 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
 
 async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+
+  // Limpa cache de usuários para garantir dados frescos do cron
+  usuarioStatusCache.clear();
+  console.log("[CRON] Cleared usuarioStatusCache to ensure fresh data");
+
   const reasons = {
     invalid_date: 0,
     future_due: 0,
@@ -5200,13 +5205,27 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         skippedCount += 1;
         continue;
       }
+
+      console.log("[CRON] Checking user:", {
+        userNorm,
+        to,
+        itemsCount: items.length,
+      });
+
       const ativo = await isUsuarioAtivo(userNorm);
       if (!ativo) {
-        console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
+        console.log("⛔ Cron skip (plano inativo ou não cadastrado):", {
+          userNorm,
+          to,
+          itens: items.length,
+          reason: "isUsuarioAtivo returned false"
+        });
         reasons.inactive_plan += 1;
         skippedCount += 1;
         continue;
       }
+
+      console.log("✅ User is active, preparing reminder:", { userNorm, to });
 
       const pagar = items
         .filter((item) => item.kind === "pagar")
