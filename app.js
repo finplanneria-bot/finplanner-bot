@@ -4454,6 +4454,22 @@ async function handleInteractiveMessage(from, payload) {
     storedLastInteractionISO: interactionInfo.lastIso,
   });
   recordUserInteraction(userNorm);
+
+  // 🔒 VALIDAÇÃO DE ACESSO: Bloqueia usuários não ativos
+  if (!isAdminUser(userNorm)) {
+    const active = await isUsuarioAtivo(userNorm);
+    if (!active) {
+      const nome = getStoredFirstName(userNorm);
+      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
+      await sendText(
+        from,
+        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
+        { bypassWindow: true }
+      );
+      return;
+    }
+  }
+
   if (type === "button_reply") {
     const id = payload.button_reply.id;
     const payloadId = payload.button_reply?.payload;
