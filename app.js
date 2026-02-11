@@ -681,20 +681,39 @@ const loadLastInteractionFromUsuarios = async () => {
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
   const map = new Map();
+  let validCount = 0;
+  let invalidCount = 0;
   for (const row of rows) {
     const rawUser = normalizeUser(getVal(row, "user"));
     const canonical = getCanonicalUserId(rawUser);
-    if (!canonical) continue;
+    if (!canonical) {
+      invalidCount++;
+      continue;
+    }
     const lastIso = getVal(row, "last_interaction");
     const lastDate = lastIso ? new Date(lastIso) : null;
-    if (!lastDate || Number.isNaN(lastDate.getTime())) continue;
+    if (!lastDate || Number.isNaN(lastDate.getTime())) {
+      console.log("[CRON] Skipping user with invalid last_interaction:", {
+        user: rawUser,
+        last_interaction: lastIso,
+      });
+      invalidCount++;
+      continue;
+    }
     const lastMs = lastDate.getTime();
     const candidates = getUserCandidates(canonical);
     for (const candidate of candidates) {
       const prev = map.get(candidate);
       if (!prev || lastMs > prev) map.set(candidate, lastMs);
     }
+    validCount++;
   }
+  console.log("[CRON] Loaded last interactions from usuarios sheet:", {
+    totalRows: rows.length,
+    validUsers: validCount,
+    invalidUsers: invalidCount,
+    mapSize: map.size,
+  });
   return map;
 };
 
@@ -1080,7 +1099,9 @@ const withinRange = (dt, start, end) => {
 
 const parseDateToken = (token) => {
   if (!token) return null;
-  const lower = token.toLowerCase();
+  const lower = token.toLowerCase().trim();
+
+  // Palavras especiais
   if (lower === "hoje") return new Date();
   if (lower === "amanha" || lower === "amanhã") {
     const d = new Date();
@@ -1092,24 +1113,83 @@ const parseDateToken = (token) => {
     d.setDate(d.getDate() - 1);
     return d;
   }
-  const match = token.match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
-  if (match) {
-    const day = Number(match[1]);
-    const month = Number(match[2]) - 1;
-    const currentYear = new Date().getFullYear();
-    let year = currentYear;
-    if (match[3]) {
-      year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
-    } else {
-      const tentative = new Date(currentYear, month, day);
-      const now = new Date();
-      if (tentative < startOfDay(now)) {
-        year = currentYear + 1;
+
+  // "daqui a x dias" ou "daqui x dias"
+  const daquiMatch = lower.match(/daqui\s+a?\s*(\d+)\s*dias?/);
+  if (daquiMatch) {
+    const days = Number(daquiMatch[1]);
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+
+  // Formato: dd/mm/yyyy, dd/mm/yy, dd/mm, dd ou d
+  // Também aceita - no lugar de /
+  const dateMatch = token.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})|(\d{1,2})[\/-](\d{1,2})|(\d{1,2})(?![\/-])/);
+
+  if (dateMatch) {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    // Formato completo: dd/mm/yyyy ou dd/mm/yy
+    if (dateMatch[1] && dateMatch[2] && dateMatch[3]) {
+      const day = Number(dateMatch[1]);
+      const month = Number(dateMatch[2]) - 1;
+      let year = Number(dateMatch[3]);
+
+      // Se ano tem 2 dígitos, adiciona 20xx
+      if (year < 100) year += 2000;
+
+      const d = new Date(year, month, day);
+      if (!Number.isNaN(d.getTime()) && day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+        return d;
       }
     }
-    const d = new Date(year, month, day);
-    if (!Number.isNaN(d.getTime())) return d;
+
+    // Formato: dd/mm (sem ano - usa ano atual ou próximo)
+    if (dateMatch[4] && dateMatch[5]) {
+      const day = Number(dateMatch[4]);
+      const month = Number(dateMatch[5]) - 1;
+
+      if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+        let year = currentYear;
+        const tentative = new Date(year, month, day);
+
+        // Se a data já passou este ano, usa ano que vem
+        if (tentative < startOfDay(now)) {
+          year = currentYear + 1;
+        }
+
+        const d = new Date(year, month, day);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+    }
+
+    // Formato: apenas dd (usa mês e ano atuais ou próximo mês)
+    if (dateMatch[6] && !dateMatch[4] && !dateMatch[1]) {
+      const day = Number(dateMatch[6]);
+
+      if (day >= 1 && day <= 31) {
+        let month = currentMonth;
+        let year = currentYear;
+        const tentative = new Date(year, month, day);
+
+        // Se a data já passou este mês, usa próximo mês
+        if (tentative < startOfDay(now)) {
+          month += 1;
+          if (month > 11) {
+            month = 0;
+            year += 1;
+          }
+        }
+
+        const d = new Date(year, month, day);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+    }
   }
+
   return null;
 };
 
@@ -1545,9 +1625,15 @@ async function sendWA(payload, context = {}) {
     });
     return true;
   } catch (error) {
+    const errorData = error.response?.data?.error || {};
+    const errorTitle = errorData.error_data?.details || errorData.message || error.message;
+
     console.error("[WA] error", {
       kind: context.kind || payload?.type,
-      response: error.response?.data || error.message,
+      to: payload.to,
+      errorTitle,
+      errorCode: errorData.code,
+      fullResponse: error.response?.data,
     });
     return false;
   }
@@ -2347,7 +2433,7 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `👋 *Olá! Bem-vindo à FinPlanner IA*
+          ? `Olá! Bem-vindo à FinPlanner IA
 
 Sua assistente financeira pessoal! 💰
 
@@ -2356,14 +2442,12 @@ Sua assistente financeira pessoal! 💰
 ✅ Ver relatórios completos
 ✅ Acompanhar seu saldo
 
-━━━━━━━━━━━━━━━━━━━━
-💬 Toque em *Abrir menu* ou fale:
-   _"Paguei 50 no mercado"_
-   _"Quanto gastei este mês?"_
+Toque em Abrir menu ou digite o que deseja fazer!
 
 🚀 Vamos começar?`
-          : "💬 Toque em *Abrir menu* ou fale naturalmente.
-💡 Ex: _\"quero ver meu relatório\"_",
+          : `Toque em Abrir menu ou fale naturalmente.
+
+💡 Ex: _"quero ver meu relatório"_`,
       },
       action: {
         button: "Abrir menu",
@@ -2620,8 +2704,13 @@ const createRow = async (payload) => {
 
 const deleteRow = async (row) => {
   if (!row) return;
-  if (DEBUG_SHEETS) console.log("[Sheets] Removing row", getVal(row, "row_id"));
-  if (typeof row.delete === "function") await row.delete();
+  try {
+    if (DEBUG_SHEETS) console.log("[Sheets] Removing row", getVal(row, "row_id"));
+    if (typeof row.delete === "function") await row.delete();
+  } catch (error) {
+    console.error("[Sheets] Erro ao excluir linha:", error.message);
+    throw error; // Re-throw para que o caller saiba que falhou
+  }
 };
 
 const generateRowId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2780,7 +2869,7 @@ const parseRegisterText = (text) => {
   const valor = amountInfo.amount || 0;
 
   let data = null;
-  const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
+  const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   if (dateMatch) data = parseDateToken(dateMatch[1]);
 
   if (!data) {
@@ -2805,6 +2894,7 @@ const parseRegisterText = (text) => {
     descricao = descricao.replace(new RegExp(rawEscaped, "i"), "");
   }
   descricao = descricao
+    .replace(/daqui\s+a?\s*\d+\s*dias?/gi, "")
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
     .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
     .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
@@ -3223,14 +3313,41 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
     await sendText(fromRaw, "Nenhum lançamento selecionado para excluir.");
     return true;
   }
-  await deleteRow(currentItem.row);
-  await sendText(
-    fromRaw,
-    "🗑 Lançamento excluído com sucesso!\n\n💡 Dica: envie *Meus lançamentos* para visualizar sua lista atualizada."
-  );
+
+  // Tenta excluir com tratamento de erro
+  try {
+    await deleteRow(currentItem.row);
+
+    // Mensagem de sucesso
+    const totalQueue = state.queue?.length || 0;
+    const isLast = (currentIndex + 1) >= totalQueue;
+
+    if (totalQueue === 1 || isLast) {
+      await sendText(fromRaw, "🗑 Lançamento excluído com sucesso!");
+    } else {
+      // Se tem mais, envia mensagem compacta
+      await sendText(fromRaw, `🗑 Excluído (${currentIndex + 1}/${totalQueue})`);
+    }
+
+    // Pequeno delay para evitar rate limit em exclusões múltiplas
+    if (!isLast && totalQueue > 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  } catch (error) {
+    console.error("[Delete] Erro ao excluir lançamento:", error.message);
+    sessionDelete.delete(userNorm);
+    await sendText(fromRaw, `❌ Erro ao excluir lançamento. Tente novamente.\n\nDetalhes: ${error.message}`);
+    return true;
+  }
+
   const nextIndex = currentIndex + 1;
   if (!state.queue || nextIndex >= state.queue.length) {
     sessionDelete.delete(userNorm);
+
+    // Mensagem final consolidada para múltiplas exclusões
+    if (state.queue?.length > 1) {
+      await sendText(fromRaw, `✅ ${state.queue.length} lançamentos excluídos com sucesso!\n\n💡 Envie *Meus lançamentos* para ver a lista atualizada.`);
+    }
     return true;
   }
   setDeleteState(userNorm, {
@@ -3588,6 +3705,7 @@ async function scheduleNextFixedOccurrence(row) {
     valor: getVal(row, "valor"),
     vencimento_iso: nextDue.toISOString(),
     vencimento_br: formatBRDate(nextDue),
+    data: nextDue,
     tipo_pagamento: getVal(row, "tipo_pagamento") || "",
     codigo_pagamento: "",
     status: "pendente",
@@ -3663,24 +3781,17 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     const categoryInfo = getCategoryInfo(entry.categoria);
     let message = `💵 *Recebimento Registrado!*
 
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃  💰 *Valor*
-┃  ${formatCurrencyBR(entry.valor)}
-┃
-┃  ${categoryInfo.emoji} *Categoria*
-┃  ${categoryInfo.label}
-┃
-┃  🏷️ *Descrição*
-┃  ${entry.descricao}
-┃
-┃  📅 *Data*
-┃  ${formatDate(entry.data)}
-┃
-┃  ${entry.status === "recebido" ? "✓" : "⏳"} *Status*
-┃  ${statusLabel}
-┗━━━━━━━━━━━━━━━━━━━━┛
+💰 *Valor*: ${formatCurrencyBR(entry.valor)}
 
-🎯 Saldo atualizado automaticamente!`;
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${entry.descricao}
+
+📅 *Data*: ${formatBRDate(entry.vencimento_iso)}
+
+${entry.status === "recebido" ? "✓" : "⏳"} *Status*: ${statusLabel}
+
+💡 Lançamento adicionado!`;
     if (options.autoStatus) {
       message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
@@ -3689,25 +3800,17 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     const categoryInfo = getCategoryInfo(entry.categoria);
     let message = `✅ *Pagamento Registrado!*
 
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃  💸 *Valor*
-┃  ${formatCurrencyBR(entry.valor)}
-┃
-┃  ${categoryInfo.emoji} *Categoria*
-┃  ${categoryInfo.label}
-┃
-┃  🏷️ *Descrição*
-┃  ${entry.descricao}
-┃
-┃  📅 *Vencimento*
-┃  ${formatDate(entry.data_vencimento || entry.data)}
-┃
-┃  ${entry.status === "pago" ? "✓" : "⏳"} *Status*
-┃  ${statusLabel}
-┗━━━━━━━━━━━━━━━━━━━━┛
+💸 *Valor*: ${formatCurrencyBR(entry.valor)}
 
-💡 Lançamento adicionado ao
-relatório do período!`;
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${entry.descricao}
+
+📅 *Vencimento*: ${formatBRDate(entry.vencimento_iso)}
+
+${entry.status === "pago" ? "✓" : "⏳"} *Status*: ${statusLabel}
+
+💡 Lançamento adicionado!`;
     if (options.autoStatus) {
       message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
     }
@@ -3748,7 +3851,7 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   entry.status = status;
   entry.timestamp = new Date().toISOString();
   sessionStatusConfirm.delete(userNorm);
-  await finalizeRegisterEntry(fromRaw, userNorm, entry, { statusSource: "user_confirm", autoStatus: false });
+  await finalizeRegisterEntry(fromRaw, userNorm, entry, { statusSource: "user_confirm", autoStatus: true });
 }
 
 async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
@@ -3943,6 +4046,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     valor: parsed.valor,
     vencimento_iso: iso,
     vencimento_br: formatBRDate(data),
+    data: data,
     tipo_pagamento: parsed.tipoPagamento || "",
     codigo_pagamento: "",
     status: parsed.status || "pendente",
@@ -3987,8 +4091,7 @@ const computeInitialFixedDueDate = (recurrence, startDate) => {
 const parseFixedAccountCommand = (text) => {
   const original = (text || "").toString();
   if (!original.trim()) return null;
-  const amountInfo = extractAmountFromText(original);
-  if (!amountInfo.amount) return null;
+
   const normalized = normalizeDiacritics(original).toLowerCase();
 
   const removalPatterns = [];
@@ -3996,6 +4099,7 @@ const parseFixedAccountCommand = (text) => {
     if (match && match[0]) removalPatterns.push(match[0]);
   };
 
+  // Primeiro detecta a recorrência
   let recurrence = null;
   const dayMatch = normalized.match(/todo\s+dia\s+(\d{1,2})/);
   if (dayMatch) {
@@ -4042,7 +4146,30 @@ const parseFixedAccountCommand = (text) => {
 
   if (!recurrence) return null;
 
-  const dateMatch = original.match(new RegExp(`(hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
+  // Remove padrões de recorrência ANTES de extrair o valor
+  let cleanedText = original;
+  removalPatterns.forEach((pattern) => {
+    if (!pattern) return;
+    const regex = new RegExp(escapeRegex(pattern), "gi");
+    cleanedText = cleanedText.replace(regex, " ");
+  });
+  cleanedText = cleanedText
+    .replace(/todo\s+dia\s+\d{1,2}/gi, " ")
+    .replace(/\btodo\s+dia\b/gi, " ")
+    .replace(/\bdia\s+\d{1,2}\b/gi, " ")
+    .replace(/a\s+cada\s+\d+\s+dias?/gi, " ")
+    .replace(/a\s+cada\s+\d+\s+semanas?/gi, " ")
+    .replace(/\bmensal\b/gi, " ")
+    .replace(/\bsemanal\b/gi, " ")
+    .replace(/\bquinzenal\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Agora extrai o valor do texto limpo
+  const amountInfo = extractAmountFromText(cleanedText);
+  if (!amountInfo.amount) return null;
+
+  const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
   const startDate = dateMatch ? parseDateToken(dateMatch[1]) : null;
 
   if (recurrence.type === "monthly") {
@@ -4066,32 +4193,24 @@ const parseFixedAccountCommand = (text) => {
   const dueDate = computeInitialFixedDueDate(recurrence, startDate);
   if (!dueDate) return null;
 
-  let descricao = original;
+  // Limpa a descrição (já tem recorrência removida do cleanedText)
+  let descricao = cleanedText;
   if (amountInfo.raw) {
-    const rawRegex = new RegExp(escapeRegex(amountInfo.raw), "i");
+    const rawRegex = new RegExp(escapeRegex(amountInfo.raw), "gi");
     descricao = descricao.replace(rawRegex, " ");
   }
   if (dateMatch && dateMatch[1]) {
     const dateRegex = new RegExp(escapeRegex(dateMatch[1]), "i");
     descricao = descricao.replace(dateRegex, " ");
   }
-  removalPatterns.forEach((pattern) => {
-    if (!pattern) return;
-    const regex = new RegExp(escapeRegex(pattern), "gi");
-    descricao = descricao.replace(regex, " ");
-  });
   descricao = descricao
     .replace(/conta\s+fixa/gi, " ")
     .replace(/\bfixa\b/gi, " ")
     .replace(/\brecorrente\b/gi, " ")
-    .replace(/a\s+cada\s+\d+\s+dias?/gi, " ")
-    .replace(/a\s+cada\s+\d+\s+semanas?/gi, " ")
-    .replace(/todo\s+dia\s+\d{1,2}/gi, " ")
-    .replace(/toda\s+semana/gi, " ")
-    .replace(/todo\s+mes/gi, " ")
-    .replace(/\bmensal\b/gi, " ")
-    .replace(/\bquinzenal\b/gi, " ")
     .replace(/\bpagar\b/gi, " ")
+    .replace(/\btodo\b/gi, " ")
+    .replace(/\bdia\b/gi, " ")
+    .replace(/\bcada\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!descricao) descricao = "Conta fixa";
@@ -4128,6 +4247,7 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
     valor: parsed.valor,
     vencimento_iso: due.toISOString(),
     vencimento_br: formatBRDate(due),
+    data: due,
     tipo_pagamento: parsed.tipoPagamento || "",
     codigo_pagamento: "",
     status: "pendente",
@@ -4141,12 +4261,23 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
     recorrencia_valor: parsed.recurrence.value?.toString() || "",
   };
   await createRow(payload);
-  const resumo = formatEntrySummary(payload);
+  const categoryInfo = getCategoryInfo(payload.categoria);
   const recurrenceLabel = describeRecurrence(payload);
-  let message = `♻ Conta fixa cadastrada com sucesso!\n\n${resumo}`;
-  if (recurrenceLabel) message += `\n\n🔄 Recorrência: ${recurrenceLabel}`;
-  message += `\n\n📅 Próximo vencimento: ${formatBRDate(due)}.`;
-  message += `\n\n✅ Para confirmar pagamento depois, envie "Confirmar 1".`;
+
+  let message = `♻️ *Conta Fixa Cadastrada!*
+
+💸 *Valor*: ${formatCurrencyBR(payload.valor)}
+
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${payload.descricao}
+
+📅 *Próximo Vencimento*: ${formatBRDate(due)}
+
+🔄 *Recorrência*: ${recurrenceLabel}
+
+💡 A próxima cobrança será gerada automaticamente!`;
+
   await sendText(fromRaw, message);
   if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
     await promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
@@ -4221,7 +4352,44 @@ const buildIntentPrompt = (text) => {
       content: [
         {
           type: "text",
-          text: "Você é um classificador de intenções para um assistente financeiro no WhatsApp. Responda apenas com uma das intenções disponíveis, sem explicações. Seja flexível com variações naturais da linguagem.",
+          text: `Você é um assistente de IA especializado em detectar intenções de mensagens financeiras no WhatsApp.
+
+🎯 OBJETIVO: Classificar a mensagem do usuário em UMA das intenções disponíveis.
+
+⚠️ REGRAS IMPORTANTES:
+1. Responda APENAS com o slug da intenção (ex: "registrar_pagamento")
+2. Seja MUITO flexível - usuários falam naturalmente, não seguem scripts
+3. Entenda contexto e sinônimos (ex: "comprei" = "paguei" = "gastei")
+4. Para valores numéricos, sempre prefira "registrar_pagamento" ou "registrar_recebimento"
+5. Use "desconhecido" SOMENTE se realmente não souber
+
+📊 CATEGORIAS PRINCIPAIS:
+
+🔹 REGISTROS (maior prioridade quando há valor):
+   • registrar_pagamento: "paguei 50", "gastei 100", "comprei X por Y"
+   • registrar_recebimento: "recebi 200", "vendi por 150", "ganhei X"
+
+🔹 RELATÓRIOS:
+   • relatorio_pagamentos_mes: "quanto gastei", "meus gastos este mês"
+   • relatorio_recebimentos_mes: "quanto recebi", "minhas entradas"
+   • relatorio_contas_pagar_mes: "contas pendentes", "o que devo"
+   • relatorio_completo: "resumo geral", "balanço do mês"
+
+🔹 LISTAGENS:
+   • listar_pendentes: "mostrar pendentes", "o que vence"
+   • listar_lancamentos: "meus lançamentos", "histórico"
+
+🔹 AÇÕES:
+   • editar: "editar lançamento", "alterar registro"
+   • excluir: "excluir lançamento", "apagar registro"
+   • contas_fixas: "contas fixas", "cadastrar conta fixa"
+
+🔹 NAVEGAÇÃO:
+   • boas_vindas: "oi", "olá", "bom dia"
+   • mostrar_menu: "menu", "opções"
+   • relatorios_menu: "relatórios", "ver relatórios"
+
+✨ DICA: Se houver VALOR MONETÁRIO na mensagem, sempre priorize "registrar_pagamento" ou "registrar_recebimento"!`,
         },
       ],
     },
@@ -4230,28 +4398,11 @@ const buildIntentPrompt = (text) => {
       content: [
         {
           type: "text",
-          text:
-            `Opções válidas: ${options}.
+          text: `Opções válidas: ${options}
 
-` +
-            "📋 EXEMPLOS:
+Mensagem do usuário: "${text}"
 
-" +
-            "GASTOS: \"quanto gastei\", \"meus gastos\", \"despesas\" -> relatorio_pagamentos_mes
-" +
-            "RECEBIMENTOS: \"quanto recebi\", \"minhas entradas\", \"ganhos\" -> relatorio_recebimentos_mes
-" +
-            "PENDENTES: \"contas pendentes\", \"o que vence\", \"minhas contas\" -> relatorio_contas_pagar_mes
-" +
-            "COMPLETO: \"resumo geral\", \"visão geral\", \"balanço\" -> relatorio_completo
-" +
-            "LISTAR: \"listar pendentes\", \"mostrar pendências\" -> listar_pendentes
-" +
-            "REGISTRAR: \"paguei 50\", \"gastei 100\", \"recebi 200\" -> registrar_pagamento ou registrar_recebimento
-
-" +
-            `Mensagem: "${text}"
-Responda SOMENTE com uma das opções.`,
+Responda SOMENTE com o slug da intenção mais adequada.`,
         },
       ],
     },
@@ -4303,6 +4454,22 @@ async function handleInteractiveMessage(from, payload) {
     storedLastInteractionISO: interactionInfo.lastIso,
   });
   recordUserInteraction(userNorm);
+
+  // 🔒 VALIDAÇÃO DE ACESSO: Bloqueia usuários não ativos
+  if (!isAdminUser(userNorm)) {
+    const active = await isUsuarioAtivo(userNorm);
+    if (!active) {
+      const nome = getStoredFirstName(userNorm);
+      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
+      await sendText(
+        from,
+        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
+        { bypassWindow: true }
+      );
+      return;
+    }
+  }
+
   if (type === "button_reply") {
     const id = payload.button_reply.id;
     const payloadId = payload.button_reply?.payload;
@@ -4643,6 +4810,13 @@ async function handleUserText(fromRaw, text) {
     return;
   }
 
+  // Verificar se é uma conta fixa ANTES de detectar intenção
+  const fixedParsed = parseFixedAccountCommand(text);
+  if (fixedParsed) {
+    await registerFixedAccount(fromRaw, userNorm, fixedParsed);
+    return;
+  }
+
   const intent = await detectIntent(trimmed);
   switch (intent) {
     case "boas_vindas":
@@ -4712,10 +4886,7 @@ async function handleUserText(fromRaw, text) {
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
       break;
     default:
-      const fixedParsed = parseFixedAccountCommand(text);
-      if (fixedParsed) {
-        await registerFixedAccount(fromRaw, userNorm, fixedParsed);
-      } else if (extractAmountFromText(trimmed).amount) {
+      if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
       } else {
         await sendMainMenu(fromRaw);
@@ -4891,11 +5062,32 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
           }
 
           for (const status of statuses) {
-            if (status.status === "failed" && ADMIN_WA_NUMBER) {
-              await sendText(
-                ADMIN_WA_NUMBER,
-                `⚠️ Falha ao entregar mensagem para ${status.recipient_id}: ${status.errors?.[0]?.title || ""}`
-              );
+            if (status.status === "failed") {
+              const errorTitle = status.errors?.[0]?.title || "";
+              const errorCode = status.errors?.[0]?.code || "";
+              const recipientId = status.recipient_id;
+
+              // Log todos os erros para análise
+              console.log("[Webhook] Message delivery failed:", {
+                recipient: recipientId,
+                error: errorTitle,
+                code: errorCode,
+                details: status.errors?.[0]
+              });
+
+              // Re-engagement errors são esperados (usuários inativos)
+              // Não enviar notificação ao admin para evitar spam
+              const isReengagementError =
+                errorTitle.toLowerCase().includes("re-engagement") ||
+                errorTitle.toLowerCase().includes("reengagement") ||
+                errorCode === 131026; // Código oficial do WhatsApp para re-engagement
+
+              if (!isReengagementError && ADMIN_WA_NUMBER) {
+                await sendText(
+                  ADMIN_WA_NUMBER,
+                  `⚠️ Falha ao entregar mensagem para ${recipientId}: ${errorTitle}`
+                );
+              }
             }
           }
 
@@ -4933,6 +5125,11 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
 
 async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+
+  // Limpa cache de usuários para garantir dados frescos do cron
+  usuarioStatusCache.clear();
+  console.log("[CRON] Cleared usuarioStatusCache to ensure fresh data");
+
   const reasons = {
     invalid_date: 0,
     future_due: 0,
@@ -5024,13 +5221,27 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         skippedCount += 1;
         continue;
       }
+
+      console.log("[CRON] Checking user:", {
+        userNorm,
+        to,
+        itemsCount: items.length,
+      });
+
       const ativo = await isUsuarioAtivo(userNorm);
       if (!ativo) {
-        console.log("⛔ Cron skip (plano inativo):", { userNorm, to, itens: items.length });
+        console.log("⛔ Cron skip (plano inativo ou não cadastrado):", {
+          userNorm,
+          to,
+          itens: items.length,
+          reason: "isUsuarioAtivo returned false"
+        });
         reasons.inactive_plan += 1;
         skippedCount += 1;
         continue;
       }
+
+      console.log("✅ User is active, preparing reminder:", { userNorm, to });
 
       const pagar = items
         .filter((item) => item.kind === "pagar")
@@ -5072,12 +5283,16 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       const nowMs = Date.now();
       const diffMinutes =
         typeof interactionInfo.lastMs === "number" ? Math.round((nowMs - interactionInfo.lastMs) / 60000) : null;
+      const isAdmin = isAdminUser(userNorm);
       const withinWindow =
-        typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS;
+        isAdmin || // Admin sempre tem janela aberta (para testes)
+        (typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS);
       console.log("[CRON] window check", {
+        userNorm,
         canonicalUserId: interactionInfo.canonicalUserId,
         lastInteractionISO: interactionInfo.lastIso,
         diffMinutes,
+        isAdmin,
         withinWindow,
       });
       console.log("⏰ Cron send attempt:", {
