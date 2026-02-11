@@ -681,20 +681,39 @@ const loadLastInteractionFromUsuarios = async () => {
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios-last-interaction");
   const map = new Map();
+  let validCount = 0;
+  let invalidCount = 0;
   for (const row of rows) {
     const rawUser = normalizeUser(getVal(row, "user"));
     const canonical = getCanonicalUserId(rawUser);
-    if (!canonical) continue;
+    if (!canonical) {
+      invalidCount++;
+      continue;
+    }
     const lastIso = getVal(row, "last_interaction");
     const lastDate = lastIso ? new Date(lastIso) : null;
-    if (!lastDate || Number.isNaN(lastDate.getTime())) continue;
+    if (!lastDate || Number.isNaN(lastDate.getTime())) {
+      console.log("[CRON] Skipping user with invalid last_interaction:", {
+        user: rawUser,
+        last_interaction: lastIso,
+      });
+      invalidCount++;
+      continue;
+    }
     const lastMs = lastDate.getTime();
     const candidates = getUserCandidates(canonical);
     for (const candidate of candidates) {
       const prev = map.get(candidate);
       if (!prev || lastMs > prev) map.set(candidate, lastMs);
     }
+    validCount++;
   }
+  console.log("[CRON] Loaded last interactions from usuarios sheet:", {
+    totalRows: rows.length,
+    validUsers: validCount,
+    invalidUsers: invalidCount,
+    mapSize: map.size,
+  });
   return map;
 };
 
@@ -5229,12 +5248,16 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       const nowMs = Date.now();
       const diffMinutes =
         typeof interactionInfo.lastMs === "number" ? Math.round((nowMs - interactionInfo.lastMs) / 60000) : null;
+      const isAdmin = isAdminUser(userNorm);
       const withinWindow =
-        typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS;
+        isAdmin || // Admin sempre tem janela aberta (para testes)
+        (typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS);
       console.log("[CRON] window check", {
+        userNorm,
         canonicalUserId: interactionInfo.canonicalUserId,
         lastInteractionISO: interactionInfo.lastIso,
         diffMinutes,
+        isAdmin,
         withinWindow,
       });
       console.log("⏰ Cron send attempt:", {
