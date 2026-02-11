@@ -1606,9 +1606,15 @@ async function sendWA(payload, context = {}) {
     });
     return true;
   } catch (error) {
+    const errorData = error.response?.data?.error || {};
+    const errorTitle = errorData.error_data?.details || errorData.message || error.message;
+
     console.error("[WA] error", {
       kind: context.kind || payload?.type,
-      response: error.response?.data || error.message,
+      to: payload.to,
+      errorTitle,
+      errorCode: errorData.code,
+      fullResponse: error.response?.data,
     });
     return false;
   }
@@ -5021,11 +5027,32 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
           }
 
           for (const status of statuses) {
-            if (status.status === "failed" && ADMIN_WA_NUMBER) {
-              await sendText(
-                ADMIN_WA_NUMBER,
-                `⚠️ Falha ao entregar mensagem para ${status.recipient_id}: ${status.errors?.[0]?.title || ""}`
-              );
+            if (status.status === "failed") {
+              const errorTitle = status.errors?.[0]?.title || "";
+              const errorCode = status.errors?.[0]?.code || "";
+              const recipientId = status.recipient_id;
+
+              // Log todos os erros para análise
+              console.log("[Webhook] Message delivery failed:", {
+                recipient: recipientId,
+                error: errorTitle,
+                code: errorCode,
+                details: status.errors?.[0]
+              });
+
+              // Re-engagement errors são esperados (usuários inativos)
+              // Não enviar notificação ao admin para evitar spam
+              const isReengagementError =
+                errorTitle.toLowerCase().includes("re-engagement") ||
+                errorTitle.toLowerCase().includes("reengagement") ||
+                errorCode === 131026; // Código oficial do WhatsApp para re-engagement
+
+              if (!isReengagementError && ADMIN_WA_NUMBER) {
+                await sendText(
+                  ADMIN_WA_NUMBER,
+                  `⚠️ Falha ao entregar mensagem para ${recipientId}: ${errorTitle}`
+                );
+              }
             }
           }
 
