@@ -5245,7 +5245,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         }
       }
 
-      console.log("✅ User is active, preparing reminder:", { userNorm, to, isAdmin: userIsAdmin });
+      console.log("✅ User is active, preparing reminder:", { userNorm, to, isAdmin: userIsAdmin, willCheckWindow: true });
 
       const pagar = items
         .filter((item) => item.kind === "pagar")
@@ -5287,16 +5287,15 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       const nowMs = Date.now();
       const diffMinutes =
         typeof interactionInfo.lastMs === "number" ? Math.round((nowMs - interactionInfo.lastMs) / 60000) : null;
-      const isAdmin = isAdminUser(userNorm);
+      // ✅ Cron usa janela REAL mesmo para admin (template funciona sempre)
       const withinWindow =
-        isAdmin || // Admin sempre tem janela aberta (para testes)
-        (typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS);
+        typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS;
       console.log("[CRON] window check", {
         userNorm,
         canonicalUserId: interactionInfo.canonicalUserId,
         lastInteractionISO: interactionInfo.lastIso,
         diffMinutes,
-        isAdmin,
+        isAdmin: userIsAdmin,
         withinWindow,
       });
       console.log("⏰ Cron send attempt:", {
@@ -5306,6 +5305,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         pagar: pagar.length,
         receber: receber.length,
         withinWindow,
+        isAdmin: userIsAdmin,
       });
       let delivered = false;
       let threw = false;
