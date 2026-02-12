@@ -5228,20 +5228,24 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         itemsCount: items.length,
       });
 
-      const ativo = await isUsuarioAtivo(userNorm);
-      if (!ativo) {
-        console.log("⛔ Cron skip (plano inativo ou não cadastrado):", {
-          userNorm,
-          to,
-          itens: items.length,
-          reason: "isUsuarioAtivo returned false"
-        });
-        reasons.inactive_plan += 1;
-        skippedCount += 1;
-        continue;
+      // 🔒 Validação de acesso: Admin tem bypass, outros precisam de plano ativo
+      const userIsAdmin = isAdminUser(userNorm);
+      if (!userIsAdmin) {
+        const ativo = await isUsuarioAtivo(userNorm);
+        if (!ativo) {
+          console.log("⛔ Cron skip (plano inativo ou não cadastrado):", {
+            userNorm,
+            to,
+            itens: items.length,
+            reason: "isUsuarioAtivo returned false"
+          });
+          reasons.inactive_plan += 1;
+          skippedCount += 1;
+          continue;
+        }
       }
 
-      console.log("✅ User is active, preparing reminder:", { userNorm, to });
+      console.log("✅ User is active, preparing reminder:", { userNorm, to, isAdmin: userIsAdmin });
 
       const pagar = items
         .filter((item) => item.kind === "pagar")
