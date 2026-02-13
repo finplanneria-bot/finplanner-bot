@@ -5310,6 +5310,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       let delivered = false;
       let threw = false;
       let usedTemplate = false;
+      let usedFallback = false;
       try {
         if (withinWindow) {
           delivered = await sendInteractiveReminder(to, userNorm);
@@ -5327,14 +5328,45 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
             reasons.sent_template_ok += 1;
           }
         }
+
+        // 🔧 FALLBACK CRÍTICO: Admin sempre recebe, mesmo se template falhar
+        if (!delivered && userIsAdmin) {
+          console.log("🚨 Template failed for admin, using text fallback with bypassWindow");
+          usedFallback = true;
+          const fallbackSent = await sendText(to, message, { bypassWindow: true });
+          if (fallbackSent && !fallbackSent.skipped) {
+            delivered = true;
+            sentCount += 1;
+            reasons.sent_ok += 1;
+            reasons.sent_text_ok += 1;
+          }
+        }
       } catch (error) {
         threw = true;
         errorCount += 1;
         reasons.send_error += 1;
         console.error("Erro no envio do CRON:", error.message);
+
+        // 🔧 FALLBACK EM CASO DE ERRO: Admin sempre recebe
+        if (userIsAdmin && !delivered) {
+          try {
+            console.log("🚨 Error sending to admin, trying text fallback");
+            usedFallback = true;
+            const fallbackSent = await sendText(to, message, { bypassWindow: true });
+            if (fallbackSent && !fallbackSent.skipped) {
+              delivered = true;
+              sentCount += 1;
+              reasons.sent_ok += 1;
+              reasons.sent_text_ok += 1;
+              threw = false; // Reset error flag
+            }
+          } catch (fallbackError) {
+            console.error("Erro no fallback do CRON para admin:", fallbackError.message);
+          }
+        }
       }
       if (!delivered) {
-        console.log("⚠️ Cron delivery failed:", { userNorm, to, delivered, withinWindow, usedTemplate });
+        console.log("⚠️ Cron delivery failed:", { userNorm, to, delivered, withinWindow, usedTemplate, usedFallback, isAdmin: userIsAdmin });
         if (!threw) {
           errorCount += 1;
           reasons.send_error += 1;
@@ -5342,7 +5374,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         skippedCount += 1;
         continue;
       }
-      console.log("✅ Cron delivery ok:", { userNorm, to, via: usedTemplate ? "template" : "text" });
+      console.log("✅ Cron delivery ok:", { userNorm, to, via: usedFallback ? "text-fallback" : (usedTemplate ? "template" : "interactive") });
 
       for (const item of items) {
         const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
