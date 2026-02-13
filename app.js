@@ -5329,9 +5329,10 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
           }
         }
 
-        // 🔧 FALLBACK CRÍTICO: Admin sempre recebe, mesmo se template falhar
-        if (!delivered && userIsAdmin) {
-          console.log("🚨 Template failed for admin, using text fallback with bypassWindow");
+        // 🔧 FALLBACK CRÍTICO: Se template/interactive falhar, usa texto com bypassWindow
+        // TODOS os usuários ativos receberão, não apenas admin
+        if (!delivered) {
+          console.log("🚨 Template/interactive failed, using text fallback with bypassWindow:", { userNorm, to, isAdmin: userIsAdmin });
           usedFallback = true;
           const fallbackSent = await sendText(to, message, { bypassWindow: true });
           if (fallbackSent && !fallbackSent.skipped) {
@@ -5347,10 +5348,10 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         reasons.send_error += 1;
         console.error("Erro no envio do CRON:", error.message);
 
-        // 🔧 FALLBACK EM CASO DE ERRO: Admin sempre recebe
-        if (userIsAdmin && !delivered) {
+        // 🔧 FALLBACK EM CASO DE ERRO: TODOS usuários ativos tentam fallback
+        if (!delivered) {
           try {
-            console.log("🚨 Error sending to admin, trying text fallback");
+            console.log("🚨 Error sending, trying text fallback:", { userNorm, to, isAdmin: userIsAdmin });
             usedFallback = true;
             const fallbackSent = await sendText(to, message, { bypassWindow: true });
             if (fallbackSent && !fallbackSent.skipped) {
@@ -5361,7 +5362,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
               threw = false; // Reset error flag
             }
           } catch (fallbackError) {
-            console.error("Erro no fallback do CRON para admin:", fallbackError.message);
+            console.error("Erro no fallback do CRON:", { userNorm, to, error: fallbackError.message });
           }
         }
       }
