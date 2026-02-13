@@ -5228,20 +5228,24 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         itemsCount: items.length,
       });
 
-      const ativo = await isUsuarioAtivo(userNorm);
-      if (!ativo) {
-        console.log("⛔ Cron skip (plano inativo ou não cadastrado):", {
-          userNorm,
-          to,
-          itens: items.length,
-          reason: "isUsuarioAtivo returned false"
-        });
-        reasons.inactive_plan += 1;
-        skippedCount += 1;
-        continue;
+      // 🔒 Validação de acesso: Admin tem bypass, outros precisam de plano ativo
+      const userIsAdmin = isAdminUser(userNorm);
+      if (!userIsAdmin) {
+        const ativo = await isUsuarioAtivo(userNorm);
+        if (!ativo) {
+          console.log("⛔ Cron skip (plano inativo ou não cadastrado):", {
+            userNorm,
+            to,
+            itens: items.length,
+            reason: "isUsuarioAtivo returned false"
+          });
+          reasons.inactive_plan += 1;
+          skippedCount += 1;
+          continue;
+        }
       }
 
-      console.log("✅ User is active, preparing reminder:", { userNorm, to });
+      console.log("✅ User is active, preparing reminder:", { userNorm, to, isAdmin: userIsAdmin, willCheckWindow: true });
 
       const pagar = items
         .filter((item) => item.kind === "pagar")
@@ -5283,16 +5287,15 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
       const nowMs = Date.now();
       const diffMinutes =
         typeof interactionInfo.lastMs === "number" ? Math.round((nowMs - interactionInfo.lastMs) / 60000) : null;
-      const isAdmin = isAdminUser(userNorm);
+      // ✅ Cron usa janela REAL mesmo para admin (template funciona sempre)
       const withinWindow =
-        isAdmin || // Admin sempre tem janela aberta (para testes)
-        (typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS);
+        typeof interactionInfo.lastMs === "number" && nowMs - interactionInfo.lastMs <= WA_SESSION_WINDOW_MS;
       console.log("[CRON] window check", {
         userNorm,
         canonicalUserId: interactionInfo.canonicalUserId,
         lastInteractionISO: interactionInfo.lastIso,
         diffMinutes,
-        isAdmin,
+        isAdmin: userIsAdmin,
         withinWindow,
       });
       console.log("⏰ Cron send attempt:", {
@@ -5302,10 +5305,12 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         pagar: pagar.length,
         receber: receber.length,
         withinWindow,
+        isAdmin: userIsAdmin,
       });
       let delivered = false;
       let threw = false;
       let usedTemplate = false;
+      let usedFallback = false;
       try {
         if (withinWindow) {
           delivered = await sendInteractiveReminder(to, userNorm);
@@ -5323,14 +5328,46 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
             reasons.sent_template_ok += 1;
           }
         }
+
+        // 🔧 FALLBACK CRÍTICO: Se template/interactive falhar, usa texto com bypassWindow
+        // TODOS os usuários ativos receberão, não apenas admin
+        if (!delivered) {
+          console.log("🚨 Template/interactive failed, using text fallback with bypassWindow:", { userNorm, to, isAdmin: userIsAdmin });
+          usedFallback = true;
+          const fallbackSent = await sendText(to, message, { bypassWindow: true });
+          if (fallbackSent && !fallbackSent.skipped) {
+            delivered = true;
+            sentCount += 1;
+            reasons.sent_ok += 1;
+            reasons.sent_text_ok += 1;
+          }
+        }
       } catch (error) {
         threw = true;
         errorCount += 1;
         reasons.send_error += 1;
         console.error("Erro no envio do CRON:", error.message);
+
+        // 🔧 FALLBACK EM CASO DE ERRO: TODOS usuários ativos tentam fallback
+        if (!delivered) {
+          try {
+            console.log("🚨 Error sending, trying text fallback:", { userNorm, to, isAdmin: userIsAdmin });
+            usedFallback = true;
+            const fallbackSent = await sendText(to, message, { bypassWindow: true });
+            if (fallbackSent && !fallbackSent.skipped) {
+              delivered = true;
+              sentCount += 1;
+              reasons.sent_ok += 1;
+              reasons.sent_text_ok += 1;
+              threw = false; // Reset error flag
+            }
+          } catch (fallbackError) {
+            console.error("Erro no fallback do CRON:", { userNorm, to, error: fallbackError.message });
+          }
+        }
       }
       if (!delivered) {
-        console.log("⚠️ Cron delivery failed:", { userNorm, to, delivered, withinWindow, usedTemplate });
+        console.log("⚠️ Cron delivery failed:", { userNorm, to, delivered, withinWindow, usedTemplate, usedFallback, isAdmin: userIsAdmin });
         if (!threw) {
           errorCount += 1;
           reasons.send_error += 1;
@@ -5338,7 +5375,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         skippedCount += 1;
         continue;
       }
-      console.log("✅ Cron delivery ok:", { userNorm, to, via: usedTemplate ? "template" : "text" });
+      console.log("✅ Cron delivery ok:", { userNorm, to, via: usedFallback ? "text-fallback" : (usedTemplate ? "template" : "interactive") });
 
       for (const item of items) {
         const paymentType = (getVal(item.row, "tipo_pagamento") || "").toString().toLowerCase();
