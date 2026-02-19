@@ -2145,6 +2145,7 @@ const upsertUsuarioFromSubscription = async ({
   email,
   checkout_id,
   data_inicio,
+  vencimento_trial, // Data fixa de vencimento do trial (3 dias)
   ativo,
   extendVencimento = false,
 }) => {
@@ -2157,10 +2158,21 @@ const upsertUsuarioFromSubscription = async ({
   const payloadDataInicio = parseISODateSafe(data_inicio);
   const baseDataInicio = payloadDataInicio || existingDataInicio || new Date();
   const existingVencimento = getVal(target, "vencimento_plano");
-  const vencimento = extendVencimento
-    ? computeNewVencimento(existingVencimento, normalizedPlan, baseDataInicio) || existingVencimento
-    : existingVencimento || formatISODate(baseDataInicio);
-  const nowIso = formatISODate(new Date());
+
+  let vencimento;
+  if (vencimento_trial) {
+    // Checkout: usa vencimento do trial (3 dias), só sobrescreve se não houver vencimento futuro
+    const existingDate = parseISODateSafe(existingVencimento);
+    const today = startOfDay(new Date());
+    const existingIsFuture = existingDate && startOfDay(existingDate).getTime() > today.getTime();
+    vencimento = existingIsFuture ? existingVencimento : vencimento_trial;
+  } else if (extendVencimento) {
+    // Pagamento confirmado: calcula novo vencimento baseado no plano
+    vencimento = computeNewVencimento(existingVencimento, normalizedPlan, baseDataInicio) || existingVencimento;
+  } else {
+    vencimento = existingVencimento || formatISODate(baseDataInicio);
+  }
+
   const update = {
     user: userNorm,
     plano: normalizedPlan || getVal(target, "plano") || "",
@@ -2177,6 +2189,13 @@ const upsertUsuarioFromSubscription = async ({
     await target.save();
   } else {
     await sheet.addRow(update);
+  }
+  // ✅ Criar/garantir aba do usuário no Sheets automaticamente
+  try {
+    await ensureUserSheet(userNorm);
+    console.log("✅ Aba do usuário garantida:", getUserSheetName(userNorm));
+  } catch (sheetErr) {
+    console.error("⚠️ Erro ao criar aba do usuário:", userNorm, sheetErr.message);
   }
   const candidates = getUserCandidates(userNorm);
   candidates.forEach((candidate) => usuarioStatusCache.delete(candidate));
@@ -4971,23 +4990,50 @@ async function handleStripeWebhook(req, res) {
 
       const nome = session.customer_details?.name || session.customer_name || session.metadata?.nome || "";
       const email = session.customer_details?.email || session.customer_email || session.metadata?.email || "";
-      console.log("🧾 Upsert usuario:", { userNorm, plano, ativo: true });
+
+      // ✅ TRIAL: 3 dias de acesso gratuito a partir do checkout
+      const trialDays = 3;
+      const now = new Date();
+      const trialVencimento = new Date(now);
+      trialVencimento.setDate(trialVencimento.getDate() + trialDays);
+
+      console.log("🧾 Upsert usuario (checkout + trial 3 dias):", {
+        userNorm, plano, ativo: true,
+        trialVencimento: formatISODate(trialVencimento),
+      });
+
       await upsertUsuarioFromSubscription({
         userNorm,
         nome,
         plano,
         email,
         checkout_id: session.id || session.subscription || session.payment_intent || "",
-        data_inicio: formatISODate(new Date()),
+        data_inicio: formatISODate(now),
+        vencimento_trial: formatISODate(trialVencimento),
         ativo: true,
-        extendVencimento: true,
+        extendVencimento: false, // Trial tem data fixa de 3 dias
       });
+
+      // Notificar admin sobre novo usuário
+      if (ADMIN_WA_NUMBER) {
+        await sendText(ADMIN_WA_NUMBER,
+          `🎉 Novo usuário registrado!\n\n👤 *${nome || userNorm}*\n📱 ${userNorm}\n📧 ${email || "—"}\n📋 Plano: ${plano}\n⏱️ Trial: ${trialDays} dias (até ${formatBRDate(formatISODate(trialVencimento))})`,
+          { bypassWindow: true }
+        );
+      }
     }
 
     if (event.type === "invoice.payment_succeeded") {
       const invoice = event.data.object;
+
+      // Ignorar faturas de valor zero (ex: trial sem cobrança)
+      if ((invoice.amount_paid || 0) === 0) {
+        console.log("ℹ️ invoice.payment_succeeded ignorado (valor zero / trial):", { invoiceId: invoice.id });
+        return res.sendStatus(200);
+      }
+
       const subMeta = await getSubscriptionMetadata(stripe, invoice.subscription);
-      const planoRaw = pickFirst(subMeta?.plano);
+      const planoRaw = pickFirst(invoice.metadata?.plano, subMeta?.plano);
       const plano = normalizePlan(planoRaw);
 
       if (!plano) {
@@ -4995,7 +5041,7 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const whatsapp = subMeta?.whatsapp;
+      const whatsapp = pickFirst(invoice.metadata?.whatsapp, subMeta?.whatsapp);
       if (!whatsapp) {
         console.log("⚠️ Evento Stripe sem whatsapp metadata.");
         return res.sendStatus(200);
@@ -5006,12 +5052,24 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      console.log("🧾 Upsert usuario:", { userNorm, plano, ativo: true });
+      // Data do pagamento como base para cálculo do novo vencimento
+      const paymentDate = invoice.status_transitions?.paid_at
+        ? new Date(invoice.status_transitions.paid_at * 1000)
+        : new Date();
+
+      console.log("🧾 Upsert usuario (pagamento confirmado):", {
+        userNorm, plano, ativo: true,
+        invoiceId: invoice.id,
+        billingReason: invoice.billing_reason,
+        paymentDate: formatISODate(paymentDate),
+      });
+
       await upsertUsuarioFromSubscription({
         userNorm,
         plano,
         ativo: true,
-        extendVencimento: true,
+        data_inicio: formatISODate(paymentDate),
+        extendVencimento: true, // Calcula novo vencimento baseado no plano
       });
     }
 
