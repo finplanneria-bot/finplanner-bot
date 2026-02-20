@@ -1851,6 +1851,15 @@ const USER_LANC_HEADERS = [
   "criado_em",
 ];
 const CONFIG_HEADERS = ["key", "value"];
+const LOG_MENSAGENS_HEADERS = [
+  "timestamp",      // Data/hora ISO da mensagem
+  "user",           // Número normalizado do usuário
+  "user_raw",       // Número original do WhatsApp
+  "tipo",           // text, interactive, button
+  "mensagem",       // Texto da mensagem (se text)
+  "button_id",      // ID do botão (se interactive)
+  "button_title",   // Título do botão (se interactive)
+];
 const SHEET_READ_BACKOFF_MS = [1000, 2000, 4000, 8000, 12000];
 const USER_SHEET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const userSheetCache = new Map();
@@ -1978,6 +1987,29 @@ async function ensureConfigSheet() {
   return sheet;
 }
 
+async function ensureLogSheet() {
+  await ensureAuth();
+  let sheet = doc.sheetsByTitle["Log_Mensagens"];
+  if (!sheet) {
+    sheet = await withRetry(
+      () => doc.addSheet({ title: "Log_Mensagens", headerValues: LOG_MENSAGENS_HEADERS }),
+      "add-log-mensagens"
+    );
+    console.log("✅ Aba Log_Mensagens criada");
+  } else {
+    await withRetry(() => sheet.loadHeaderRow(), "load-header-log");
+    const current = (sheet.headerValues || []).map((header) => (header || "").trim());
+    const filtered = current.filter(Boolean);
+    const hasDuplicate = new Set(filtered).size !== filtered.length;
+    const missing = LOG_MENSAGENS_HEADERS.filter((header) => !current.includes(header));
+    const orderMismatch = LOG_MENSAGENS_HEADERS.some((header, index) => current[index] !== header);
+    if (hasDuplicate || missing.length || orderMismatch || current.length !== LOG_MENSAGENS_HEADERS.length) {
+      await withRetry(() => sheet.setHeaderRow(LOG_MENSAGENS_HEADERS), "set-header-log");
+    }
+  }
+  return sheet;
+}
+
 const getConfigValue = async (key) => {
   const sheet = await ensureConfigSheet();
   const rows = await withRetry(() => sheet.getRows(), "get-config");
@@ -1994,6 +2026,26 @@ const setConfigValue = async (key, value) => {
     await withRetry(() => found.save(), "save-config");
   } else {
     await withRetry(() => sheet.addRow({ key, value }), "add-config-row");
+  }
+};
+
+const saveMessageToLog = async (userRaw, userNorm, tipo, mensagem, buttonId, buttonTitle) => {
+  try {
+    const sheet = await ensureLogSheet();
+    const now = new Date();
+    const logEntry = {
+      timestamp: now.toISOString(),
+      user: userNorm || "",
+      user_raw: userRaw || "",
+      tipo: tipo || "text",
+      mensagem: mensagem || "",
+      button_id: buttonId || "",
+      button_title: buttonTitle || "",
+    };
+    await withRetry(() => sheet.addRow(logEntry), "add-log-message");
+  } catch (error) {
+    // Não bloquear o fluxo se log falhar
+    console.error("⚠️ Erro ao salvar mensagem no log:", error.message);
   }
 };
 
@@ -4472,6 +4524,12 @@ async function handleInteractiveMessage(from, payload) {
     canonicalUserId: interactionInfo.canonicalUserId,
     storedLastInteractionISO: interactionInfo.lastIso,
   });
+  // Salvar interação no log (não-bloqueante)
+  const buttonId = payload.button_reply?.id || payload.button_reply?.payload || "";
+  const buttonTitle = payload.button_reply?.title || payload.list_reply?.title || "";
+  saveMessageToLog(from, userNorm, "interactive", "", buttonId, buttonTitle).catch(err =>
+    console.error("Log save failed:", err.message)
+  );
   recordUserInteraction(userNorm);
 
   // 🔒 VALIDAÇÃO DE ACESSO: Bloqueia usuários não ativos
@@ -4760,6 +4818,10 @@ async function handleUserText(fromRaw, text) {
     canonicalUserId: interactionInfo.canonicalUserId,
     storedLastInteractionISO: interactionInfo.lastIso,
   });
+  // Salvar mensagem no log (não-bloqueante)
+  saveMessageToLog(fromRaw, userNorm, "text", trimmed || text, "", "").catch(err =>
+    console.error("Log save failed:", err.message)
+  );
   recordUserInteraction(userNorm);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
