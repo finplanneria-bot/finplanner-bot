@@ -306,8 +306,9 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 const app = express();
 
-// ✅ Confiar em proxies (Nginx, Cloudflare, etc.) - necessário para rate limiting correto
-app.set('trust proxy', true);
+// ✅ Confiar em 1 proxy reverso (Nginx) - mais seguro que 'true' para rate limiting correto
+// Valor '1' indica que há exatamente 1 proxy (Nginx) entre o cliente e o app
+app.set('trust proxy', 1);
 
 // ============================
 // SEGURANÇA E PERFORMANCE
