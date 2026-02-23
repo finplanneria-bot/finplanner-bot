@@ -3858,7 +3858,7 @@ const setStatusState = (userNorm, state) => {
 const statusStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
 
 async function sendStatusConfirmationPrompt(to) {
-  await sendWA({
+  const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -3867,17 +3867,25 @@ async function sendStatusConfirmationPrompt(to) {
       body: { text: "Esse lançamento já foi pago ou ainda está pendente?" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "REG:STATUS:PAGO", title: "Pago" } },
-          { type: "reply", reply: { id: "REG:STATUS:PENDENTE", title: "Pendente" } },
+          { type: "reply", reply: { id: "REG:STATUS:PAGO", title: "✓ Pago" } },
+          { type: "reply", reply: { id: "REG:STATUS:PENDENTE", title: "⏳ Pendente" } },
         ],
       },
     },
   });
+
+  // FALLBACK: Se botões interativos falharem, usar mensagem texto
+  if (!success || success.skipped) {
+    console.error("⚠️ [Status] Falha ao enviar botões interativos para", to);
+    await sendText(to, "Esse lançamento já foi pago ou ainda está pendente?\n\nResponda: *pago* ou *pendente*", {
+      bypassWindow: true,
+    });
+  }
 }
 
 const sendRegistrationEditPrompt = async (to, rowId, statusLabel) => {
   if (!rowId) return;
-  await sendWA({
+  const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -3889,6 +3897,12 @@ const sendRegistrationEditPrompt = async (to, rowId, statusLabel) => {
       },
     },
   });
+
+  // FALLBACK: Se botões interativos falharem, pular edição e continuar
+  if (!success || success.skipped) {
+    console.error("⚠️ [Edit] Falha ao enviar prompt de edição para", to);
+    // Não enviar texto alternativo aqui - edição é opcional
+  }
 };
 
 const setPaymentCodeState = (userNorm, state) => {
@@ -3908,7 +3922,7 @@ const promptAttachPaymentCode = async (to, userNorm, entry, statusSource) => {
     statusSource,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-  await sendWA({
+  const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -3923,6 +3937,13 @@ const promptAttachPaymentCode = async (to, userNorm, entry, statusSource) => {
       },
     },
   });
+
+  // FALLBACK: Se botões interativos falharem, pular código de pagamento
+  if (!success || success.skipped) {
+    console.error("⚠️ [PayCode] Falha ao enviar prompt de código para", to);
+    // Limpar sessão já que não podemos continuar
+    sessionPaymentCode.delete(userNorm);
+  }
 };
 
 async function scheduleNextFixedOccurrence(row) {
@@ -4024,7 +4045,7 @@ async function promptNextPaymentConfirmation(to, userNorm) {
     currentRowId: rowId,
   });
   const body = `✅ Confirmar pagamento?\n\n${summary}\n\nDeseja marcar como pago agora?`;
-  await sendWA({
+  const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -4034,6 +4055,14 @@ async function promptNextPaymentConfirmation(to, userNorm) {
       action: { buttons },
     },
   });
+
+  // FALLBACK: Se botões interativos falharem, enviar mensagem texto
+  if (!success || success.skipped) {
+    console.error("⚠️ [PayConfirm] Falha ao enviar prompt de confirmação para", to);
+    await sendText(to, body + "\n\nResponda: *sim* para confirmar ou *cancelar*", {
+      bypassWindow: true,
+    });
+  }
 }
 
 async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
@@ -4252,12 +4281,20 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
 async function sendPaymentCode(to, row) {
   const code = (getVal(row, "codigo_pagamento") || "").toString().trim();
   if (!code) {
-    await sendText(to, "Não há código salvo para este lançamento.");
+    const noCodeSent = await sendText(to, "Não há código salvo para este lançamento.");
+    if (!noCodeSent || noCodeSent.skipped) {
+      console.error("⚠️ [PayCode] Falha ao enviar mensagem de código ausente para", to);
+    }
     return;
   }
   const metodo = (getVal(row, "tipo_pagamento") || "").toLowerCase();
   const label = metodo === "boleto" ? "código de barras" : "chave Pix";
-  await sendText(to, `📎 Aqui está o ${label}:\n${code}`);
+  const sent = await sendText(to, `📎 Aqui está o ${label}:\n${code}`);
+  if (!sent || sent.skipped) {
+    console.error("⚠️ [PayCode] Falha ao enviar código de pagamento para", to);
+    // Tentar com bypassWindow se falhar
+    await sendText(to, `📎 Aqui está o ${label}:\n${code}`, { bypassWindow: true });
+  }
 }
 
 async function markPaymentAsPaid(fromRaw, userNorm, row) {
