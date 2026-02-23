@@ -4085,9 +4085,7 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 ${entry.status === "recebido" ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    if (options.autoStatus) {
-      message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
-    }
+    // Removido: status será informado apenas em sendRegistrationEditPrompt para evitar duplicação
     await sendText(fromRaw, message);
   } else {
     const categoryInfo = getCategoryInfo(entry.categoria);
@@ -4104,9 +4102,7 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 ${entry.status === "pago" ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    if (options.autoStatus) {
-      message += `\n\nStatus identificado automaticamente: ${statusLabel}.`;
-    }
+    // Removido: status será informado apenas em sendRegistrationEditPrompt para evitar duplicação
     await sendText(fromRaw, message);
   }
 
@@ -4164,7 +4160,8 @@ async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
     await handleStatusSelection(fromRaw, userNorm, "pago");
     return true;
   }
-  if (/\b(pendente|a pagar|pagar|em aberto)\b/.test(normalized)) {
+  // Fix: tornar regex mais robusta para capturar "pendente" e variações com espaços
+  if (/\b(pendente|a\s+pagar|pagar|em\s+aberto)\b/.test(normalized)) {
     await handleStatusSelection(fromRaw, userNorm, "pendente");
     return true;
   }
