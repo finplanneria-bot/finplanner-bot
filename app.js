@@ -3860,17 +3860,24 @@ const setStatusState = (userNorm, state) => {
 
 const statusStateExpired = (state) => state?.expiresAt && Date.now() > state.expiresAt;
 
-async function sendStatusConfirmationPrompt(to) {
+async function sendStatusConfirmationPrompt(to, tipo) {
+  const isReceber = tipo === "conta_receber";
+  const pergunta = isReceber
+    ? "Esse valor já foi recebido ou ainda está pendente?"
+    : "Esse lançamento já foi pago ou ainda está pendente?";
+  const btnConfirm = isReceber ? "✓ Recebido" : "✓ Pago";
+  const fallbackResp = isReceber ? "*recebido* ou *pendente*" : "*pago* ou *pendente*";
+
   const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: "Esse lançamento já foi pago ou ainda está pendente?" },
+      body: { text: pergunta },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "REG:STATUS:PAGO", title: "✓ Pago" } },
+          { type: "reply", reply: { id: "REG:STATUS:PAGO", title: btnConfirm } },
           { type: "reply", reply: { id: "REG:STATUS:PENDENTE", title: "⏳ Pendente" } },
         ],
       },
@@ -3880,9 +3887,7 @@ async function sendStatusConfirmationPrompt(to) {
   // FALLBACK: Se botões interativos falharem, usar mensagem texto
   if (!success || success.skipped) {
     console.error("⚠️ [Status] Falha ao enviar botões interativos para", to);
-    await sendText(to, "Esse lançamento já foi pago ou ainda está pendente?\n\nResponda: *pago* ou *pendente*", {
-      bypassWindow: true,
-    });
+    await sendText(to, `${pergunta}\n\nResponda: ${fallbackResp}`, { bypassWindow: true });
   }
 }
 
@@ -4363,7 +4368,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   if (!parsed.statusDetected) {
     payload.status = "pendente";
     setStatusState(userNorm, { entry: { ...payload }, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
-    await sendStatusConfirmationPrompt(fromRaw);
+    await sendStatusConfirmationPrompt(fromRaw, parsed.tipo);
     return;
   }
 
