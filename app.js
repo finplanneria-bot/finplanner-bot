@@ -1411,8 +1411,15 @@ const CATEGORY_DEFINITIONS = [
 // ============================
 function getCategoryInfo(categorySlug) {
   if (!categorySlug) return { emoji: "📝", label: "Sem categoria" };
-  const category = CATEGORY_DEFINITIONS.find(c => c.slug === categorySlug);
-  return category || { emoji: "📝", label: categorySlug };
+  // Busca nas categorias base primeiro
+  const base = CATEGORY_DEFINITIONS.find((c) => c.slug === categorySlug);
+  if (base) return base;
+  // Busca no cache de customizadas (síncrono — usa o cache em memória se disponível)
+  if (customCategoriesCache) {
+    const custom = customCategoriesCache.find((c) => c.slug === categorySlug);
+    if (custom) return { emoji: custom.emoji, label: custom.label };
+  }
+  return { emoji: "🏷️", label: humanizeCategorySlug(categorySlug) || categorySlug };
 }
 
 
@@ -1490,52 +1497,117 @@ const truncateForPrompt = (value, max = 200) => {
   return `${str.slice(0, max - 1)}…`;
 };
 
-const buildCategoryPrompt = (description, tipo) => [
-  {
-    role: "system",
-    content: [
-      {
-        type: "text",
-        text:
-          "Você é um classificador de categorias financeiras. Responda apenas com um dos slugs informados, sem explicações.",
-      },
-    ],
-  },
-  {
-    role: "user",
-    content: [
-      {
-        type: "text",
-        text: `Categorias disponíveis:\n${CATEGORY_PROMPT_HINT}\n\nDescrição do lançamento: "${truncateForPrompt(
-          description,
-        )}"\nTipo do lançamento: ${tipo === "conta_receber" ? "recebimento" : "pagamento"}\nResponda apenas com o slug mais adequado.`,
-      },
-    ],
-  },
-];
+const buildCategoryPrompt = async (description, tipo) => {
+  // Carregar categorias base + customizadas
+  const customCats = await loadCustomCategories();
+  const baseHint = CATEGORY_PROMPT_HINT;
+  const customHint = customCats.length
+    ? customCats
+        .map((c) => `${c.slug}: ${c.label} (${c.emoji})${c.description ? " - " + c.description : ""}`)
+        .join("\n")
+    : "";
+  const allCategoriesHint = customHint ? `${baseHint}\n${customHint}` : baseHint;
 
-const resolveCategory = async (description, tipo) => {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text: `Você é um classificador inteligente de categorias financeiras.
+
+TAREFA: Analisar o lançamento e escolher ou criar a categoria mais adequada.
+
+REGRAS:
+1. Prefira categorias existentes quando forem realmente adequadas
+2. Crie nova categoria SOMENTE se nenhuma existente for específica o suficiente
+3. A categoria "outros" deve ser usada APENAS como último recurso absoluto
+4. Slugs em snake_case minúsculo (ex: "pets", "streaming", "delivery_app")
+5. Labels curtos e descritivos (máximo 40 caracteres)
+
+FORMATO DE RESPOSTA — responda SOMENTE com JSON válido, sem texto adicional:
+
+Se usar categoria existente:
+{"slug":"nome_slug","isNew":false}
+
+Se criar categoria nova:
+{"slug":"slug_novo","label":"Nome da Categoria","emoji":"🏷️","description":"Descrição breve","isNew":true}`,
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Categorias disponíveis:\n${allCategoriesHint}\n\nDescrição do lançamento: "${truncateForPrompt(description)}"\nTipo: ${tipo === "conta_receber" ? "recebimento" : "pagamento"}\n\nResponda com o JSON da categoria.`,
+        },
+      ],
+    },
+  ];
+};
+
+const resolveCategory = async (description, tipo, userNorm) => {
   const fallback = detectCategoryHeuristic(description, tipo);
   if (!description || !description.toString().trim() || !openaiClient) return fallback;
   try {
+    const prompt = await buildCategoryPrompt(description, tipo);
     const output = await callOpenAI({
       model: OPENAI_CATEGORY_MODEL,
-      input: buildCategoryPrompt(description, tipo),
+      input: prompt,
       temperature: 0,
-      maxOutputTokens: 50,
+      maxOutputTokens: 120,
     });
-    const predicted = output?.trim();
-    const def = getCategoryDefinition(predicted);
-    if (!def && predicted) {
+
+    // Tentar parsear como JSON (novo formato com categorias dinâmicas)
+    let parsed = null;
+    try {
+      const jsonStr = (output || "").trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+      parsed = JSON.parse(jsonStr);
+    } catch (_) {
+      parsed = null;
+    }
+
+    if (parsed && parsed.slug) {
+      const cleanSlug = (parsed.slug || "").toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/__+/g, "_").replace(/^_|_$/g, "");
+
+      if (parsed.isNew && parsed.label) {
+        // Salvar nova categoria em background (não bloquear o fluxo)
+        saveCustomCategory({
+          slug: cleanSlug,
+          label: parsed.label,
+          emoji: parsed.emoji || "🏷️",
+          description: parsed.description || "",
+          created_by: userNorm || "",
+        }).catch((err) => console.error("⚠️ Erro ao salvar nova categoria:", err.message));
+
+        return { slug: cleanSlug, emoji: parsed.emoji || "🏷️" };
+      }
+
+      // Categoria existente — verificar em base ou customizadas
+      const baseDef = getCategoryDefinition(cleanSlug);
+      if (baseDef) return { slug: baseDef.slug, emoji: baseDef.emoji };
+
+      const customCats = await loadCustomCategories();
+      const customDef = customCats.find((c) => c.slug === cleanSlug);
+      if (customDef) {
+        // Incrementar uso em background
+        incrementCategoryUsage(cleanSlug).catch(() => {});
+        return { slug: customDef.slug, emoji: customDef.emoji };
+      }
+    }
+
+    // Fallback: tentar interpretar como slug simples (compatibilidade)
+    const predicted = (output || "").trim();
+    if (predicted) {
+      const def = getCategoryDefinition(predicted);
+      if (def) return { slug: def.slug, emoji: def.emoji };
       const pieces = predicted.split(/\s|,|;|\n/).filter(Boolean);
       for (const piece of pieces) {
         const candidate = getCategoryDefinition(piece);
-        if (candidate) {
-          return { slug: candidate.slug, emoji: candidate.emoji };
-        }
+        if (candidate) return { slug: candidate.slug, emoji: candidate.emoji };
       }
     }
-    if (def) return { slug: def.slug, emoji: def.emoji };
   } catch (error) {
     console.error("Falha ao consultar OpenAI para categoria:", error?.message || error);
   }
@@ -1860,6 +1932,15 @@ const LOG_MENSAGENS_HEADERS = [
   "button_id",      // ID do botão (se interactive)
   "button_title",   // Título do botão (se interactive)
 ];
+const CUSTOM_CATEGORIES_HEADERS = [
+  "slug",           // Identificador único (snake_case)
+  "label",          // Nome legível da categoria
+  "emoji",          // Emoji representativo
+  "description",    // Descrição da categoria
+  "created_by",     // Usuário que gerou a categoria
+  "created_at",     // Timestamp de criação
+  "usage_count",    // Contagem de uso
+];
 const SHEET_READ_BACKOFF_MS = [1000, 2000, 4000, 8000, 12000];
 const USER_SHEET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const userSheetCache = new Map();
@@ -2009,6 +2090,117 @@ async function ensureLogSheet() {
   }
   return sheet;
 }
+
+// ============================
+// Categorias Customizadas (dinâmicas via IA)
+// ============================
+let customCategoriesCache = null;
+let customCategoriesCacheExpiry = 0;
+const CUSTOM_CATEGORIES_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+async function ensureCustomCategoriesSheet() {
+  await ensureAuth();
+  let sheet = doc.sheetsByTitle["Categorias_Customizadas"];
+  if (!sheet) {
+    sheet = await withRetry(
+      () => doc.addSheet({ title: "Categorias_Customizadas", headerValues: CUSTOM_CATEGORIES_HEADERS }),
+      "add-custom-categories-sheet"
+    );
+  } else {
+    await withRetry(() => sheet.loadHeaderRow(), "load-header-custom-categories");
+    const current = (sheet.headerValues || []).map((h) => (h || "").trim());
+    const filtered = current.filter(Boolean);
+    const hasDuplicate = new Set(filtered).size !== filtered.length;
+    const missing = CUSTOM_CATEGORIES_HEADERS.filter((h) => !current.includes(h));
+    const orderMismatch = CUSTOM_CATEGORIES_HEADERS.some((h, i) => current[i] !== h);
+    if (hasDuplicate || missing.length || orderMismatch || current.length !== CUSTOM_CATEGORIES_HEADERS.length) {
+      await withRetry(() => sheet.setHeaderRow(CUSTOM_CATEGORIES_HEADERS), "set-header-custom-categories");
+    }
+  }
+  return sheet;
+}
+
+const loadCustomCategories = async () => {
+  const now = Date.now();
+  if (customCategoriesCache && now < customCategoriesCacheExpiry) {
+    return customCategoriesCache;
+  }
+  try {
+    const sheet = await ensureCustomCategoriesSheet();
+    const rows = await withRetry(() => sheet.getRows(), "get-custom-categories");
+    customCategoriesCache = rows
+      .map((row) => ({
+        slug: (getVal(row, "slug") || "").trim(),
+        label: (getVal(row, "label") || "").trim(),
+        emoji: (getVal(row, "emoji") || "🏷️").trim(),
+        description: (getVal(row, "description") || "").trim(),
+        isCustom: true,
+      }))
+      .filter((c) => c.slug);
+    customCategoriesCacheExpiry = now + CUSTOM_CATEGORIES_CACHE_TTL;
+    return customCategoriesCache;
+  } catch (err) {
+    console.error("⚠️ Erro ao carregar categorias customizadas:", err.message);
+    return customCategoriesCache || [];
+  }
+};
+
+const invalidateCustomCategoriesCache = () => {
+  customCategoriesCache = null;
+  customCategoriesCacheExpiry = 0;
+};
+
+const saveCustomCategory = async ({ slug, label, emoji, description, created_by }) => {
+  try {
+    // Validar slug (apenas letras, números e underscore)
+    const cleanSlug = (slug || "").toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/__+/g, "_").replace(/^_|_$/g, "");
+    if (!cleanSlug || cleanSlug.length < 2) return;
+    const cleanLabel = (label || "").toString().slice(0, 50).trim();
+    const cleanEmoji = (emoji || "🏷️").toString().trim().slice(0, 4);
+    if (!cleanLabel) return;
+
+    // Verificar se já existe (no cache ou buscando direto)
+    const existing = await loadCustomCategories();
+    if (existing.some((c) => c.slug === cleanSlug)) {
+      console.log("⚠️ Categoria customizada já existe:", cleanSlug);
+      return;
+    }
+
+    const sheet = await ensureCustomCategoriesSheet();
+    await withRetry(
+      () =>
+        sheet.addRow({
+          slug: cleanSlug,
+          label: cleanLabel,
+          emoji: cleanEmoji,
+          description: (description || "").slice(0, 200),
+          created_by: created_by || "",
+          created_at: new Date().toISOString(),
+          usage_count: "1",
+        }),
+      "add-custom-category"
+    );
+    invalidateCustomCategoriesCache(); // Forçar reload no próximo acesso
+    console.log("✨ Nova categoria criada e salva:", cleanSlug, cleanLabel, cleanEmoji);
+  } catch (err) {
+    console.error("⚠️ Erro ao salvar categoria customizada:", err.message);
+  }
+};
+
+const incrementCategoryUsage = async (slug) => {
+  try {
+    const sheet = await ensureCustomCategoriesSheet();
+    const rows = await withRetry(() => sheet.getRows(), "get-custom-cat-rows");
+    const row = rows.find((r) => (getVal(r, "slug") || "").trim() === slug);
+    if (row) {
+      const current = parseInt(getVal(row, "usage_count") || "0", 10);
+      setVal(row, "usage_count", String(current + 1));
+      await withRetry(() => row.save(), "inc-category-usage");
+    }
+  } catch (err) {
+    console.error("⚠️ Erro ao incrementar uso de categoria:", err.message);
+  }
+};
 
 const getConfigValue = async (key) => {
   const sheet = await ensureConfigSheet();
@@ -3535,7 +3727,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
       setVal(row, "status", lower);
     } else if (field === "categoria") {
       const categoria = text.trim();
-      const detected = await resolveCategory(categoria, getVal(row, "tipo"));
+      const detected = await resolveCategory(categoria, getVal(row, "tipo"), userNorm);
       setVal(row, "categoria", detected.slug);
       setVal(row, "categoria_emoji", detected.emoji);
     } else {
@@ -3760,6 +3952,7 @@ async function scheduleNextFixedOccurrence(row) {
     const detected = await resolveCategory(
       getVal(row, "descricao") || getVal(row, "conta"),
       getVal(row, "tipo") || "conta_pagar",
+      userNorm,
     );
     categoriaSlug = detected.slug;
     categoriaEmoji = detected.emoji;
@@ -4106,7 +4299,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   let data = parsed.data instanceof Date ? parsed.data : null;
   if (!data || Number.isNaN(data.getTime())) data = new Date();
   const iso = data.toISOString();
-  const categoria = await resolveCategory(parsed.descricao, parsed.tipo);
+  const categoria = await resolveCategory(parsed.descricao, parsed.tipo, userNorm);
   const payload = {
     row_id: generateRowId(),
     timestamp: new Date().toISOString(),
@@ -4305,7 +4498,7 @@ const parseFixedAccountCommand = (text) => {
 
 async function registerFixedAccount(fromRaw, userNorm, parsed) {
   if (!parsed) return;
-  const categoria = await resolveCategory(parsed.descricao, "conta_pagar");
+  const categoria = await resolveCategory(parsed.descricao, "conta_pagar", userNorm);
   const rowId = generateRowId();
   const due = parsed.dueDate instanceof Date ? parsed.dueDate : new Date();
   const payload = {
@@ -4481,9 +4674,12 @@ Responda SOMENTE com o slug da intenção mais adequada.`,
 };
 
 const detectIntent = async (text) => {
-  const fallback = detectIntentHeuristic(text);
-  if (!text) return fallback;
-  if (!openaiClient) return fallback;
+  const heuristic = detectIntentHeuristic(text);
+  if (!text) return heuristic;
+  if (!openaiClient) return heuristic;
+  // Early return: se a heurística já identificou uma intenção específica (não "desconhecido"),
+  // não precisamos chamar a OpenAI — economiza 1-3s por mensagem simples
+  if (heuristic !== "desconhecido") return heuristic;
   try {
     const output = await callOpenAI({
       model: OPENAI_INTENT_MODEL,
@@ -4496,7 +4692,7 @@ const detectIntent = async (text) => {
   } catch (error) {
     console.error("Falha ao consultar OpenAI para intenção:", error?.message || error);
   }
-  return fallback;
+  return heuristic;
 };
 
 // ============================
@@ -4810,7 +5006,15 @@ function parseRangeMessage(text) {
 
 async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
-  await persistLastInteraction(userNorm);
+  const trimmed = (text || "").trim();
+  const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
+
+  // Iniciar persistLastInteraction e detectIntent em paralelo — economiza 2-5s por mensagem
+  // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
+  const persistPromise = persistLastInteraction(userNorm);
+  const intentPromise = detectIntent(trimmed);
+
+  await persistPromise;
   const interactionInfo = getLastInteractionInfo(userNorm);
   console.log("📩 Inbound:", {
     fromRaw,
@@ -4818,13 +5022,11 @@ async function handleUserText(fromRaw, text) {
     canonicalUserId: interactionInfo.canonicalUserId,
     storedLastInteractionISO: interactionInfo.lastIso,
   });
-  // Salvar mensagem no log (não-bloqueante)
-  saveMessageToLog(fromRaw, userNorm, "text", trimmed || text, "", "").catch(err =>
+  // Salvar mensagem no log (fire-and-forget — não bloqueia fluxo principal)
+  saveMessageToLog(fromRaw, userNorm, "text", trimmed, "", "").catch(err =>
     console.error("Log save failed:", err.message)
   );
   recordUserInteraction(userNorm);
-  const trimmed = (text || "").trim();
-  const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
   const adminCronCommand =
     /\baviso\s*cron\b/i.test(normalizedMessage) ||
     /\bcron\s*(teste|agora)?\b/i.test(normalizedMessage);
@@ -4898,7 +5100,8 @@ async function handleUserText(fromRaw, text) {
     return;
   }
 
-  const intent = await detectIntent(trimmed);
+  // Aguardar resultado do detectIntent que foi iniciado em paralelo no início da função
+  const intent = await intentPromise;
   switch (intent) {
     case "boas_vindas":
       await sendWelcomeList(fromRaw);
