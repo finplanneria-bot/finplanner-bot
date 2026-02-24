@@ -107,9 +107,6 @@ console.warn = (...args) => {
   if (process.env.NODE_ENV !== "production") originalConsoleWarn(...args);
 };
 
-process.on("unhandledRejection", (err) => {
-
-
 // ============================
 // VALIDAÇÃO DE VARIÁVEIS OBRIGATÓRIAS
 // ============================
@@ -121,24 +118,23 @@ function validateRequiredEnv() {
     { key: "GOOGLE_SERVICE_ACCOUNT_EMAIL", value: GOOGLE_SERVICE_ACCOUNT_EMAIL },
     { key: "GOOGLE_SERVICE_ACCOUNT_KEY", value: GOOGLE_SERVICE_ACCOUNT_KEY }
   ];
-  
+
   const missing = required.filter(item => !item.value);
-  
+
   if (missing.length > 0) {
-    logger.error("❌ Variáveis obrigatórias faltando:", { 
-      missing: missing.map(m => m.key) 
+    logger.error("❌ Variáveis obrigatórias faltando:", {
+      missing: missing.map(m => m.key)
     });
     console.error("\n⚠️  Configure as variáveis no arquivo .env antes de continuar!");
     console.error("Missing:", missing.map(m => m.key).join(", "));
     return false;
   }
-  
+
   logger.info("✅ Todas as variáveis obrigatórias configuradas");
   return true;
 }
 
-// Valida na inicialização
-validateRequiredEnv();
+process.on("unhandledRejection", (err) => {
   console.error("[FATAL] unhandledRejection:", err);
 });
 process.on("uncaughtException", (err) => {
@@ -164,7 +160,6 @@ const {
   SHEETS_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
   GOOGLE_SERVICE_ACCOUNT_KEY: RAW_KEY = "",
-  WA_TOKEN,
   WA_PHONE_NUMBER_ID,
   ADMIN_WA_NUMBER,
   STRIPE_WEBHOOK_SECRET,
@@ -252,7 +247,8 @@ const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 
     }
     console.warn("Cliente OpenAI inicializado, mas nenhum método compatível foi encontrado.");
   } catch (error) {
-    console.error("[OpenAI] Erro na chamada da API:", error.message); return null;
+    console.error("[OpenAI] Erro na chamada da API:", error.message);
+    return null;
   }
 };
 
@@ -263,6 +259,9 @@ let GOOGLE_SERVICE_ACCOUNT_KEY = RAW_KEY || "";
 if (GOOGLE_SERVICE_ACCOUNT_KEY.includes("\\n")) {
   GOOGLE_SERVICE_ACCOUNT_KEY = GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g, "\n");
 }
+
+// Valida na inicialização
+validateRequiredEnv();
 
 // ============================
 // APP
