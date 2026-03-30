@@ -4743,6 +4743,90 @@ Responda SOMENTE com o slug da intenção mais adequada.`,
   ];
 };
 
+// ============================
+// Classificação de mensagem de usuário inativo (sem plano ativo)
+// ============================
+
+const classifyInactiveHeuristic = (text) => {
+  const lower = (text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  if (
+    /ja paguei|ja assinei|ja assine|ja tenho|ja contratei|ja fiz o pagamento|pagamento recusado|pagamento nao aprovado|cartao recusado|nao consigo acessar|nao consigo usar|nao ta funcionando|nao esta funcionando|nao funciona|por que nao funciona|ja tenho plano|meu plano|minha assinatura/.test(lower)
+  ) return "acredita_que_pagou";
+  if (
+    /quero assinar|como assinar|quero contratar|quanto custa|valor(es)?|planos?|assinar|contratar|quero comecar/.test(lower)
+  ) return "quer_assinar";
+  return "outro";
+};
+
+const buildInactiveUserPrompt = (text) => [
+  {
+    role: "system",
+    content:
+      `Você é um classificador de mensagens de um chatbot financeiro chamado FinPlanner IA. ` +
+      `Um usuário enviou uma mensagem mas não tem plano ativo. Classifique a mensagem em uma das categorias:\n\n` +
+      `- "acredita_que_pagou": o usuário diz que já pagou, já assinou, já tem plano, teve problema no pagamento, não consegue acessar mesmo tendo pago, etc.\n` +
+      `- "quer_assinar": o usuário quer saber como assinar, quanto custa, quer contratar o serviço.\n` +
+      `- "outro": qualquer outro caso (saudação genérica, confusão, etc.)\n\n` +
+      `Responda APENAS com uma das palavras: acredita_que_pagou, quer_assinar, outro`,
+  },
+  { role: "user", content: text || "" },
+];
+
+const classifyInactiveUserMessage = async (text) => {
+  const heuristic = classifyInactiveHeuristic(text);
+  if (heuristic !== "outro") return heuristic;
+  if (!openaiClient || !text) return heuristic;
+  try {
+    const output = await callOpenAI({
+      model: OPENAI_INTENT_MODEL,
+      input: buildInactiveUserPrompt(text),
+      temperature: 0,
+      maxOutputTokens: 20,
+    });
+    const normalized = (output || "").toLowerCase().trim();
+    if (["acredita_que_pagou", "quer_assinar", "outro"].includes(normalized)) return normalized;
+  } catch (err) {
+    console.error("[OpenAI] Erro ao classificar usuário inativo:", err?.message || err);
+  }
+  return heuristic;
+};
+
+const buildInactiveUserResponse = (classification, nome) => {
+  const saudacao = nome ? `Olá, ${nome}!` : "Olá!";
+  const suporte = `wa.me/${ADMIN_NUMBER_NORM}`;
+  const site = "www.finplanneria.com.br";
+
+  if (classification === "acredita_que_pagou") {
+    return (
+      `${saudacao} Entendi que você realizou um pagamento, mas não encontrei uma assinatura ativa vinculada ao seu número. 😕\n\n` +
+      `Isso pode acontecer por alguns motivos:\n` +
+      `• *Pagamento não aprovado* – O cartão pode ter sido recusado. Verifique seu e-mail para uma mensagem da Stripe.\n` +
+      `• *Número diferente* – O pagamento pode ter sido feito com outro número de WhatsApp.\n` +
+      `• *Processamento em andamento* – Em alguns casos pode levar alguns minutos.\n\n` +
+      `Para resolver rapidamente, fale com nosso suporte:\n👉 ${suporte}\n\n` +
+      `Ou refaça o checkout em:\n👉 ${site}`
+    );
+  }
+
+  if (classification === "quer_assinar") {
+    return (
+      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}`
+    );
+  }
+
+  // "outro" — mensagem padrão melhorada com contato de suporte
+  return (
+    `${saudacao} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo.\n\n` +
+    `Conheça e contrate em:\n👉 ${site}\n\n` +
+    `Dúvidas? Fale com nosso suporte:\n👉 ${suporte}`
+  );
+};
+
+// ============================
+
 const detectIntent = async (text) => {
   const heuristic = detectIntentHeuristic(text);
   if (!text) return heuristic;
@@ -4803,12 +4887,8 @@ async function handleInteractiveMessage(from, payload) {
     const active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
-      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
-      await sendText(
-        from,
-        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
-        { bypassWindow: true }
-      );
+      const response = buildInactiveUserResponse("outro", nome);
+      await sendText(from, response, { bypassWindow: true });
       return;
     }
   }
@@ -5113,12 +5193,9 @@ async function handleUserText(fromRaw, text) {
     const active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
-      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
-      await sendText(
-        fromRaw,
-        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
-        { bypassWindow: true }
-      );
+      const classification = await classifyInactiveUserMessage(trimmed);
+      const response = buildInactiveUserResponse(classification, nome);
+      await sendText(fromRaw, response, { bypassWindow: true });
       return;
     }
   }
