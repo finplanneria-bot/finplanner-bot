@@ -1698,6 +1698,32 @@ async function sendWA(payload, context = {}) {
       },
       timeout: 10000, // ✅ FIX: Timeout de 10 segundos
     });
+
+    // Log de saída: registra resposta do bot na planilha Log_Mensagens
+    try {
+      const to = payload.to || "";
+      const userNorm = normalizeUser(to);
+      const tipo = payload.type || "text";
+      let mensagem = "";
+      let buttonId = "";
+      let buttonTitle = "";
+
+      if (tipo === "text") {
+        mensagem = payload.text?.body || "";
+      } else if (tipo === "interactive") {
+        mensagem = payload.interactive?.body?.text || "";
+        const buttons = payload.interactive?.action?.buttons || [];
+        buttonId = buttons.map((b) => b.reply?.id || b.copy_code || "").join(", ");
+        buttonTitle = buttons.map((b) => b.reply?.title || b.title || "").join(", ");
+      } else if (tipo === "template") {
+        mensagem = `[template: ${payload.template?.name || "unknown"}]`;
+      }
+
+      saveMessageToLog(to, userNorm, tipo, mensagem, buttonId, buttonTitle, "saida").catch(() => {});
+    } catch (_logErr) {
+      // Nunca bloquear envio por falha de log
+    }
+
     return true;
   } catch (error) {
     const errorData = error.response?.data?.error || {};
@@ -1928,6 +1954,7 @@ const USER_LANC_HEADERS = [
 const CONFIG_HEADERS = ["key", "value"];
 const LOG_MENSAGENS_HEADERS = [
   "timestamp",      // Data/hora ISO da mensagem
+  "direcao",        // "entrada" (usuário → bot) ou "saida" (bot → usuário)
   "user",           // Número normalizado do usuário
   "user_raw",       // Número original do WhatsApp
   "tipo",           // text, interactive, button
@@ -2224,12 +2251,13 @@ const setConfigValue = async (key, value) => {
   }
 };
 
-const saveMessageToLog = async (userRaw, userNorm, tipo, mensagem, buttonId, buttonTitle) => {
+const saveMessageToLog = async (userRaw, userNorm, tipo, mensagem, buttonId, buttonTitle, direcao = "entrada") => {
   try {
     const sheet = await ensureLogSheet();
     const now = new Date();
     const logEntry = {
       timestamp: now.toISOString(),
+      direcao,
       user: userNorm || "",
       user_raw: userRaw || "",
       tipo: tipo || "text",
