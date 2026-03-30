@@ -4796,9 +4796,7 @@ const classifyInactiveUserMessage = async (text) => {
 
 const buildInactiveUserResponse = (classification, nome) => {
   const saudacao = nome ? `Olá, ${nome}!` : "Olá!";
-  const suporte = `wa.me/${ADMIN_NUMBER_NORM}`;
   const site = "www.finplanneria.com.br";
-  const avisoEspecialista = `Caso ainda tenha dúvidas, entre em contato pelo mesmo número — um especialista irá iniciar o atendimento por lá. 🙂`;
 
   if (classification === "acredita_que_pagou") {
     return (
@@ -4807,28 +4805,40 @@ const buildInactiveUserResponse = (classification, nome) => {
       `• *Pagamento não aprovado* – O cartão pode ter sido recusado. Verifique seu e-mail para uma mensagem da Stripe.\n` +
       `• *Número diferente* – O pagamento pode ter sido feito com outro número de WhatsApp.\n` +
       `• *Processamento em andamento* – Em alguns casos pode levar alguns minutos.\n\n` +
-      `Para resolver rapidamente, fale com nosso suporte:\n👉 ${suporte}\n\n` +
-      `Ou refaça o checkout em:\n👉 ${site}\n\n` +
-      avisoEspecialista
+      `Ou refaça o checkout em:\n👉 ${site}`
     );
   }
 
   if (classification === "quer_assinar") {
     return (
-      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}\n\n` +
-      `Precisa de ajuda para escolher o plano? Fale com a gente:\n👉 ${suporte}\n\n` +
-      avisoEspecialista
+      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}`
     );
   }
 
-  // "outro" — mensagem padrão melhorada com contato de suporte
+  // "outro" — mensagem padrão
   return (
     `${saudacao} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo.\n\n` +
-    `Conheça e contrate em:\n👉 ${site}\n\n` +
-    `Dúvidas? Fale com nosso suporte:\n👉 ${suporte}\n\n` +
-    avisoEspecialista
+    `Conheça e contrate em:\n👉 ${site}`
   );
 };
+
+const sendSupportButton = (to) =>
+  sendWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "cta_url",
+      body: { text: "Dúvidas? Fale conosco." },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: "Falar com suporte",
+          url: `https://wa.me/${ADMIN_NUMBER_NORM}`,
+        },
+      },
+    },
+  });
 
 // ============================
 
@@ -4894,6 +4904,7 @@ async function handleInteractiveMessage(from, payload) {
       const nome = getStoredFirstName(userNorm);
       const response = buildInactiveUserResponse("outro", nome);
       await sendText(from, response, { bypassWindow: true });
+      await sendSupportButton(from);
       return;
     }
   }
@@ -5201,6 +5212,7 @@ async function handleUserText(fromRaw, text) {
       const classification = await classifyInactiveUserMessage(trimmed);
       const response = buildInactiveUserResponse(classification, nome);
       await sendText(fromRaw, response, { bypassWindow: true });
+      await sendSupportButton(fromRaw);
       return;
     }
   }
