@@ -1689,6 +1689,67 @@ const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   return parts;
 };
 
+// ============================
+// Transcrição de áudio via OpenAI Whisper
+// ============================
+
+const WA_MEDIA_API_BASE = `https://graph.facebook.com/${WA_API_VERSION}`;
+
+async function transcribeAudio(mediaId) {
+  if (!openaiClient) {
+    console.warn("[Whisper] OpenAI não está habilitado. Ignorando áudio.");
+    return null;
+  }
+
+  // 1. Busca a URL de download do arquivo no WhatsApp
+  let mediaUrl;
+  try {
+    const metaRes = await axios.get(`${WA_MEDIA_API_BASE}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` },
+      timeout: 10000,
+    });
+    mediaUrl = metaRes.data?.url;
+  } catch (err) {
+    console.error("[Whisper] Erro ao buscar URL da mídia:", err.message);
+    return null;
+  }
+
+  if (!mediaUrl) {
+    console.error("[Whisper] URL da mídia não encontrada para mediaId:", mediaId);
+    return null;
+  }
+
+  // 2. Baixa o arquivo de áudio como buffer
+  let audioBuffer;
+  try {
+    const audioRes = await axios.get(mediaUrl, {
+      headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` },
+      responseType: "arraybuffer",
+      timeout: 30000,
+    });
+    audioBuffer = Buffer.from(audioRes.data);
+  } catch (err) {
+    console.error("[Whisper] Erro ao baixar áudio:", err.message);
+    return null;
+  }
+
+  // 3. Transcreve com OpenAI Whisper
+  try {
+    const file = new File([audioBuffer], "audio.ogg", { type: "audio/ogg" });
+    const transcription = await openaiClient.audio.transcriptions.create({
+      file,
+      model: "whisper-1",
+      language: "pt",
+    });
+    const text = transcription?.text?.trim();
+    console.log("[Whisper] Transcrição:", text);
+    return text || null;
+  } catch (err) {
+    console.error("[Whisper] Erro ao transcrever áudio:", err.message);
+    return null;
+  }
+}
+
 async function sendWA(payload, context = {}) {
   try {
     await axios.post(WA_API, payload, {
@@ -5596,6 +5657,18 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               await handleInteractiveMessage(from, message.interactive);
             } else if (type === "button") {
               await handleInteractiveMessage(from, { type: "button_reply", button_reply: message.button });
+            } else if (type === "audio") {
+              const mediaId = message.audio?.id;
+              if (mediaId && openaiClient) {
+                const transcribed = await transcribeAudio(mediaId);
+                if (transcribed) {
+                  await handleUserText(from, transcribed);
+                } else {
+                  await sendText(from, "Não consegui entender o áudio. Pode enviar como texto?");
+                }
+              } else {
+                await sendText(from, "Para enviar mensagens de voz, ative a integração com IA nas configurações.");
+              }
             } else {
               await sendText(from, "Ainda não entendi esse tipo de mensagem, envie texto ou use o menu.");
             }
