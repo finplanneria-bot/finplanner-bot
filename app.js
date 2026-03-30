@@ -4798,6 +4798,7 @@ const buildInactiveUserResponse = (classification, nome) => {
   const saudacao = nome ? `Olá, ${nome}!` : "Olá!";
   const suporte = `wa.me/${ADMIN_NUMBER_NORM}`;
   const site = "www.finplanneria.com.br";
+  const avisoEspecialista = `Caso ainda tenha dúvidas, entre em contato pelo mesmo número — um especialista irá iniciar o atendimento por lá. 🙂`;
 
   if (classification === "acredita_que_pagou") {
     return (
@@ -4807,13 +4808,16 @@ const buildInactiveUserResponse = (classification, nome) => {
       `• *Número diferente* – O pagamento pode ter sido feito com outro número de WhatsApp.\n` +
       `• *Processamento em andamento* – Em alguns casos pode levar alguns minutos.\n\n` +
       `Para resolver rapidamente, fale com nosso suporte:\n👉 ${suporte}\n\n` +
-      `Ou refaça o checkout em:\n👉 ${site}`
+      `Ou refaça o checkout em:\n👉 ${site}\n\n` +
+      avisoEspecialista
     );
   }
 
   if (classification === "quer_assinar") {
     return (
-      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}`
+      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}\n\n` +
+      `Precisa de ajuda para escolher o plano? Fale com a gente:\n👉 ${suporte}\n\n` +
+      avisoEspecialista
     );
   }
 
@@ -4821,7 +4825,8 @@ const buildInactiveUserResponse = (classification, nome) => {
   return (
     `${saudacao} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo.\n\n` +
     `Conheça e contrate em:\n👉 ${site}\n\n` +
-    `Dúvidas? Fale com nosso suporte:\n👉 ${suporte}`
+    `Dúvidas? Fale com nosso suporte:\n👉 ${suporte}\n\n` +
+    avisoEspecialista
   );
 };
 
