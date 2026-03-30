@@ -1689,6 +1689,67 @@ const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   return parts;
 };
 
+// ============================
+// Transcrição de áudio via OpenAI Whisper
+// ============================
+
+const WA_MEDIA_API_BASE = `https://graph.facebook.com/${WA_API_VERSION}`;
+
+async function transcribeAudio(mediaId) {
+  if (!openaiClient) {
+    console.warn("[Whisper] OpenAI não está habilitado. Ignorando áudio.");
+    return null;
+  }
+
+  // 1. Busca a URL de download do arquivo no WhatsApp
+  let mediaUrl;
+  try {
+    const metaRes = await axios.get(`${WA_MEDIA_API_BASE}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` },
+      timeout: 10000,
+    });
+    mediaUrl = metaRes.data?.url;
+  } catch (err) {
+    console.error("[Whisper] Erro ao buscar URL da mídia:", err.message);
+    return null;
+  }
+
+  if (!mediaUrl) {
+    console.error("[Whisper] URL da mídia não encontrada para mediaId:", mediaId);
+    return null;
+  }
+
+  // 2. Baixa o arquivo de áudio como buffer
+  let audioBuffer;
+  try {
+    const audioRes = await axios.get(mediaUrl, {
+      headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` },
+      responseType: "arraybuffer",
+      timeout: 30000,
+    });
+    audioBuffer = Buffer.from(audioRes.data);
+  } catch (err) {
+    console.error("[Whisper] Erro ao baixar áudio:", err.message);
+    return null;
+  }
+
+  // 3. Transcreve com OpenAI Whisper
+  try {
+    const file = new File([audioBuffer], "audio.ogg", { type: "audio/ogg" });
+    const transcription = await openaiClient.audio.transcriptions.create({
+      file,
+      model: "whisper-1",
+      language: "pt",
+    });
+    const text = transcription?.text?.trim();
+    console.log("[Whisper] Transcrição:", text);
+    return text || null;
+  } catch (err) {
+    console.error("[Whisper] Erro ao transcrever áudio:", err.message);
+    return null;
+  }
+}
+
 async function sendWA(payload, context = {}) {
   try {
     await axios.post(WA_API, payload, {
@@ -1698,6 +1759,32 @@ async function sendWA(payload, context = {}) {
       },
       timeout: 10000, // ✅ FIX: Timeout de 10 segundos
     });
+
+    // Log de saída: registra resposta do bot na planilha Log_Mensagens
+    try {
+      const to = payload.to || "";
+      const userNorm = normalizeUser(to);
+      const tipo = payload.type || "text";
+      let mensagem = "";
+      let buttonId = "";
+      let buttonTitle = "";
+
+      if (tipo === "text") {
+        mensagem = payload.text?.body || "";
+      } else if (tipo === "interactive") {
+        mensagem = payload.interactive?.body?.text || "";
+        const buttons = payload.interactive?.action?.buttons || [];
+        buttonId = buttons.map((b) => b.reply?.id || b.copy_code || "").join(", ");
+        buttonTitle = buttons.map((b) => b.reply?.title || b.title || "").join(", ");
+      } else if (tipo === "template") {
+        mensagem = `[template: ${payload.template?.name || "unknown"}]`;
+      }
+
+      saveMessageToLog(to, userNorm, tipo, mensagem, buttonId, buttonTitle, "saida").catch(() => {});
+    } catch (_logErr) {
+      // Nunca bloquear envio por falha de log
+    }
+
     return true;
   } catch (error) {
     const errorData = error.response?.data?.error || {};
@@ -1928,6 +2015,7 @@ const USER_LANC_HEADERS = [
 const CONFIG_HEADERS = ["key", "value"];
 const LOG_MENSAGENS_HEADERS = [
   "timestamp",      // Data/hora ISO da mensagem
+  "direcao",        // "entrada" (usuário → bot) ou "saida" (bot → usuário)
   "user",           // Número normalizado do usuário
   "user_raw",       // Número original do WhatsApp
   "tipo",           // text, interactive, button
@@ -2224,12 +2312,13 @@ const setConfigValue = async (key, value) => {
   }
 };
 
-const saveMessageToLog = async (userRaw, userNorm, tipo, mensagem, buttonId, buttonTitle) => {
+const saveMessageToLog = async (userRaw, userNorm, tipo, mensagem, buttonId, buttonTitle, direcao = "entrada") => {
   try {
     const sheet = await ensureLogSheet();
     const now = new Date();
     const logEntry = {
       timestamp: now.toISOString(),
+      direcao,
       user: userNorm || "",
       user_raw: userRaw || "",
       tipo: tipo || "text",
@@ -4715,6 +4804,105 @@ Responda SOMENTE com o slug da intenção mais adequada.`,
   ];
 };
 
+// ============================
+// Classificação de mensagem de usuário inativo (sem plano ativo)
+// ============================
+
+const classifyInactiveHeuristic = (text) => {
+  const lower = (text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  if (
+    /ja paguei|ja assinei|ja assine|ja tenho|ja contratei|ja fiz o pagamento|pagamento recusado|pagamento nao aprovado|cartao recusado|nao consigo acessar|nao consigo usar|nao ta funcionando|nao esta funcionando|nao funciona|por que nao funciona|ja tenho plano|meu plano|minha assinatura/.test(lower)
+  ) return "acredita_que_pagou";
+  if (
+    /quero assinar|como assinar|quero contratar|quanto custa|valor(es)?|planos?|assinar|contratar|quero comecar/.test(lower)
+  ) return "quer_assinar";
+  return "outro";
+};
+
+const buildInactiveUserPrompt = (text) => [
+  {
+    role: "system",
+    content:
+      `Você é um classificador de mensagens de um chatbot financeiro chamado FinPlanner IA. ` +
+      `Um usuário enviou uma mensagem mas não tem plano ativo. Classifique a mensagem em uma das categorias:\n\n` +
+      `- "acredita_que_pagou": o usuário diz que já pagou, já assinou, já tem plano, teve problema no pagamento, não consegue acessar mesmo tendo pago, etc.\n` +
+      `- "quer_assinar": o usuário quer saber como assinar, quanto custa, quer contratar o serviço.\n` +
+      `- "outro": qualquer outro caso (saudação genérica, confusão, etc.)\n\n` +
+      `Responda APENAS com uma das palavras: acredita_que_pagou, quer_assinar, outro`,
+  },
+  { role: "user", content: text || "" },
+];
+
+const classifyInactiveUserMessage = async (text) => {
+  const heuristic = classifyInactiveHeuristic(text);
+  if (heuristic !== "outro") return heuristic;
+  if (!openaiClient || !text) return heuristic;
+  try {
+    const output = await callOpenAI({
+      model: OPENAI_INTENT_MODEL,
+      input: buildInactiveUserPrompt(text),
+      temperature: 0,
+      maxOutputTokens: 20,
+    });
+    const normalized = (output || "").toLowerCase().trim();
+    if (["acredita_que_pagou", "quer_assinar", "outro"].includes(normalized)) return normalized;
+  } catch (err) {
+    console.error("[OpenAI] Erro ao classificar usuário inativo:", err?.message || err);
+  }
+  return heuristic;
+};
+
+const buildInactiveUserResponse = (classification, nome) => {
+  const saudacao = nome ? `Olá, ${nome}!` : "Olá!";
+  const site = "www.finplanneria.com.br";
+
+  if (classification === "acredita_que_pagou") {
+    return (
+      `${saudacao} Entendi que você realizou um pagamento, mas não encontrei uma assinatura ativa vinculada ao seu número. 😕\n\n` +
+      `Isso pode acontecer por alguns motivos:\n` +
+      `• *Pagamento não aprovado* – O cartão pode ter sido recusado. Verifique seu e-mail para uma mensagem da Stripe.\n` +
+      `• *Número diferente* – O pagamento pode ter sido feito com outro número de WhatsApp.\n` +
+      `• *Processamento em andamento* – Em alguns casos pode levar alguns minutos.\n\n` +
+      `Ou refaça o checkout em:\n👉 ${site}`
+    );
+  }
+
+  if (classification === "quer_assinar") {
+    return (
+      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}`
+    );
+  }
+
+  // "outro" — mensagem padrão
+  return (
+    `${saudacao} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo.\n\n` +
+    `Conheça e contrate em:\n👉 ${site}`
+  );
+};
+
+const sendSupportButton = (to) =>
+  sendWA({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "cta_url",
+      body: { text: "Dúvidas? Fale conosco." },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: "Falar com suporte",
+          url: `https://wa.me/${ADMIN_NUMBER_NORM}`,
+        },
+      },
+    },
+  });
+
+// ============================
+
 const detectIntent = async (text) => {
   const heuristic = detectIntentHeuristic(text);
   if (!text) return heuristic;
@@ -4775,12 +4963,9 @@ async function handleInteractiveMessage(from, payload) {
     const active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
-      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
-      await sendText(
-        from,
-        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
-        { bypassWindow: true }
-      );
+      const response = buildInactiveUserResponse("outro", nome);
+      await sendText(from, response, { bypassWindow: true });
+      await sendSupportButton(from);
       return;
     }
   }
@@ -5085,12 +5270,10 @@ async function handleUserText(fromRaw, text) {
     const active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
-      const saudacaoNome = nome ? `Olá, ${nome}!` : "Olá!";
-      await sendText(
-        fromRaw,
-        `${saudacaoNome} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo. Conheça e contrate em: www.finplanneria.com.br`,
-        { bypassWindow: true }
-      );
+      const classification = await classifyInactiveUserMessage(trimmed);
+      const response = buildInactiveUserResponse(classification, nome);
+      await sendText(fromRaw, response, { bypassWindow: true });
+      await sendSupportButton(fromRaw);
       return;
     }
   }
@@ -5474,6 +5657,18 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               await handleInteractiveMessage(from, message.interactive);
             } else if (type === "button") {
               await handleInteractiveMessage(from, { type: "button_reply", button_reply: message.button });
+            } else if (type === "audio") {
+              const mediaId = message.audio?.id;
+              if (mediaId && openaiClient) {
+                const transcribed = await transcribeAudio(mediaId);
+                if (transcribed) {
+                  await handleUserText(from, transcribed);
+                } else {
+                  await sendText(from, "Não consegui entender o áudio. Pode enviar como texto?");
+                }
+              } else {
+                await sendText(from, "Para enviar mensagens de voz, ative a integração com IA nas configurações.");
+              }
             } else {
               await sendText(from, "Ainda não entendi esse tipo de mensagem, envie texto ou use o menu.");
             }
