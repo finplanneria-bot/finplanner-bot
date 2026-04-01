@@ -182,7 +182,7 @@ const WEBHOOK_VERIFY_TOKEN = String(
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
-const SKIP_TEMPLATE_REMINDER = (process.env.SKIP_TEMPLATE_REMINDER || "false").toLowerCase() === "true";
+const SKIP_TEMPLATE_REMINDER = (process.env.SKIP_TEMPLATE_REMINDER || "true").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
