@@ -2522,9 +2522,9 @@ const upsertUsuarioFromSubscription = async ({
 
   if (target) {
     Object.entries(update).forEach(([key, value]) => setVal(target, key, value));
-    await target.save();
+    await withRetry(() => target.save(), "upsert-usuario-save");
   } else {
-    await sheet.addRow(update);
+    await withRetry(() => sheet.addRow(update), "upsert-usuario-addrow");
   }
   // ✅ Criar/garantir aba do usuário no Sheets automaticamente
   try {
@@ -5463,18 +5463,37 @@ async function handleStripeWebhook(req, res) {
       }
 
       if (!plano) {
-        console.log("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw, "priceId =", priceId);
+        console.error("⚠️ Evento Stripe sem plano válido. planoRaw =", planoRaw, "priceId =", priceId);
+        if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Stripe*: checkout sem plano válido.\nSession: ${session.id}\nplanoRaw: ${planoRaw || "—"}\npriceId: ${priceId || "—"}\nEmail: ${session.customer_details?.email || "—"}`,
+            { bypassWindow: true }
+          );
+        }
         return res.sendStatus(200);
       }
 
       const whatsapp = session.metadata?.whatsapp;
       if (!whatsapp) {
-        console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+        console.error("⚠️ Evento Stripe sem whatsapp metadata. Session:", session.id);
+        if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Stripe*: checkout sem número de WhatsApp no metadata.\nSession: ${session.id}\nPlano: ${plano}\nEmail: ${session.customer_details?.email || "—"}\n\n_Ative manualmente na planilha._`,
+            { bypassWindow: true }
+          );
+        }
         return res.sendStatus(200);
       }
 
       const userNorm = normalizeUser(whatsapp);
       if (!userNorm) {
+        console.error("⚠️ Stripe: whatsapp inválido no metadata:", whatsapp);
+        if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Stripe*: número de WhatsApp inválido no metadata.\nWhatsApp recebido: ${whatsapp}\nSession: ${session.id}`,
+            { bypassWindow: true }
+          );
+        }
         return res.sendStatus(200);
       }
 
