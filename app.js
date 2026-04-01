@@ -182,6 +182,7 @@ const WEBHOOK_VERIFY_TOKEN = String(
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
+const SKIP_TEMPLATE_REMINDER = (process.env.SKIP_TEMPLATE_REMINDER || "false").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
@@ -5702,8 +5703,18 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
   }
 });
 
-async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
+async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = false } = {}) {
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+
+  // 🕗 Guard de horário: só executa entre 07h e 09h (horário de Brasília, UTC-3)
+  if (!forceHour && requestedBy !== "admin") {
+    const nowUtc = new Date();
+    const brazilHour = (nowUtc.getUTCHours() - 3 + 24) % 24;
+    if (brazilHour < 7 || brazilHour >= 9) {
+      console.log(`[CRON] Fora do horário permitido (hora BRT: ${brazilHour}h). Abortando.`);
+      return { skipped: true, reason: "outside_allowed_hours", brazilHour };
+    }
+  }
 
   // Limpa cache de usuários para garantir dados frescos do cron
   usuarioStatusCache.clear();
@@ -5886,6 +5897,13 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         withinWindow,
         isAdmin: userIsAdmin,
       });
+      // 🔒 Deduplicação diária: não envia mais de uma vez por dia por usuário
+      if (!shouldNotifyAdminReminder(userNorm)) {
+        console.log("[CRON] Lembrete já enviado hoje para:", userNorm);
+        skippedCount += 1;
+        continue;
+      }
+
       let delivered = false;
       let threw = false;
       let usedTemplate = false;
@@ -5898,6 +5916,11 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
             reasons.sent_ok += 1;
             reasons.sent_text_ok += 1;
           }
+        } else if (SKIP_TEMPLATE_REMINDER) {
+          // Custo reduzido: não envia template para usuários fora da janela
+          console.log("[CRON] SKIP_TEMPLATE_REMINDER ativo — pulando usuário fora da janela:", userNorm);
+          skippedCount += 1;
+          continue;
         } else {
           usedTemplate = true;
           delivered = await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
