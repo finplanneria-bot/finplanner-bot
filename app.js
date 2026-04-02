@@ -5924,42 +5924,12 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
 
       console.log("✅ User is active, preparing reminder:", { userNorm, to, isAdmin: userIsAdmin, willCheckWindow: true });
 
-      const pagar = items
-        .filter((item) => item.kind === "pagar")
-        .sort((a, b) => a.dueMs - b.dueMs);
-      const receber = items
-        .filter((item) => item.kind === "receber")
-        .sort((a, b) => a.dueMs - b.dueMs);
+      const { message, pagar, receber } = buildCronMessage(items, todayMs);
 
-      const sections = [];
-      let counter = 1;
-
-      if (pagar.length) {
-        const blocks = pagar.map((item) => {
-          const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
-          const dueLabel = dueRaw || "—";
-          const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
-          return formatEntryBlock(item.row, { index: counter++, dateText: label });
-        });
-        sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
-      }
-
-      if (receber.length) {
-        const blocks = receber.map((item) => {
-          const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
-          const dueLabel = dueRaw || "—";
-          const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
-          return formatEntryBlock(item.row, { index: counter++, dateText: label });
-        });
-        sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
-      }
-
-      if (!sections.length) {
+      if (!message) {
         skippedCount += 1;
         continue;
       }
-
-      const message = `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`;
       const interactionInfo = getLastInteractionFromMap(userNorm, lastInteractionByUser);
       const nowMs = Date.now();
       const diffMinutes =
