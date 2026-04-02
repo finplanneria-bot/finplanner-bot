@@ -1805,8 +1805,8 @@ async function sendWA(payload, context = {}) {
 
 const buildReminderText = (name) => {
   const cleaned = (name || "").trim();
-  const greeting = cleaned ? `Olá, ${cleaned}.` : "Olá!";
-  return `${greeting}\nVocê possui contas que estão vencidas ou vencem hoje.\nToque no botão abaixo para visualizar.`;
+  const greeting = cleaned ? `Olá, ${cleaned}! 👋` : "Olá! 👋";
+  return `${greeting}\nVocê tem contas vencidas ou com vencimento hoje.\nToque em *Visualizar* para ver os detalhes.`;
 };
 
 const sendInteractiveReminder = async (to, userNorm) => {
@@ -2731,29 +2731,35 @@ const formatEntryBlock = (row, options = {}) => {
   const valor = formatCurrencyBR(toNumber(getVal(row, "valor")));
   const data = dateText || formatBRDate(getEffectiveDate(row)) || "—";
   const statusRaw = (getVal(row, "status") || "pendente").toString().toLowerCase();
-  const statusLabel = statusRaw === "recebido" ? "✅ Recebido" : statusRaw === "pago" ? "✅ Pago" : "⏳ Pendente";
-  const tipoRaw = (getVal(row, "tipo") || "conta_pagar").toString();
-  const tipoLabel = tipoRaw === "conta_receber" ? "💵 Receita" : "💸 Despesa";
-  const fields = [
-    `📝 Descrição: ${descricao}`,
-    `📂 Categoria: ${categoriaLabel}`,
-    `💰 Valor: ${valor}`,
-    `📅 Data: ${data}`,
-    `🏷 Status: ${statusLabel}`,
-    `🔁 Tipo: ${tipoLabel}`,
-  ];
+  const statusEmoji = statusRaw === "recebido" || statusRaw === "pago" ? "✅" : "⏳";
+
+  // Linha 1: número + nome
+  // Linha 2: valor · data · status
+  // Linha 3: categoria
+  // Linha 4: recorrência (se houver)
+  const line2Parts = [`💰 ${valor}`, `📅 ${data}`, statusEmoji];
+  const lines = [];
+
+  if (headerLabel) {
+    lines.push(`${headerLabel}\n`);
+    lines.push(`💰 ${valor}  ·  📅 ${data}  ·  ${statusEmoji}`);
+    lines.push(categoriaLabel);
+  } else if (typeof index === "number") {
+    lines.push(`*${index}. ${descricao}*`);
+    lines.push(line2Parts.join("  ·  "));
+    lines.push(categoriaLabel);
+  } else {
+    lines.push(`*${descricao}*`);
+    lines.push(line2Parts.join("  ·  "));
+    lines.push(categoriaLabel);
+  }
+
   if (isRowFixed(row)) {
     const recurrenceLabel = describeRecurrence(row);
-    if (recurrenceLabel) fields.push(`🔄 Recorrência: ${recurrenceLabel}`);
+    if (recurrenceLabel) lines.push(`🔄 ${recurrenceLabel}`);
   }
-  if (headerLabel) {
-    return `${headerLabel}\n\n${fields.join("\n")}`;
-  }
-  if (typeof index === "number") {
-    const numberLine = numberToKeycapEmojis(index);
-    return [numberLine, "", ...fields].join("\n");
-  }
-  return `📘 Lançamento\n\n${fields.join("\n")}`;
+
+  return lines.join("\n");
 };
 
 const formatEntrySummary = (row, options = {}) =>
@@ -3503,9 +3509,11 @@ async function listPendingPayments(fromRaw, userNorm) {
     return;
   }
   const blocks = pending.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  const total = pending.reduce((sum, row) => sum + toNumber(getVal(row, "valor")), 0);
+  const totalLine = total > 0 ? `\n💸 *Total: ${formatCurrencyBR(total)}*` : "";
   const message =
-    `📅 *Contas a pagar pendentes*\n\n${blocks.join("\n\n")}` +
-    `\n\n✅ Para confirmar pagamento, envie o número da conta.\nExemplo: Confirmar 1 ou Confirmar 1,2,3.`;
+    `📋 *Contas a pagar pendentes* (${pending.length})${totalLine}\n\n${blocks.join("\n\n")}` +
+    `\n\n✅ Digite o número para confirmar. Ex: *1* ou *1,2,3*`;
   sessionPayConfirm.delete(userNorm);
   setPayState(userNorm, {
     awaiting: "index",
