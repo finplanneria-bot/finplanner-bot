@@ -1628,6 +1628,7 @@ if (!WA_ACCESS_TOKEN) {
 }
 const WA_TEXT_LIMIT = 4000;
 const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
+const TEMPLATE_REMINDER_NAME_V2 = "lembrete_finplanner_2";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
 const ADMIN_FALLBACK_NUMBER = "5579998023759";
@@ -1839,6 +1840,49 @@ const sendInteractiveReminder = async (to, userNorm) => {
     templateName: null,
   });
   return sendWA(payload, { kind: "interactive" });
+};
+
+const sendTemplateReminderV2 = async (to, userNorm, { nameHint = "", vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
+  const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
+  const safeName = firstName || "-";
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: TEMPLATE_REMINDER_NAME_V2,
+      language: { code: "pt_BR" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: safeName },
+            { type: "text", text: String(vencidas) },
+            { type: "text", text: String(hoje) },
+            { type: "text", text: total },
+          ],
+        },
+        {
+          type: "button",
+          sub_type: "quick_reply",
+          index: "0",
+          parameters: [{ type: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
+        },
+      ],
+    },
+  };
+  console.log("[WA] sending", {
+    to,
+    kind: "template",
+    withinWindow: false,
+    hasBody: false,
+    templateName: TEMPLATE_REMINDER_NAME_V2,
+  });
+  const success = await sendWA(payload, { kind: "template" });
+  if (success) {
+    console.log("✅ Template v2 enviado para", to, { vencidas, hoje, total });
+  }
+  return success;
 };
 
 const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
@@ -5923,7 +5967,20 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
           continue;
         } else {
           usedTemplate = true;
-          delivered = await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
+          // Calcula resumo para o template v2
+          const vencidasItems = items.filter((item) => item.dueMs < todayMs);
+          const hojeItems = items.filter((item) => item.dueMs >= todayMs);
+          const totalValor = items.reduce((sum, item) => {
+            const raw = (getVal(item.row, "valor") || "0").toString().replace(",", ".").replace(/[^\d.]/g, "");
+            return sum + (parseFloat(raw) || 0);
+          }, 0);
+          const totalFormatted = totalValor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          delivered = await sendTemplateReminderV2(to, userNorm, {
+            nameHint: getStoredFirstName(userNorm),
+            vencidas: vencidasItems.length,
+            hoje: hojeItems.length,
+            total: totalFormatted,
+          });
           if (delivered) {
             sentCount += 1;
             reasons.sent_ok += 1;
