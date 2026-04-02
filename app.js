@@ -1803,15 +1803,22 @@ async function sendWA(payload, context = {}) {
   }
 }
 
-const buildReminderText = (name) => {
+const buildReminderText = (name, { vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
   const cleaned = (name || "").trim();
   const greeting = cleaned ? `Olá, ${cleaned}! 👋` : "Olá! 👋";
-  return `${greeting}\nVocê tem contas vencidas ou com vencimento hoje.\nToque em *Visualizar* para ver os detalhes.`;
+  return (
+    `${greeting}\n\n` +
+    `Você tem pendências financeiras:\n` +
+    `📋 Vencidas: ${vencidas} conta(s)\n` +
+    `📅 Vencem hoje: ${hoje} conta(s)\n` +
+    `💰 Total: R$ ${total}\n\n` +
+    `Toque em Visualizar para ver os detalhes.`
+  );
 };
 
-const sendInteractiveReminder = async (to, userNorm) => {
+const sendInteractiveReminder = async (to, userNorm, { vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
   const name = getStoredFirstName(userNorm);
-  const bodyText = buildReminderText(name);
+  const bodyText = buildReminderText(name, { vencidas, hoje, total });
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -5981,13 +5988,23 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
         continue;
       }
 
+      // Calcula resumo comum para interactive e template
+      const vencidasItems = items.filter((item) => item.dueMs < todayMs);
+      const hojeItems = items.filter((item) => item.dueMs >= todayMs);
+      const totalValor = items.reduce((sum, item) => {
+        const raw = (getVal(item.row, "valor") || "0").toString().replace(",", ".").replace(/[^\d.]/g, "");
+        return sum + (parseFloat(raw) || 0);
+      }, 0);
+      const totalFormatted = totalValor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const reminderSummary = { vencidas: vencidasItems.length, hoje: hojeItems.length, total: totalFormatted };
+
       let delivered = false;
       let threw = false;
       let usedTemplate = false;
       let usedFallback = false;
       try {
         if (withinWindow) {
-          delivered = await sendInteractiveReminder(to, userNorm);
+          delivered = await sendInteractiveReminder(to, userNorm, reminderSummary);
           if (delivered) {
             sentCount += 1;
             reasons.sent_ok += 1;
@@ -6000,19 +6017,9 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
           continue;
         } else {
           usedTemplate = true;
-          // Calcula resumo para o template v2
-          const vencidasItems = items.filter((item) => item.dueMs < todayMs);
-          const hojeItems = items.filter((item) => item.dueMs >= todayMs);
-          const totalValor = items.reduce((sum, item) => {
-            const raw = (getVal(item.row, "valor") || "0").toString().replace(",", ".").replace(/[^\d.]/g, "");
-            return sum + (parseFloat(raw) || 0);
-          }, 0);
-          const totalFormatted = totalValor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           delivered = await sendTemplateReminderV2(to, userNorm, {
             nameHint: getStoredFirstName(userNorm),
-            vencidas: vencidasItems.length,
-            hoje: hojeItems.length,
-            total: totalFormatted,
+            ...reminderSummary,
           });
           if (delivered) {
             sentCount += 1;
