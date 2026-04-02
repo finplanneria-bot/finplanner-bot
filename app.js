@@ -2628,6 +2628,11 @@ const isUsuarioAtivo = async (userNorm) => {
     usuarioStatusCache.set(userNorm, { value: false, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
     return false;
   }
+  // Fallback: se nome do WA não está em cache, usa o nome do sheet
+  if (!getStoredFirstName(userNorm)) {
+    const sheetNome = getVal(target, "nome");
+    if (sheetNome) rememberUserName(userNorm, sheetNome);
+  }
   console.log("🔎 MatchedRow:", {
     userNorm,
     candidates,
