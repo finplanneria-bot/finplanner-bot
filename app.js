@@ -3206,24 +3206,27 @@ const buildCronMessage = (items, todayMs) => {
     const blocks = pagar.map((item) => {
       const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
       const dueLabel = dueRaw || "—";
-      const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+      const label = item.dueMs < todayMs ? `${dueLabel} ⚠️ atrasado` : dueLabel;
       return formatEntryBlock(item.row, { index: counter++, dateText: label });
     });
-    sections.push(`💸 *Pagamentos pendentes*\n\n${blocks.join("\n\n")}`);
+    sections.push(`💸 *Pagamentos pendentes* (${pagar.length})\n\n${blocks.join("\n\n")}`);
   }
 
   if (receber.length) {
     const blocks = receber.map((item) => {
       const dueRaw = formatBRDate(getVal(item.row, "vencimento_iso"));
       const dueLabel = dueRaw || "—";
-      const label = item.dueMs < todayMs ? `${dueLabel} (atrasado)` : dueLabel;
+      const label = item.dueMs < todayMs ? `${dueLabel} ⚠️ atrasado` : dueLabel;
       return formatEntryBlock(item.row, { index: counter++, dateText: label });
     });
-    sections.push(`💵 *Recebimentos pendentes*\n\n${blocks.join("\n\n")}`);
+    sections.push(`💵 *Recebimentos pendentes* (${receber.length})\n\n${blocks.join("\n\n")}`);
   }
 
   if (!sections.length) return { message: "", pagar, receber };
-  return { message: `⚠️ *Lembrete FinPlanner IA*\n\n${sections.join("\n\n")}`, pagar, receber };
+
+  const totalValor = items.reduce((sum, item) => sum + toNumber(getVal(item.row, "valor")), 0);
+  const totalLine = totalValor > 0 ? `\n💰 *Total: ${formatCurrencyBR(totalValor)}*\n` : "";
+  return { message: `📋 *Seus lembretes*${totalLine}\n${sections.join("\n\n")}`, pagar, receber };
 };
 
 const sendCronReminderForUser = async (userNorm, to, { bypassWindow = false } = {}) => {
