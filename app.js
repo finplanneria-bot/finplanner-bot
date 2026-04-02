@@ -182,6 +182,7 @@ const WEBHOOK_VERIFY_TOKEN = String(
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
+const SKIP_TEMPLATE_REMINDER = (process.env.SKIP_TEMPLATE_REMINDER || "true").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
@@ -1627,6 +1628,7 @@ if (!WA_ACCESS_TOKEN) {
 }
 const WA_TEXT_LIMIT = 4000;
 const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
+const TEMPLATE_REMINDER_NAME_V2 = "lembrete_finplanner_2";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
 const ADMIN_FALLBACK_NUMBER = "5579998023759";
@@ -1838,6 +1840,49 @@ const sendInteractiveReminder = async (to, userNorm) => {
     templateName: null,
   });
   return sendWA(payload, { kind: "interactive" });
+};
+
+const sendTemplateReminderV2 = async (to, userNorm, { nameHint = "", vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
+  const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
+  const safeName = firstName || "-";
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: TEMPLATE_REMINDER_NAME_V2,
+      language: { code: "pt_BR" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: safeName },
+            { type: "text", text: String(vencidas) },
+            { type: "text", text: String(hoje) },
+            { type: "text", text: total },
+          ],
+        },
+        {
+          type: "button",
+          sub_type: "quick_reply",
+          index: "0",
+          parameters: [{ type: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
+        },
+      ],
+    },
+  };
+  console.log("[WA] sending", {
+    to,
+    kind: "template",
+    withinWindow: false,
+    hasBody: false,
+    templateName: TEMPLATE_REMINDER_NAME_V2,
+  });
+  const success = await sendWA(payload, { kind: "template" });
+  if (success) {
+    console.log("✅ Template v2 enviado para", to, { vencidas, hoje, total });
+  }
+  return success;
 };
 
 const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
@@ -3047,6 +3092,24 @@ const resetSession = (userNorm) => {
   sessionPayConfirm.delete(userNorm);
 };
 
+const hasActiveSession = (userNorm) =>
+  sessionPaymentCode.has(userNorm) ||
+  sessionStatusConfirm.has(userNorm) ||
+  sessionPayConfirm.has(userNorm) ||
+  sessionFixedDelete.has(userNorm) ||
+  sessionFixedRegister.has(userNorm) ||
+  sessionEdit.has(userNorm) ||
+  sessionDelete.has(userNorm) ||
+  sessionRegister.has(userNorm) ||
+  sessionPeriod.has(userNorm);
+
+const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
+
+const sendCancelMessage = async (to) => {
+  await sendText(to, "Operação cancelada.");
+  await sendMainMenu(to);
+};
+
 // ============================
 // Sheets operations
 // ============================
@@ -3652,13 +3715,13 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   const state = sessionDelete.get(userNorm);
   if (!state || state.awaiting !== "confirm") return false;
   if (deleteStateExpired(state)) {
-    sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (!confirmed) {
-    sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const currentIndex = state.currentIndex || 0;
@@ -3731,8 +3794,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   const state = sessionEdit.get(userNorm);
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
-    sessionEdit.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (state.awaiting === "index") {
@@ -3768,8 +3831,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   if (state.awaiting === "field") {
     const field = text.trim().toLowerCase();
     if (/^cancelar/.test(field)) {
-      sessionEdit.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
@@ -3792,8 +3855,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   }
   if (state.awaiting === "value") {
     if (/^cancelar/i.test(text.trim())) {
-      sessionEdit.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     const { row, field } = state;
@@ -3881,8 +3944,8 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
   const state = sessionFixedRegister.get(userNorm);
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
-    sessionFixedRegister.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const trimmed = (text || "").trim();
@@ -3891,8 +3954,8 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (/^cancelar/i.test(trimmed)) {
-    sessionFixedRegister.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const parsed = parseFixedAccountCommand(text);
@@ -3913,8 +3976,8 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
   const state = sessionDelete.get(userNorm);
   if (!state) return false;
   if (deleteStateExpired(state)) {
-    sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (state.awaiting === "index") {
@@ -4223,8 +4286,8 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   const state = sessionStatusConfirm.get(userNorm);
   if (!state) return;
   if (statusStateExpired(state)) {
-    sessionStatusConfirm.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return;
   }
   const entry = { ...state.entry };
@@ -4244,8 +4307,8 @@ async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   const state = sessionStatusConfirm.get(userNorm);
   if (!state) return false;
   if (statusStateExpired(state)) {
-    sessionStatusConfirm.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
@@ -4270,8 +4333,8 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
   const state = sessionPaymentCode.get(userNorm);
   if (!state) return false;
   if (paymentCodeStateExpired(state)) {
-    sessionPaymentCode.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (state.awaiting !== "input") return false;
@@ -4281,8 +4344,8 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (/^cancelar/i.test(code)) {
-    sessionPaymentCode.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const row = await findRowById(userNorm, state.rowId);
@@ -4306,15 +4369,15 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   const state = sessionPayConfirm.get(userNorm);
   if (!state) return false;
   if (payStateExpired(state)) {
-    sessionPayConfirm.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
   if (state.awaiting === "index") {
     if (/cancel/.test(normalizedText)) {
-      sessionPayConfirm.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     const indexes = resolveSelectionIndexes(text, state.rows || []);
@@ -4354,8 +4417,8 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
       return true;
     }
     if (/cancel/.test(normalizedText)) {
-      sessionPayConfirm.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     if (/copiar|codigo|boleto|pix/.test(normalizedText)) {
@@ -5049,8 +5112,8 @@ async function handleInteractiveMessage(from, payload) {
       return;
     }
     if (id === "PAY:CANCEL") {
-      sessionPayConfirm.delete(userNorm);
-      await sendText(from, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(from);
       return;
     }
     if (id.startsWith("PAY:COPY:")) {
@@ -5276,6 +5339,13 @@ async function handleUserText(fromRaw, text) {
       await sendSupportButton(fromRaw);
       return;
     }
+  }
+
+  // 🚪 Interceptor global: qualquer palavra de escape cancela o fluxo ativo e abre o menu
+  if (hasActiveSession(userNorm) && ESCAPE_REGEX.test(trimmed)) {
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
+    return;
   }
 
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
@@ -5702,8 +5772,18 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
   }
 });
 
-async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
+async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = false } = {}) {
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+
+  // 🕗 Guard de horário: só executa entre 07h e 09h (horário de Brasília, UTC-3)
+  if (!forceHour && requestedBy !== "admin") {
+    const nowUtc = new Date();
+    const brazilHour = (nowUtc.getUTCHours() - 3 + 24) % 24;
+    if (brazilHour < 7 || brazilHour >= 9) {
+      console.log(`[CRON] Fora do horário permitido (hora BRT: ${brazilHour}h). Abortando.`);
+      return { skipped: true, reason: "outside_allowed_hours", brazilHour };
+    }
+  }
 
   // Limpa cache de usuários para garantir dados frescos do cron
   usuarioStatusCache.clear();
@@ -5886,6 +5966,13 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
         withinWindow,
         isAdmin: userIsAdmin,
       });
+      // 🔒 Deduplicação diária: não envia mais de uma vez por dia por usuário
+      if (!shouldNotifyAdminReminder(userNorm)) {
+        console.log("[CRON] Lembrete já enviado hoje para:", userNorm);
+        skippedCount += 1;
+        continue;
+      }
+
       let delivered = false;
       let threw = false;
       let usedTemplate = false;
@@ -5898,9 +5985,27 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false } = {}) {
             reasons.sent_ok += 1;
             reasons.sent_text_ok += 1;
           }
+        } else if (SKIP_TEMPLATE_REMINDER) {
+          // Custo reduzido: não envia template para usuários fora da janela
+          console.log("[CRON] SKIP_TEMPLATE_REMINDER ativo — pulando usuário fora da janela:", userNorm);
+          skippedCount += 1;
+          continue;
         } else {
           usedTemplate = true;
-          delivered = await sendTemplateReminder(to, userNorm, getStoredFirstName(userNorm));
+          // Calcula resumo para o template v2
+          const vencidasItems = items.filter((item) => item.dueMs < todayMs);
+          const hojeItems = items.filter((item) => item.dueMs >= todayMs);
+          const totalValor = items.reduce((sum, item) => {
+            const raw = (getVal(item.row, "valor") || "0").toString().replace(",", ".").replace(/[^\d.]/g, "");
+            return sum + (parseFloat(raw) || 0);
+          }, 0);
+          const totalFormatted = totalValor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          delivered = await sendTemplateReminderV2(to, userNorm, {
+            nameHint: getStoredFirstName(userNorm),
+            vencidas: vencidasItems.length,
+            hoje: hojeItems.length,
+            total: totalFormatted,
+          });
           if (delivered) {
             sentCount += 1;
             reasons.sent_ok += 1;
