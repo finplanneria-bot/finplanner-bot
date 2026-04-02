@@ -3092,6 +3092,24 @@ const resetSession = (userNorm) => {
   sessionPayConfirm.delete(userNorm);
 };
 
+const hasActiveSession = (userNorm) =>
+  sessionPaymentCode.has(userNorm) ||
+  sessionStatusConfirm.has(userNorm) ||
+  sessionPayConfirm.has(userNorm) ||
+  sessionFixedDelete.has(userNorm) ||
+  sessionFixedRegister.has(userNorm) ||
+  sessionEdit.has(userNorm) ||
+  sessionDelete.has(userNorm) ||
+  sessionRegister.has(userNorm) ||
+  sessionPeriod.has(userNorm);
+
+const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
+
+const sendCancelMessage = async (to) => {
+  await sendText(to, "Operação cancelada.");
+  await sendMainMenu(to);
+};
+
 // ============================
 // Sheets operations
 // ============================
@@ -3697,13 +3715,13 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   const state = sessionDelete.get(userNorm);
   if (!state || state.awaiting !== "confirm") return false;
   if (deleteStateExpired(state)) {
-    sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (!confirmed) {
-    sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const currentIndex = state.currentIndex || 0;
@@ -3776,8 +3794,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   const state = sessionEdit.get(userNorm);
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
-    sessionEdit.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (state.awaiting === "index") {
@@ -3813,8 +3831,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   if (state.awaiting === "field") {
     const field = text.trim().toLowerCase();
     if (/^cancelar/.test(field)) {
-      sessionEdit.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
@@ -3837,8 +3855,8 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   }
   if (state.awaiting === "value") {
     if (/^cancelar/i.test(text.trim())) {
-      sessionEdit.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     const { row, field } = state;
@@ -3926,8 +3944,8 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
   const state = sessionFixedRegister.get(userNorm);
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
-    sessionFixedRegister.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const trimmed = (text || "").trim();
@@ -3936,8 +3954,8 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (/^cancelar/i.test(trimmed)) {
-    sessionFixedRegister.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const parsed = parseFixedAccountCommand(text);
@@ -3958,8 +3976,8 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
   const state = sessionDelete.get(userNorm);
   if (!state) return false;
   if (deleteStateExpired(state)) {
-    sessionDelete.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (state.awaiting === "index") {
@@ -4268,8 +4286,8 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   const state = sessionStatusConfirm.get(userNorm);
   if (!state) return;
   if (statusStateExpired(state)) {
-    sessionStatusConfirm.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return;
   }
   const entry = { ...state.entry };
@@ -4289,8 +4307,8 @@ async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   const state = sessionStatusConfirm.get(userNorm);
   if (!state) return false;
   if (statusStateExpired(state)) {
-    sessionStatusConfirm.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
@@ -4315,8 +4333,8 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
   const state = sessionPaymentCode.get(userNorm);
   if (!state) return false;
   if (paymentCodeStateExpired(state)) {
-    sessionPaymentCode.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   if (state.awaiting !== "input") return false;
@@ -4326,8 +4344,8 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (/^cancelar/i.test(code)) {
-    sessionPaymentCode.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const row = await findRowById(userNorm, state.rowId);
@@ -4351,15 +4369,15 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   const state = sessionPayConfirm.get(userNorm);
   if (!state) return false;
   if (payStateExpired(state)) {
-    sessionPayConfirm.delete(userNorm);
-    await sendText(fromRaw, "Operação cancelada por tempo excedido.");
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
     return true;
   }
   const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
   if (state.awaiting === "index") {
     if (/cancel/.test(normalizedText)) {
-      sessionPayConfirm.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     const indexes = resolveSelectionIndexes(text, state.rows || []);
@@ -4399,8 +4417,8 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
       return true;
     }
     if (/cancel/.test(normalizedText)) {
-      sessionPayConfirm.delete(userNorm);
-      await sendText(fromRaw, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
       return true;
     }
     if (/copiar|codigo|boleto|pix/.test(normalizedText)) {
@@ -5094,8 +5112,8 @@ async function handleInteractiveMessage(from, payload) {
       return;
     }
     if (id === "PAY:CANCEL") {
-      sessionPayConfirm.delete(userNorm);
-      await sendText(from, "Operação cancelada.");
+      resetSession(userNorm);
+      await sendCancelMessage(from);
       return;
     }
     if (id.startsWith("PAY:COPY:")) {
@@ -5321,6 +5339,13 @@ async function handleUserText(fromRaw, text) {
       await sendSupportButton(fromRaw);
       return;
     }
+  }
+
+  // 🚪 Interceptor global: qualquer palavra de escape cancela o fluxo ativo e abre o menu
+  if (hasActiveSession(userNorm) && ESCAPE_REGEX.test(trimmed)) {
+    resetSession(userNorm);
+    await sendCancelMessage(fromRaw);
+    return;
   }
 
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
