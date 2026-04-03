@@ -1631,9 +1631,8 @@ const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_NAME_V2 = "lembrete_finplanner_2";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
-const ADMIN_FALLBACK_NUMBER = "5579991249561";
 const SUPPORT_NUMBER = normalizeUser("5579991249561");
-const ADMIN_NUMBER_NORM = normalizeUser(ADMIN_WA_NUMBER || ADMIN_FALLBACK_NUMBER);
+const ADMIN_NUMBER_NORM = normalizeUser(ADMIN_WA_NUMBER);
 const ADMIN_NUMBERS = new Set();
 
 function registerAdminNumber(value) {
@@ -1655,7 +1654,6 @@ function isAdminUser(userNorm) {
 }
 
 registerAdminNumber(ADMIN_WA_NUMBER);
-registerAdminNumber(ADMIN_FALLBACK_NUMBER);
 
 const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   if (!text) return [];
