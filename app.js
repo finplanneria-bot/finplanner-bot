@@ -1802,22 +1802,32 @@ async function sendWA(payload, context = {}) {
   }
 }
 
-const buildReminderText = (name, { vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
+const buildReminderText = (name, {
+  pagarVencidas = 0, pagarHoje = 0,
+  receberVencidas = 0, receberHoje = 0,
+  total = "0,00"
+} = {}) => {
   const cleaned = (name || "").trim();
   const greeting = cleaned ? `Olá, ${cleaned}! 👋` : "Olá! 👋";
   return (
     `${greeting}\n\n` +
     `Você tem pendências financeiras:\n` +
-    `📋 Vencidas: ${vencidas} conta(s)\n` +
-    `📅 Vencem hoje: ${hoje} conta(s)\n` +
-    `💰 Total: R$ ${total}\n\n` +
+    `📋 Contas vencidas: ${pagarVencidas} conta(s)\n` +
+    `📅 Contas que vencem hoje: ${pagarHoje} conta(s)\n` +
+    `💸 Recebimentos vencidos: ${receberVencidas} recebimento(s)\n` +
+    `💰 Recebimentos para hoje: ${receberHoje} recebimento(s)\n\n` +
+    `✅ Total: R$ ${total}\n\n` +
     `Toque em Visualizar para ver os detalhes.`
   );
 };
 
-const sendInteractiveReminder = async (to, userNorm, { vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
+const sendInteractiveReminder = async (to, userNorm, {
+  pagarVencidas = 0, pagarHoje = 0,
+  receberVencidas = 0, receberHoje = 0,
+  total = "0,00"
+} = {}) => {
   const name = getStoredFirstName(userNorm);
-  const bodyText = buildReminderText(name, { vencidas, hoje, total });
+  const bodyText = buildReminderText(name, { pagarVencidas, pagarHoje, receberVencidas, receberHoje, total });
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -1848,9 +1858,16 @@ const sendInteractiveReminder = async (to, userNorm, { vencidas = 0, hoje = 0, t
   return sendWA(payload, { kind: "interactive" });
 };
 
-const sendTemplateReminderV2 = async (to, userNorm, { nameHint = "", vencidas = 0, hoje = 0, total = "0,00" } = {}) => {
+const sendTemplateReminderV2 = async (to, userNorm, {
+  nameHint = "",
+  pagarVencidas = 0, pagarHoje = 0,
+  receberVencidas = 0, receberHoje = 0,
+  total = "0,00"
+} = {}) => {
   const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
   const safeName = firstName || "-";
+  const vencidasTotal = pagarVencidas + receberVencidas;
+  const hojeTotal = pagarHoje + receberHoje;
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -1863,8 +1880,8 @@ const sendTemplateReminderV2 = async (to, userNorm, { nameHint = "", vencidas = 
           type: "body",
           parameters: [
             { type: "text", text: safeName },
-            { type: "text", text: String(vencidas) },
-            { type: "text", text: String(hoje) },
+            { type: "text", text: String(vencidasTotal) },
+            { type: "text", text: String(hojeTotal) },
             { type: "text", text: total },
           ],
         },
@@ -1886,7 +1903,7 @@ const sendTemplateReminderV2 = async (to, userNorm, { nameHint = "", vencidas = 
   });
   const success = await sendWA(payload, { kind: "template" });
   if (success) {
-    console.log("✅ Template v2 enviado para", to, { vencidas, hoje, total });
+    console.log("✅ Template v2 enviado para", to, { pagarVencidas, pagarHoje, receberVencidas, receberHoje, total });
   }
   return success;
 };
@@ -2806,6 +2823,22 @@ const formatSaldoLine = (recebido, pago) => {
   return saldo < 0 ? `🟥 🔹 Saldo no período: ${saldoText}` : `🔹 Saldo no período: ${saldoText}`;
 };
 
+const buildPeriodLabel = (start, end) => {
+  const now = new Date();
+  const todayStart = startOfDay(now);
+  const todayEnd = endOfDay(now);
+  if (start.getTime() === todayStart.getTime() && end.getTime() === todayEnd.getTime()) {
+    return `Hoje, ${formatBRDate(now)}`;
+  }
+  const monthStart = startOfMonth(now.getFullYear(), now.getMonth());
+  const monthEnd = endOfMonth(now.getFullYear(), now.getMonth());
+  if (start.getTime() === monthStart.getTime() && end.getTime() === monthEnd.getTime()) {
+    return now.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })
+      .replace(/^./, (c) => c.toUpperCase());
+  }
+  return `${formatBRDate(start)} a ${formatBRDate(end)}`;
+};
+
 // ============================
 // Menus interativos
 // ============================
@@ -2907,8 +2940,8 @@ const sendPeriodoButtons = (to, prefix) =>
       body: { text: "🗓️ Escolha o período:" },
       action: {
         buttons: [
-          { type: "reply", reply: { id: `${prefix}:mes_atual`, title: "Mês atual" } },
-          { type: "reply", reply: { id: `${prefix}:todo_periodo`, title: "Todo período" } },
+          { type: "reply", reply: { id: `${prefix}:hoje`, title: "Hoje" } },
+          { type: "reply", reply: { id: `${prefix}:mes_atual`, title: "Mês Atual" } },
           { type: "reply", reply: { id: `${prefix}:personalizado`, title: "Data personalizada" } },
         ],
       },
@@ -3383,6 +3416,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
   const rows = await allRowsForUser(userNorm);
   const { start, end } = range;
   const inRange = withinPeriod(rows, start, end);
+  const periodLabel = buildPeriodLabel(start, end);
 
   const statusOf = (row) => (getVal(row, "status") || "").toString().toLowerCase();
   const isPaid = (row) => statusOf(row) === "pago";
@@ -3391,6 +3425,8 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     return status === "recebido" || status === "pago";
   };
 
+  const DIV = "━━━━━━━━━━━━";
+
   if (category === "cp") {
     const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
     const pending = expenses.filter((row) => !isPaid(row));
@@ -3398,19 +3434,23 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     const totalPending = sumValues(pending);
     const totalPaid = sumValues(paid);
     const totalExpenses = sumValues(expenses);
-    let message = "📊 *Relatório • Contas a pagar*";
+
+    let message = `📊 *Contas a Pagar*\n📅 _${periodLabel}_`;
     if (!expenses.length) {
       message += "\n\n✅ Nenhuma conta encontrada para o período selecionado.";
     } else {
       if (pending.length) {
-        message += `\n\n📂 Categorias pendentes:\n${formatCategoryLines(pending)}`;
+        const blocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
+        message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
       }
       if (paid.length) {
-        message += `\n\n✅ Categorias pagas:\n${formatCategoryLines(paid)}`;
+        const blocks = paid.map((row) => formatEntryBlock(row)).join("\n\n");
+        message += `\n\n✅ *Pagas* (${paid.length})\n\n${blocks}`;
       }
-      message += `\n\n🔸 Total pendente: ${formatCurrencyBR(totalPending)}`;
-      message += `\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
-      message += `\n💰 Total geral: ${formatCurrencyBR(totalExpenses)}`;
+      message += `\n\n${DIV}`;
+      message += `\n⏳ Pendente:     ${formatCurrencyBR(totalPending)}`;
+      message += `\n✅ Pago:         ${formatCurrencyBR(totalPaid)}`;
+      message += `\n💰 *Total geral: ${formatCurrencyBR(totalExpenses)}*`;
     }
     await sendText(fromRaw, message);
     return;
@@ -3423,14 +3463,23 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     const totalReceived = sumValues(confirmed);
     const totalPending = sumValues(pending);
     const totalReceipts = sumValues(receipts);
-    let message = "📊 *Relatório • Recebimentos*";
+
+    let message = `📊 *Recebimentos*\n📅 _${periodLabel}_`;
     if (!receipts.length) {
       message += "\n\n✅ Nenhum recebimento encontrado para o período selecionado.";
     } else {
-      message += `\n\n📂 Categorias:\n${formatCategoryLines(receipts)}`;
-      message += `\n\n💵 Total recebido: ${formatCurrencyBR(totalReceived)}`;
-      message += `\n⏳ Total pendente: ${formatCurrencyBR(totalPending)}`;
-      message += `\n💰 Total geral: ${formatCurrencyBR(totalReceipts)}`;
+      if (pending.length) {
+        const blocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
+        message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
+      }
+      if (confirmed.length) {
+        const blocks = confirmed.map((row) => formatEntryBlock(row)).join("\n\n");
+        message += `\n\n✅ *Recebidos* (${confirmed.length})\n\n${blocks}`;
+      }
+      message += `\n\n${DIV}`;
+      message += `\n✅ Recebido:     ${formatCurrencyBR(totalReceived)}`;
+      message += `\n⏳ Pendente:     ${formatCurrencyBR(totalPending)}`;
+      message += `\n💰 *Total geral: ${formatCurrencyBR(totalReceipts)}*`;
     }
     await sendText(fromRaw, message);
     return;
@@ -3442,21 +3491,31 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     const pending = expenses.filter((row) => !isPaid(row));
     const totalPaid = sumValues(paid);
     const totalPending = sumValues(pending);
-    let message = "📊 *Relatório • Pagamentos*";
+
+    let message = `📊 *Pagamentos*\n📅 _${periodLabel}_`;
     if (!paid.length) {
       message += "\n\n✅ Nenhum pagamento confirmado no período.";
       if (pending.length) {
-        message += `\n\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
+        const blocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
+        message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
+        message += `\n\n${DIV}`;
+        message += `\n⏳ Pendente: ${formatCurrencyBR(totalPending)}`;
       }
       await sendText(fromRaw, message);
       return;
     }
-    message += `\n\n📂 Categorias pagas:\n${formatCategoryLines(paid)}`;
-    message += `\n\n💸 Total pago: ${formatCurrencyBR(totalPaid)}`;
+    const paidBlocks = paid.map((row) => formatEntryBlock(row)).join("\n\n");
+    message += `\n\n✅ *Pagas* (${paid.length})\n\n${paidBlocks}`;
     if (pending.length) {
-      message += `\n⏳ Contas pendentes: ${formatCurrencyBR(totalPending)}`;
+      const pendingBlocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
+      message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${pendingBlocks}`;
     }
-    message += `\n💰 Total geral: ${formatCurrencyBR(totalPaid)}`;
+    message += `\n\n${DIV}`;
+    message += `\n✅ Pago:         ${formatCurrencyBR(totalPaid)}`;
+    if (pending.length) {
+      message += `\n⏳ Pendente:     ${formatCurrencyBR(totalPending)}`;
+    }
+    message += `\n💰 *Total geral: ${formatCurrencyBR(totalPaid + totalPending)}*`;
     await sendText(fromRaw, message);
     return;
   }
@@ -3469,30 +3528,33 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     const paidExpenses = expenses.filter(isPaid);
     const pendingExpenses = expenses.filter((row) => !isPaid(row));
     const totalReceived = sumValues(confirmedReceipts);
+    const totalPendingReceipts = sumValues(pendingReceipts);
     const totalReceipts = sumValues(receipts);
     const totalPaid = sumValues(paidExpenses);
     const totalPendingExpenses = sumValues(pendingExpenses);
-    const totalPendingReceipts = sumValues(pendingReceipts);
-    let message = "📊 *Relatório • Completo*";
+    const totalExpenses = sumValues(expenses);
+
+    let message = `📊 *Relatório Completo*\n📅 _${periodLabel}_`;
     if (!receipts.length && !expenses.length) {
       message += "\n\n✅ Nenhum lançamento encontrado para o período selecionado.";
     } else {
       if (receipts.length) {
-        message += `\n\n💵 Recebimentos:\n${formatCategoryLines(receipts)}`;
-        message += `\n\n💵 Total recebido: ${formatCurrencyBR(totalReceived)}`;
-        message += `\n⏳ Total pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
-        message += `\n💰 Total geral: ${formatCurrencyBR(totalReceipts)}`;
+        message += `\n\n${DIV}`;
+        message += `\n💵 *Recebimentos* (${receipts.length} lançamento${receipts.length > 1 ? "s" : ""})`;
+        message += `\n${formatCategoryLines(receipts)}`;
+        message += `\n💵 Recebido: ${formatCurrencyBR(totalReceived)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
       }
-      if (pendingExpenses.length) {
-        message += `\n\n⏳ Contas a pagar:\n${formatCategoryLines(pendingExpenses)}`;
-        message += `\n\n⏳ Total pendente: ${formatCurrencyBR(totalPendingExpenses)}`;
+      if (expenses.length) {
+        message += `\n\n${DIV}`;
+        message += `\n💸 *Contas a Pagar* (${expenses.length} lançamento${expenses.length > 1 ? "s" : ""})`;
+        message += `\n${formatCategoryLines(expenses)}`;
+        message += `\n✅ Pago: ${formatCurrencyBR(totalPaid)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingExpenses)}`;
       }
-      if (paidExpenses.length) {
-        message += `\n\n✅ Contas pagas:\n${formatCategoryLines(paidExpenses)}`;
-        message += `\n\n✅ Total pago: ${formatCurrencyBR(totalPaid)}`;
-      }
-      const saldo = formatSaldoLine(totalReceived, totalPaid);
-      message += `\n\n${saldo}`;
+      message += `\n\n${DIV}`;
+      message += `\n📈 *Resumo*`;
+      message += `\n💵 Entradas: ${formatCurrencyBR(totalReceipts)}`;
+      message += `\n💸 Saídas:   ${formatCurrencyBR(totalExpenses)}`;
+      message += `\n${formatSaldoLine(totalReceived, totalPaid)}`;
     }
     await sendText(fromRaw, message);
   }
@@ -5166,24 +5228,17 @@ async function handleInteractiveMessage(from, payload) {
     if (id.startsWith("REL:PER:")) {
       const [, , cat, opt] = id.split(":");
       const now = new Date();
+      if (opt === "hoje") {
+        const range = { start: startOfDay(now), end: endOfDay(now) };
+        await showReportByCategory(from, userNorm, cat, range);
+        sessionPeriod.delete(userNorm);
+      }
       if (opt === "mes_atual") {
         const range = {
           start: startOfMonth(now.getFullYear(), now.getMonth()),
           end: endOfMonth(now.getFullYear(), now.getMonth()),
         };
         await showReportByCategory(from, userNorm, cat, range);
-        sessionPeriod.delete(userNorm);
-      }
-      if (opt === "todo_periodo") {
-        const rows = await allRowsForUser(userNorm);
-        let min = null;
-        rows.forEach((row) => {
-          const dt = getEffectiveDate(row);
-          if (dt && (!min || dt < min)) min = dt;
-        });
-        const start = min ? startOfDay(min) : startOfDay(new Date());
-        const end = endOfDay(new Date());
-        await showReportByCategory(from, userNorm, cat, { start, end });
         sessionPeriod.delete(userNorm);
       }
       if (opt === "personalizado") {
@@ -5963,14 +6018,16 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
       }
 
       // Calcula resumo comum para interactive e template
-      const vencidasItems = items.filter((item) => item.dueMs < todayMs);
-      const hojeItems = items.filter((item) => item.dueMs >= todayMs);
+      const pagarVencidas   = items.filter((i) => i.kind === "pagar"   && i.dueMs < todayMs).length;
+      const pagarHoje       = items.filter((i) => i.kind === "pagar"   && i.dueMs >= todayMs).length;
+      const receberVencidas = items.filter((i) => i.kind === "receber" && i.dueMs < todayMs).length;
+      const receberHoje     = items.filter((i) => i.kind === "receber" && i.dueMs >= todayMs).length;
       const totalValor = items.reduce((sum, item) => {
         const raw = (getVal(item.row, "valor") || "0").toString().replace(",", ".").replace(/[^\d.]/g, "");
         return sum + (parseFloat(raw) || 0);
       }, 0);
       const totalFormatted = totalValor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      const reminderSummary = { vencidas: vencidasItems.length, hoje: hojeItems.length, total: totalFormatted };
+      const reminderSummary = { pagarVencidas, pagarHoje, receberVencidas, receberHoje, total: totalFormatted };
 
       let delivered = false;
       let threw = false;
