@@ -2854,10 +2854,12 @@ Sua assistente financeira pessoal! 💰
 ✅ Ver relatórios completos
 ✅ Acompanhar seu saldo
 
-Toque em Abrir menu ou digite o que deseja fazer!
+Toque em Abrir menu ou digite o que deseja fazer.
+
+💡 Ex: _"quero ver meu relatório"_
 
 🚀 Vamos começar?`
-          : `Toque em Abrir menu ou fale naturalmente.
+          : `Toque em Abrir menu ou digite o que deseja fazer.
 
 💡 Ex: _"quero ver meu relatório"_`,
       },
