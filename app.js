@@ -2188,7 +2188,8 @@ async function ensureUserSheet(userNorm) {
   const title = getUserSheetName(userNorm);
   const cached = userSheetCache.get(userNorm);
   if (cached && cached.expiresAt > Date.now() && cached.title === title) {
-    console.log("📌 Cache aba usuário:", { userNorm, title });
+    const cachedSheet = doc.sheetsByTitle[title];
+    if (cachedSheet) return cachedSheet;
   }
   let sheet = doc.sheetsByTitle[title];
   if (!sheet) {
@@ -3016,7 +3017,7 @@ const sendListarContasFixasMessage = async (to, userNorm) => {
   const deduped = dedupeFixedAccounts(fixed);
   const pending = deduped
     .filter((row) => (getVal(row, "status") || "").toString().toLowerCase() !== "pago")
-    .sort((a, b) => getEffectiveDate(a) - getEffectiveDate(b));
+    .sort((a, b) => (getEffectiveDate(a)?.getTime() || 0) - (getEffectiveDate(b)?.getTime() || 0));
   if (!pending.length) {
     await sendText(to, "🎉 Todas as suas contas fixas estão em dia no momento!");
     return;
@@ -3564,7 +3565,7 @@ async function showLancamentos(fromRaw, userNorm, range) {
   const rows = await allRowsForUser(userNorm);
   const filtered = withinPeriod(rows, range.start, range.end)
     .filter((row) => toNumber(getVal(row, "valor")) > 0)
-    .sort((a, b) => getEffectiveDate(a) - getEffectiveDate(b));
+    .sort((a, b) => (getEffectiveDate(a)?.getTime() || 0) - (getEffectiveDate(b)?.getTime() || 0));
   if (!filtered.length) {
     await sendText(fromRaw, "✅ Nenhum lançamento encontrado para o período selecionado.");
     return;
@@ -3603,7 +3604,7 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
   const rows = await allRowsForUser(userNorm);
   const sorted = rows
     .slice()
-    .sort((a, b) => getEffectiveDate(b) - getEffectiveDate(a))
+    .sort((a, b) => (getEffectiveDate(b)?.getTime() || 0) - (getEffectiveDate(a)?.getTime() || 0))
     .slice(0, 15);
   if (!sorted.length) {
     await sendText(fromRaw, "Não encontrei lançamentos recentes.");
@@ -5274,7 +5275,7 @@ async function handleInteractiveMessage(from, payload) {
     }
     if (id === "DEL:LAST") {
       const rows = await allRowsForUser(userNorm);
-      const sorted = rows.sort((a, b) => new Date(getVal(b, "timestamp")) - new Date(getVal(a, "timestamp")));
+      const sorted = rows.sort((a, b) => (new Date(getVal(b, "timestamp")).getTime() || 0) - (new Date(getVal(a, "timestamp")).getTime() || 0));
       const last = sorted[0];
       if (!last) {
         await sendText(from, "Não há lançamentos para excluir.");
