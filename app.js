@@ -661,6 +661,15 @@ const persistLastInteraction = async (userNorm) => {
       rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
     const nowIso = new Date().toISOString();
     if (target) {
+      // Restaura cache in-memory a partir do sheet (corrige estado pós-restart)
+      if (!lastInboundInteraction.has(canonical)) {
+        const storedIso = getVal(target, "last_interaction");
+        const storedMs = storedIso ? new Date(storedIso).getTime() : 0;
+        if (storedMs && !isNaN(storedMs)) {
+          lastInboundInteraction.set(canonical, storedMs);
+          getUserCandidates(canonical).forEach((c) => lastInboundInteraction.set(c, storedMs));
+        }
+      }
       setVal(target, "last_interaction", nowIso);
       await target.save();
     } else {
