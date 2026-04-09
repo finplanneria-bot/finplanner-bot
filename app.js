@@ -392,7 +392,8 @@ app.post("/internal/cron-aviso", async (req, res) => {
 
   try {
     const resumo = await runAvisoCron({ requestedBy: "cron-job" });
-    return res.status(200).json({ ok: true, resumo });
+    const onboardingResumo = await runOnboardingCron({ requestedBy: "cron-job" });
+    return res.status(200).json({ ok: true, resumo, onboardingResumo });
   } catch (e) {
     console.error("[CRON] endpoint error:", e);
     return res.status(500).json({ ok: false, error: "internal_error" });
@@ -558,6 +559,15 @@ const processedMessages = new Map();
 const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const lastInboundInteraction = new Map();
 const reminderAdminNotice = new Map();
+const onboardingNotice = new Map();
+const shouldSendOnboarding = (userNorm, day) => {
+  if (!userNorm || !day) return false;
+  const today = new Date().toISOString().split("T")[0];
+  const key = `${userNorm}:day${day}`;
+  if (onboardingNotice.get(key) === today) return false;
+  onboardingNotice.set(key, today);
+  return true;
+};
 const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const usuarioStatusCache = new Map();
 const USUARIO_CACHE_TTL_MS = 60 * 1000;
@@ -5684,6 +5694,21 @@ async function handleStripeWebhook(req, res) {
           { bypassWindow: true }
         );
       }
+
+      // ── ONBOARDING DIA 1: Boas-vindas ao novo assinante ────────────
+      try {
+        const firstName = extractFirstName(nome) || "";
+        const greeting = firstName ? `Olá, ${firstName}! 🎉` : "Olá! 🎉";
+        const welcomeMsg =
+          `${greeting} Seja bem-vindo(a) ao FinPlanner.\n\n` +
+          `Estou aqui para te ajudar a organizar suas finanças de forma simples — ` +
+          `é só me contar seus gastos e entradas no dia a dia, como numa conversa.\n\n` +
+          `Que tal começar agora? Me conta um gasto que você teve hoje. 😊`;
+        await sendText(userNorm, welcomeMsg, { bypassWindow: true });
+        console.log("[ONBOARDING] Dia 1 enviado para", userNorm);
+      } catch (onboardErr) {
+        console.error("[ONBOARDING] Erro ao enviar boas-vindas Dia 1:", onboardErr.message);
+      }
     }
 
     if (event.type === "invoice.payment_succeeded") {
@@ -5855,6 +5880,111 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
     res.sendStatus(200);
   }
 });
+
+// ============================
+// ONBOARDING CRON (Dias 2 e 3)
+// ============================
+async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {}) {
+  console.log(`[ONBOARDING] runOnboardingCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+
+  // Guard de horário: só executa entre 07h e 09h (BRT = UTC-3)
+  if (!forceHour && requestedBy !== "admin") {
+    const nowUtc = new Date();
+    const brazilHour = (nowUtc.getUTCHours() - 3 + 24) % 24;
+    if (brazilHour < 7 || brazilHour >= 9) {
+      console.log(`[ONBOARDING] Fora do horário permitido (hora BRT: ${brazilHour}h). Abortando.`);
+      return { skipped: true, reason: "outside_allowed_hours", brazilHour };
+    }
+  }
+
+  const results = { day2_sent: 0, day3_sent: 0, skipped: 0, errors: 0 };
+
+  let usuariosRows;
+  try {
+    const sheet = await ensureSheetUsuarios();
+    usuariosRows = await withRetry(() => sheet.getRows(), "get-usuarios-onboarding");
+  } catch (err) {
+    console.error("[ONBOARDING] Erro ao ler planilha Usuarios:", err.message);
+    return { ...results, errors: 1 };
+  }
+
+  const today = startOfDay(new Date());
+
+  for (const row of usuariosRows) {
+    const rawUser = getVal(row, "user");
+    const userNorm = normalizeUser(rawUser);
+    if (!userNorm) { results.skipped += 1; continue; }
+
+    if (!isTruthy(getVal(row, "ativo"))) { results.skipped += 1; continue; }
+
+    const dataInicio = parseISODateSafe(getVal(row, "data_inicio"));
+    if (!dataInicio) { results.skipped += 1; continue; }
+
+    const daysSinceStart = Math.floor(
+      (today.getTime() - startOfDay(dataInicio).getTime()) / (24 * 60 * 60 * 1000)
+    );
+
+    if (daysSinceStart === 1) {
+      // ── DIA 2 ──────────────────────────────────────────────────────
+      if (!shouldSendOnboarding(userNorm, 2)) { results.skipped += 1; continue; }
+      try {
+        const firstName = extractFirstName(getVal(row, "nome")) || getStoredFirstName(userNorm) || "";
+        const greeting = firstName ? `Bom dia, ${firstName}! ☀️` : "Bom dia! ☀️";
+        const yesterday = startOfDay(new Date(today.getTime() - 86400000));
+        const allRows = await allRowsForUser(userNorm);
+        const count = withinPeriod(allRows, yesterday, endOfDay(yesterday)).length;
+        const label = count === 1 ? "lançamento" : "lançamentos";
+        const msg = count > 0
+          ? `${greeting}\n\nOntem você registrou *${count} ${label}*. Ótimo começo! 💪\n\nQue tal registrar o primeiro gasto de hoje?`
+          : `${greeting}\n\nAinda não registrou nenhum gasto ontem. Tudo bem, vamos começar hoje — me conta um gasto que você já teve essa manhã. 😊`;
+        await sendText(rawUser, msg, { bypassWindow: true });
+        console.log("[ONBOARDING] Dia 2 enviado para", userNorm, { count });
+        results.day2_sent += 1;
+      } catch (err) {
+        console.error("[ONBOARDING] Erro Dia 2 para", userNorm, ":", err.message);
+        results.errors += 1;
+      }
+
+    } else if (daysSinceStart === 2) {
+      // ── DIA 3 ──────────────────────────────────────────────────────
+      if (!shouldSendOnboarding(userNorm, 3)) { results.skipped += 1; continue; }
+      try {
+        const firstName = extractFirstName(getVal(row, "nome")) || getStoredFirstName(userNorm) || "";
+        const greeting = firstName ? `Bom dia, ${firstName}! 🌟` : "Bom dia! 🌟";
+        const periodStart = startOfDay(dataInicio);
+        const periodEnd = endOfDay(new Date(today.getTime() - 86400000));
+        const allRows = await allRowsForUser(userNorm);
+        const periodRows = withinPeriod(allRows, periodStart, periodEnd);
+        const count = periodRows.length;
+        const total = sumValues(periodRows);
+        const totalFormatted = formatCurrencyBR(total);
+        const categoryLines = count > 0 ? formatCategoryLines(periodRows) : "";
+
+        const conclusion = count > 0
+          ? `Excelente começo${firstName ? `, ${firstName}` : ""}! Continue registrando seus gastos para ter cada vez mais clareza sobre suas finanças. 💪`
+          : `Não se preocupe${firstName ? `, ${firstName}` : ""}! Comece hoje mesmo — cada lançamento conta para o seu controle financeiro. 💪`;
+
+        let msg = `${greeting}\n\nAqui está um mini relatório dos seus primeiros dias:\n\n`;
+        if (count > 0 && categoryLines) {
+          msg += `${categoryLines}\n\n💰 *Total: ${totalFormatted}*\n\n`;
+        } else {
+          msg += `_(Nenhum lançamento registrado ainda)_\n\n`;
+        }
+        msg += conclusion;
+
+        await sendText(rawUser, msg, { bypassWindow: true });
+        console.log("[ONBOARDING] Dia 3 enviado para", userNorm, { count, total });
+        results.day3_sent += 1;
+      } catch (err) {
+        console.error("[ONBOARDING] Erro Dia 3 para", userNorm, ":", err.message);
+        results.errors += 1;
+      }
+    }
+  }
+
+  console.log("[ONBOARDING] runOnboardingCron done", results);
+  return results;
+}
 
 async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = false } = {}) {
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
@@ -6157,6 +6287,7 @@ if (isCronAviso) {
     });
     try {
       await runAvisoCron({ requestedBy: "linux-cron" });
+      await runOnboardingCron({ requestedBy: "linux-cron" });
       console.log(`[CRON] cron-aviso done at ${new Date().toISOString()}`);
       process.exit(0);
     } catch (error) {
