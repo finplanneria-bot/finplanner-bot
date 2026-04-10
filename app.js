@@ -4617,7 +4617,6 @@ async function markPaymentAsPaid(fromRaw, userNorm, row) {
   await saveRow(row);
   await sendText(fromRaw, `${successMsg}\n\n${formatEntrySummary(row)}`);
   await scheduleNextFixedOccurrence(row);
-  const state = sessionPayConfirm.get(userNorm);
   if (!state) {
     sessionPayConfirm.delete(userNorm);
     return;
