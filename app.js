@@ -2869,6 +2869,7 @@ const MAIN_MENU_SECTIONS = [
       { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
       { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
       { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
+      { id: "MENU:contas_receber", title: "💵 Contas a receber", description: "Ver e confirmar recebimentos pendentes." },
       { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Cadastrar ou excluir contas recorrentes." },
     ],
   },
@@ -3594,6 +3595,21 @@ async function showLancamentos(fromRaw, userNorm, range) {
   await sendText(fromRaw, message);
 }
 
+async function sendReceberHint(fromRaw, userNorm) {
+  const rows = await allRowsForUser(userNorm);
+  const count = rows.filter(
+    (row) =>
+      getVal(row, "tipo") === "conta_receber" &&
+      !["recebido", "pago"].includes(getVal(row, "status"))
+  ).length;
+  if (count > 0) {
+    await sendText(
+      fromRaw,
+      `💵 Você também tem *${count} recebimento${count === 1 ? "" : "s"} pendente${count === 1 ? "" : "s"}*.\n\nAcesse _Contas a receber_ no menu para confirmar.`
+    );
+  }
+}
+
 async function listPendingPayments(fromRaw, userNorm) {
   const rows = await allRowsForUser(userNorm);
   const pending = rows.filter((row) => getVal(row, "tipo") === "conta_pagar" && getVal(row, "status") !== "pago");
@@ -3614,6 +3630,37 @@ async function listPendingPayments(fromRaw, userNorm) {
     queue: [],
     currentIndex: 0,
     currentRowId: null,
+    tipo: "pagar",
+    expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+  });
+  await sendText(fromRaw, message);
+}
+
+async function listPendingReceipts(fromRaw, userNorm) {
+  const rows = await allRowsForUser(userNorm);
+  const pending = rows.filter(
+    (row) =>
+      getVal(row, "tipo") === "conta_receber" &&
+      !["recebido", "pago"].includes(getVal(row, "status"))
+  );
+  if (!pending.length) {
+    await sendText(fromRaw, "🎉 Você não possui recebimentos pendentes no momento!");
+    return;
+  }
+  const blocks = pending.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  const total = pending.reduce((sum, row) => sum + toNumber(getVal(row, "valor")), 0);
+  const totalLine = total > 0 ? `\n💵 *Total: ${formatCurrencyBR(total)}*` : "";
+  const message =
+    `📋 *Contas a receber pendentes* (${pending.length})${totalLine}\n\n${blocks.join("\n\n")}` +
+    `\n\n✅ Digite o número para confirmar. Ex: *1* ou *1,2,3*`;
+  sessionPayConfirm.delete(userNorm);
+  setPayState(userNorm, {
+    awaiting: "index",
+    rows: pending,
+    queue: [],
+    currentIndex: 0,
+    currentRowId: null,
+    tipo: "receber",
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
   await sendText(fromRaw, message);
@@ -4292,7 +4339,9 @@ async function promptNextPaymentConfirmation(to, userNorm) {
   const rowId = getRowIdentifier(currentItem.row);
   const code = (getVal(currentItem.row, "codigo_pagamento") || "").toString().trim();
   const metodo = (getVal(currentItem.row, "tipo_pagamento") || "").toLowerCase();
-  const buttons = [{ type: "reply", reply: { id: `PAY:MARK:${rowId}`, title: "✅ Pago" } }];
+  const isReceber = state?.tipo === "receber";
+  const confirmTitle = isReceber ? "✅ Recebido" : "✅ Pago";
+  const buttons = [{ type: "reply", reply: { id: `PAY:MARK:${rowId}`, title: confirmTitle } }];
   if (code) {
     const copyTitle = metodo === "boleto" ? "📋 Copiar boleto" : "📋 Copiar Pix";
     buttons.push({ type: "reply", reply: { id: `PAY:COPY:${rowId}`, title: copyTitle } });
@@ -4305,7 +4354,9 @@ async function promptNextPaymentConfirmation(to, userNorm) {
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
     currentRowId: rowId,
   });
-  const body = `✅ Confirmar pagamento?\n\n${summary}\n\nDeseja marcar como pago agora?`;
+  const actionLabel = isReceber ? "recebimento" : "pagamento";
+  const statusLabel = isReceber ? "recebido" : "pago";
+  const body = `✅ Confirmar ${actionLabel}?\n\n${summary}\n\nDeseja marcar como ${statusLabel} agora?`;
   const success = await sendWA({
     messaging_product: "whatsapp",
     to,
@@ -4508,7 +4559,7 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
       await sendText(fromRaw, "Responda com Pago ou Cancelar para continuar.");
       return true;
     }
-    if (/pago|confirm/.test(normalizedText)) {
+    if (/pago|recebido|confirm/.test(normalizedText)) {
       const current = state.queue?.[state.currentIndex || 0];
       if (!current || !current.row) {
         sessionPayConfirm.delete(userNorm);
@@ -4557,10 +4608,14 @@ async function sendPaymentCode(to, row) {
 
 async function markPaymentAsPaid(fromRaw, userNorm, row) {
   if (!row) return;
-  setVal(row, "status", "pago");
+  const state = sessionPayConfirm.get(userNorm);
+  const isReceber = state?.tipo === "receber";
+  const newStatus = isReceber ? "recebido" : "pago";
+  const successMsg = isReceber ? "✅ Recebimento confirmado com sucesso!" : "✅ Pagamento confirmado com sucesso!";
+  setVal(row, "status", newStatus);
   setVal(row, "timestamp", new Date().toISOString());
   await saveRow(row);
-  await sendText(fromRaw, `✅ Pagamento confirmado com sucesso!\n\n${formatEntrySummary(row)}`);
+  await sendText(fromRaw, `${successMsg}\n\n${formatEntrySummary(row)}`);
   await scheduleNextFixedOccurrence(row);
   const state = sessionPayConfirm.get(userNorm);
   if (!state) {
@@ -5144,6 +5199,7 @@ async function handleInteractiveMessage(from, payload) {
       title === "ver meus lembretes"
     ) {
       await listPendingPayments(from, userNorm);
+      await sendReceberHint(from, userNorm);
       return;
     }
     if (
@@ -5152,6 +5208,7 @@ async function handleInteractiveMessage(from, payload) {
       title === "visualizar"
     ) {
       await listPendingPayments(from, userNorm);
+      await sendReceberHint(from, userNorm);
       return;
     }
     if (id === "REG:STATUS:PAGO") {
@@ -5349,6 +5406,10 @@ async function handleInteractiveMessage(from, payload) {
       await listPendingPayments(from, userNorm);
       return;
     }
+    if (id === "MENU:contas_receber") {
+      await listPendingReceipts(from, userNorm);
+      return;
+    }
     if (id === "MENU:contas_fixas") {
       await sendContasFixasMenu(from);
       return;
@@ -5479,6 +5540,7 @@ async function handleUserText(fromRaw, text) {
     normalizedMessage.startsWith("ver meus lembretes")
   ) {
     await listPendingPayments(fromRaw, userNorm);
+    await sendReceberHint(fromRaw, userNorm);
     return;
   }
 
@@ -5542,6 +5604,7 @@ async function handleUserText(fromRaw, text) {
       break;
     case "listar_pendentes":
       await listPendingPayments(fromRaw, userNorm);
+      await sendReceberHint(fromRaw, userNorm);
       break;
     case "contas_fixas":
       await sendContasFixasMenu(fromRaw);
