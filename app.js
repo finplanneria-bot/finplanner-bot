@@ -3174,6 +3174,7 @@ const hasActiveSession = (userNorm) =>
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
 
 const sendCancelMessage = async (to) => {
+  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to });
   await sendText(to, "Operação cancelada.");
   await sendMainMenu(to);
 };
@@ -5554,9 +5555,11 @@ async function handleUserText(fromRaw, text) {
   const intent = await intentPromise;
   switch (intent) {
     case "boas_vindas":
+      console.log("[handleUserText] Intent boas_vindas → sendWelcomeList:", { fromRaw, userNorm, trimmed });
       await sendWelcomeList(fromRaw);
       break;
     case "mostrar_menu":
+      console.log("[handleUserText] Intent mostrar_menu → sendMainMenu:", { fromRaw, userNorm, trimmed });
       await sendMainMenu(fromRaw);
       break;
     case "relatorios_menu":
@@ -5623,7 +5626,10 @@ async function handleUserText(fromRaw, text) {
     default:
       if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
+      } else if (!trimmed) {
+        console.log("[handleUserText] Texto vazio recebido, ignorando.", { fromRaw, userNorm });
       } else {
+        console.log("[handleUserText] Enviando menu (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
         await sendMainMenu(fromRaw);
       }
       break;
