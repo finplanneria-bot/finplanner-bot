@@ -3978,7 +3978,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (state.awaiting === "field") {
-    const field = text.trim().toLowerCase();
+    const field = normalizeDiacritics(text.trim()).toLowerCase();
     if (/^cancelar/.test(field)) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
