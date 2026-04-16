@@ -6370,8 +6370,8 @@ if (isCronAviso) {
     console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
     migrateUserSheets();
 
-    // Scheduler interno: dispara cron de lembretes e onboarding diariamente às 07:30 BRT (10:30 UTC)
-    cron.schedule("30 10 * * *", async () => {
+    // Scheduler interno: dispara cron de lembretes e onboarding diariamente às 08:00 BRT
+    cron.schedule("0 8 * * *", async () => {
       console.log("[INTERNAL-CRON] Disparando runAvisoCron às", new Date().toISOString());
       try {
         await runAvisoCron({ requestedBy: "internal-scheduler" });
@@ -6385,7 +6385,7 @@ if (isCronAviso) {
       }
       console.log("[INTERNAL-CRON] Concluído às", new Date().toISOString());
     }, { timezone: "America/Sao_Paulo" });
-    console.log("[BOOT] Scheduler interno configurado: cron diário às 07:30 BRT");
+    console.log("[BOOT] Scheduler interno configurado: cron diário às 08:00 BRT");
   });
 }
 
