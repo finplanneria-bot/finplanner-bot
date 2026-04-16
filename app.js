@@ -47,6 +47,7 @@ import rateLimit from "express-rate-limit";
 import compression from "compression";
 import winston from "winston";
 import fs from "fs";
+import cron from "node-cron";
 
 // ✅ FIX: Caminho automático do .env (funciona em qualquer ambiente)
 dotenv.config();
@@ -182,7 +183,7 @@ const WEBHOOK_VERIFY_TOKEN = String(
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
-const SKIP_TEMPLATE_REMINDER = (process.env.SKIP_TEMPLATE_REMINDER || "true").toLowerCase() === "true";
+const SKIP_TEMPLATE_REMINDER = (process.env.SKIP_TEMPLATE_REMINDER || "false").toLowerCase() === "true";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const openaiClient = USE_OPENAI && OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 const OPENAI_INTENT_MODEL = process.env.OPENAI_INTENT_MODEL || "gpt-4o-mini";
@@ -6368,6 +6369,23 @@ if (isCronAviso) {
   app.listen(port, () => {
     console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
     migrateUserSheets();
+
+    // Scheduler interno: dispara cron de lembretes e onboarding diariamente às 07:30 BRT (10:30 UTC)
+    cron.schedule("30 10 * * *", async () => {
+      console.log("[INTERNAL-CRON] Disparando runAvisoCron às", new Date().toISOString());
+      try {
+        await runAvisoCron({ requestedBy: "internal-scheduler" });
+      } catch (e) {
+        console.error("[INTERNAL-CRON] Erro em runAvisoCron:", e.message);
+      }
+      try {
+        await runOnboardingCron({ requestedBy: "internal-scheduler" });
+      } catch (e) {
+        console.error("[INTERNAL-CRON] Erro em runOnboardingCron:", e.message);
+      }
+      console.log("[INTERNAL-CRON] Concluído às", new Date().toISOString());
+    }, { timezone: "America/Sao_Paulo" });
+    console.log("[BOOT] Scheduler interno configurado: cron diário às 07:30 BRT");
   });
 }
 
