@@ -487,6 +487,7 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
   if (!whatsapp) {
     return res.status(400).json({ error: "whatsapp obrigatório." });
   }
+  const whatsappNorm = normalizeWhatsAppNumber(String(whatsapp));
   const planoNorm = normalizePlan(plano) || "mensal";
   const priceMap = {
     mensal: STRIPE_PRICE_MENSAL,
@@ -511,14 +512,14 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
       cancel_url: STRIPE_CANCEL_URL,
       subscription_data: {
         metadata: {
-          whatsapp: String(whatsapp || ""),
+          whatsapp: whatsappNorm,
           plano: planoNorm,
           nome: String(nome || ""),
           email: String(email || ""),
         },
       },
       metadata: {
-        whatsapp: String(whatsapp || ""),
+        whatsapp: whatsappNorm,
         plano: planoNorm,
       },
     });
@@ -533,6 +534,15 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
 // Utils
 // ============================
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
+
+const normalizeWhatsAppNumber = (num) => {
+  const digits = (num || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return "55" + digits;
+  return digits;
+};
+
 const userFirstNames = new Map();
 
 const extractFirstName = (value) => {
@@ -594,6 +604,21 @@ function getUserCandidates(userNorm) {
   }
   if (digits.startsWith("55") && digits.length === 12) {
     candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
+  }
+  // Número sem prefixo 55 → adicionar com prefixo
+  if (!digits.startsWith("55") && (digits.length === 10 || digits.length === 11)) {
+    const with55 = "55" + digits;
+    candidates.add(with55);
+    if (with55.length === 13 && with55[4] === "9") {
+      candidates.add(with55.slice(0, 4) + with55.slice(5));
+    }
+    if (with55.length === 12) {
+      candidates.add(with55.slice(0, 4) + "9" + with55.slice(4));
+    }
+  }
+  // Número com prefixo 55 → adicionar sem prefixo
+  if (digits.startsWith("55") && digits.length >= 12) {
+    candidates.add(digits.slice(2));
   }
   return Array.from(candidates);
 }
@@ -2577,7 +2602,10 @@ const upsertUsuarioFromSubscription = async ({
   if (!userNorm) throw new Error("Usuário inválido.");
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
-  const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  const candidates = getUserCandidates(userNorm);
+  const target =
+    rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm) ||
+    rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
   const normalizedPlan = normalizePlan(plano) || normalizePlan(getVal(target, "plano"));
   const existingDataInicio = parseISODateSafe(getVal(target, "data_inicio"));
   const payloadDataInicio = parseISODateSafe(data_inicio);
@@ -2622,7 +2650,6 @@ const upsertUsuarioFromSubscription = async ({
   } catch (sheetErr) {
     console.error("⚠️ Erro ao criar aba do usuário:", userNorm, sheetErr.message);
   }
-  const candidates = getUserCandidates(userNorm);
   candidates.forEach((candidate) => usuarioStatusCache.delete(candidate));
   console.log("✅ Usuario atualizado:", userNorm, update.plano, update.ativo);
   return update;
@@ -5826,7 +5853,7 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const userNorm = normalizeUser(whatsapp);
+      const userNorm = normalizeWhatsAppNumber(whatsapp);
       if (!userNorm) {
         console.error("⚠️ Stripe: whatsapp inválido no metadata:", whatsapp);
         if (ADMIN_WA_NUMBER) {
@@ -5912,7 +5939,7 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const userNorm = normalizeUser(whatsapp);
+      const userNorm = normalizeWhatsAppNumber(whatsapp);
       if (!userNorm) {
         return res.sendStatus(200);
       }
@@ -5946,7 +5973,7 @@ async function handleStripeWebhook(req, res) {
         console.log("⚠️ Evento Stripe sem whatsapp metadata.");
         return res.sendStatus(200);
       }
-      const userNorm = normalizeUser(whatsapp);
+      const userNorm = normalizeWhatsAppNumber(whatsapp);
       if (!userNorm) {
         return res.sendStatus(200);
       }
