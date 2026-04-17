@@ -3026,7 +3026,7 @@ const sendContasFixasMenu = (to) =>
 const sendCadastrarContaFixaMessage = (to) =>
   sendText(
     to,
-    `♻ Cadastro de conta fixa\n\nEnvie tudo em uma única mensagem neste formato:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n🔁 Recorrência: Informe o intervalo\n(ex: todo dia 05, a cada 15 dias, semanal, quinzenal)\n\n💡 Exemplos:\n➡ Internet 120 todo dia 05\n➡ Aluguel 150 a cada 15 dias\n➡ Academia 90 semanal\n\nDigite *cancelar* para sair.`
+    `♻ Cadastro de conta fixa\n\nEnvie tudo em uma única mensagem neste formato:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n🔁 Recorrência: Informe o intervalo\n(ex: todo dia 05, a cada 15 dias, semanal, quinzenal)\n\n💡 Exemplos:\n➡ Internet 120 todo dia 05\n➡ Aluguel 150 a cada 15 dias\n➡ Academia 90 semanal\n➡ Tênis 3 parcelas de 80 todo dia 10\n\n📦 *Várias de uma vez?* Envie uma por linha!\n\nDigite *cancelar* para sair.`
   );
 
 const sendListarContasFixasMessage = async (to, userNorm) => {
@@ -3174,9 +3174,12 @@ const hasActiveSession = (userNorm) =>
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
 
-const sendCancelMessage = async (to) => {
-  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to });
-  await sendText(to, "Operação cancelada.");
+const sendCancelMessage = async (to, { reason } = {}) => {
+  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to, reason });
+  const msg = reason === "timeout"
+    ? "⏰ Operação cancelada por inatividade.\n\n💡 Você pode recomeçar a qualquer momento — basta enviar sua mensagem novamente ou tocar em *Abrir menu*."
+    : "Operação cancelada.";
+  await sendText(to, msg);
   await sendMainMenu(to);
 };
 
@@ -3692,7 +3695,7 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
   }
 }
 
-const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const selectionStopWords = new Set(
   [
@@ -3866,7 +3869,7 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   if (!state || state.awaiting !== "confirm") return false;
   if (deleteStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (!confirmed) {
@@ -3945,7 +3948,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (state.awaiting === "index") {
@@ -3979,15 +3982,40 @@ async function handleEditFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (state.awaiting === "field") {
-    const field = normalizeDiacritics(text.trim()).toLowerCase();
-    if (/^cancelar/.test(field)) {
+    const input = normalizeDiacritics(text.trim()).toLowerCase();
+    if (/^cancelar/.test(input)) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
     }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
-    if (!valid.includes(field)) {
-      await sendText(fromRaw, "Campo inválido. Tente novamente.");
+    const fieldAliases = {
+      descricao: "descricao", descrição: "descricao", desc: "descricao",
+      valor: "valor", preço: "valor", preco: "valor", price: "valor",
+      data: "data", vencimento: "data", date: "data",
+      status: "status", situacao: "status", situação: "status",
+      categoria: "categoria", cat: "categoria",
+      conta: "conta", nome: "conta",
+    };
+
+    const words = input.split(/\s+/);
+    const firstWord = words[0];
+    const resolvedField = fieldAliases[firstWord] || (valid.includes(firstWord) ? firstWord : null);
+
+    if (resolvedField && words.length > 1) {
+      const inlineValue = text.trim().slice(text.trim().indexOf(" ") + 1).trim();
+      sessionEdit.set(userNorm, {
+        ...state,
+        awaiting: "value",
+        field: resolvedField,
+        expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+      });
+      return handleEditFlow(fromRaw, userNorm, inlineValue);
+    }
+
+    const field = resolvedField || fieldAliases[input];
+    if (!field) {
+      await sendText(fromRaw, "Campo inválido. Tente: *valor*, *data*, *status*, *categoria*, *descricao* ou *conta*.");
       return true;
     }
     sessionEdit.set(userNorm, {
@@ -4095,7 +4123,7 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   const trimmed = (text || "").trim();
@@ -4108,17 +4136,44 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
     await sendCancelMessage(fromRaw);
     return true;
   }
-  const parsed = parseFixedAccountCommand(text);
-  if (!parsed) {
+
+  const lines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const results = [];
+  const failures = [];
+  for (const line of lines) {
+    const parsed = parseFixedAccountCommand(line);
+    if (parsed) {
+      results.push({ line, parsed });
+    } else if (lines.length > 1) {
+      failures.push(line);
+    }
+  }
+
+  if (!results.length) {
+    const parsed = parseFixedAccountCommand(text);
+    if (parsed) {
+      sessionFixedRegister.delete(userNorm);
+      await registerFixedAccount(fromRaw, userNorm, parsed);
+      return true;
+    }
     await sendText(
       fromRaw,
-      "Não consegui entender. Informe algo como \"Internet 120 todo dia 05\" ou \"Aluguel 150 a cada 15 dias\"."
+      "Não consegui entender. Informe algo como \"Internet 120 todo dia 05\" ou \"Aluguel 150 a cada 15 dias\".\n\n💡 Para cadastrar várias de uma vez, envie uma por linha."
     );
     sessionFixedRegister.set(userNorm, { expiresAt: Date.now() + SESSION_TIMEOUT_MS });
     return true;
   }
+
   sessionFixedRegister.delete(userNorm);
-  await registerFixedAccount(fromRaw, userNorm, parsed);
+  for (const { parsed } of results) {
+    await registerFixedAccount(fromRaw, userNorm, parsed);
+  }
+  if (results.length > 1) {
+    await sendText(fromRaw, `✅ ${results.length} contas fixas cadastradas com sucesso!`);
+  }
+  if (failures.length) {
+    await sendText(fromRaw, `⚠️ Não consegui entender ${failures.length} linha(s):\n${failures.map((f) => `• ${f}`).join("\n")}\n\nEnvie no formato: Descrição Valor todo dia X`);
+  }
   return true;
 }
 
@@ -4127,7 +4182,7 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (deleteStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (state.awaiting === "index") {
@@ -4441,7 +4496,7 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   if (!state) return;
   if (statusStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return;
   }
   const entry = { ...state.entry };
@@ -4462,7 +4517,7 @@ async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (statusStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
@@ -4488,7 +4543,7 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (paymentCodeStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (state.awaiting !== "input") return false;
@@ -4524,7 +4579,7 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (payStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
@@ -4761,6 +4816,22 @@ const parseFixedAccountCommand = (text) => {
 
   if (!recurrence) return null;
 
+  // Detecta parcelamentos ANTES de extrair valor (ex: "4 parcelas de 127", "3x de 50")
+  let installmentCount = null;
+  let installmentValue = null;
+  const installmentPatterns = [
+    /(\d+)\s*(?:parcelas?|vezes|x)\s*(?:de\s+)?(?:R\$\s*)?(\d+(?:[.,]\d+)?)/i,
+    /(?:parcelar|parcelado)\s*(?:em\s+)?(\d+)\s*(?:vezes|x)?\s*(?:de\s+)?(?:R\$\s*)?(\d+(?:[.,]\d+)?)/i,
+  ];
+  for (const pat of installmentPatterns) {
+    const m = normalized.match(pat);
+    if (m) {
+      installmentCount = Number(m[1]);
+      installmentValue = parseFloat(m[2].replace(",", "."));
+      break;
+    }
+  }
+
   // Remove padrões de recorrência ANTES de extrair o valor
   let cleanedText = original;
   removalPatterns.forEach((pattern) => {
@@ -4781,7 +4852,9 @@ const parseFixedAccountCommand = (text) => {
     .trim();
 
   // Agora extrai o valor do texto limpo
-  const amountInfo = extractAmountFromText(cleanedText);
+  const amountInfo = installmentValue
+    ? { amount: installmentValue, raw: String(installmentValue) }
+    : extractAmountFromText(cleanedText);
   if (!amountInfo.amount) return null;
 
   const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
@@ -4819,6 +4892,8 @@ const parseFixedAccountCommand = (text) => {
     descricao = descricao.replace(dateRegex, " ");
   }
   descricao = descricao
+    .replace(/\d+\s*(?:parcelas?|vezes|x)\s*(?:de\s+)?(?:R\$\s*)?\d+(?:[.,]\d+)?/gi, " ")
+    .replace(/(?:parcelar|parcelado)\s*(?:em\s+)?\d+\s*(?:vezes|x)?\s*(?:de\s+)?(?:R\$\s*)?\d+(?:[.,]\d+)?/gi, " ")
     .replace(/conta\s+fixa/gi, " ")
     .replace(/\bfixa\b/gi, " ")
     .replace(/\brecorrente\b/gi, " ")
@@ -4844,6 +4919,7 @@ const parseFixedAccountCommand = (text) => {
     recurrence,
     dueDate,
     tipoPagamento,
+    installmentCount: installmentCount && installmentCount > 1 ? installmentCount : null,
   };
 };
 
@@ -4879,10 +4955,14 @@ async function registerFixedAccount(fromRaw, userNorm, parsed) {
   const categoryInfo = getCategoryInfo(payload.categoria);
   const recurrenceLabel = describeRecurrence(payload);
 
+  const installmentLine = parsed.installmentCount
+    ? `\n🔢 *Parcelas*: ${parsed.installmentCount}x de ${formatCurrencyBR(payload.valor)}\n`
+    : "";
+
   let message = `♻️ *Conta Fixa Cadastrada!*
 
 💸 *Valor*: ${formatCurrencyBR(payload.valor)}
-
+${installmentLine}
 ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
 🏷️ *Descrição*: ${payload.descricao}
@@ -5486,14 +5566,31 @@ async function handleUserText(fromRaw, text) {
   }
 
   if (!userNorm || !isAdminUser(userNorm)) {
-    const active = await isUsuarioAtivo(userNorm);
+    let active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
       const classification = await classifyInactiveUserMessage(trimmed);
-      const response = buildInactiveUserResponse(classification, nome);
-      await sendText(fromRaw, response, { bypassWindow: true });
-      await sendSupportButton(fromRaw);
-      return;
+
+      if (classification === "acredita_que_pagou") {
+        const candidates = getUserCandidates(userNorm);
+        candidates.forEach((c) => usuarioStatusCache.delete(c));
+        active = await isUsuarioAtivo(userNorm);
+        if (active) {
+          console.log("[AccessRetry] Usuário reativado após cache clear:", userNorm);
+        } else if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Usuário diz que já pagou mas não está ativo*\n\n📱 Número: ${fromRaw}\n🔑 Normalizado: ${userNorm}\n💬 Mensagem: "${trimmed}"\n\n_Verifique a planilha e ative manualmente se necessário._`,
+            { bypassWindow: true }
+          );
+        }
+      }
+
+      if (!active) {
+        const response = buildInactiveUserResponse(classification, nome);
+        await sendText(fromRaw, response, { bypassWindow: true });
+        await sendSupportButton(fromRaw);
+        return;
+      }
     }
   }
 
@@ -5546,9 +5643,20 @@ async function handleUserText(fromRaw, text) {
   }
 
   // Verificar se é uma conta fixa ANTES de detectar intenção
-  const fixedParsed = parseFixedAccountCommand(text);
-  if (fixedParsed) {
-    await registerFixedAccount(fromRaw, userNorm, fixedParsed);
+  const fixedLines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const fixedResults = fixedLines.map((l) => ({ line: l, parsed: parseFixedAccountCommand(l) })).filter((r) => r.parsed);
+  if (fixedResults.length) {
+    for (const { parsed } of fixedResults) {
+      await registerFixedAccount(fromRaw, userNorm, parsed);
+    }
+    if (fixedResults.length > 1) {
+      await sendText(fromRaw, `✅ ${fixedResults.length} contas fixas cadastradas com sucesso!`);
+    }
+    const failed = fixedLines.length - fixedResults.length;
+    if (failed > 0 && fixedLines.length > 1) {
+      const failedLines = fixedLines.filter((l) => !parseFixedAccountCommand(l));
+      await sendText(fromRaw, `⚠️ Não consegui entender ${failed} linha(s):\n${failedLines.map((f) => `• ${f}`).join("\n")}\n\nEnvie no formato: Descrição Valor todo dia X`);
+    }
     return;
   }
 
