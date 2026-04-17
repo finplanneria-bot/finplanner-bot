@@ -4953,56 +4953,88 @@ const parseFixedAccountCommand = (text) => {
 async function registerFixedAccount(fromRaw, userNorm, parsed) {
   if (!parsed) return;
   const categoria = await resolveCategory(parsed.descricao, "conta_pagar", userNorm);
-  const rowId = generateRowId();
+  const parentId = generateRowId();
   const due = parsed.dueDate instanceof Date ? parsed.dueDate : new Date();
-  const payload = {
-    row_id: rowId,
-    timestamp: new Date().toISOString(),
-    user: userNorm,
-    user_raw: fromRaw,
-    tipo: "conta_pagar",
-    conta: parsed.descricao,
-    valor: parsed.valor,
-    vencimento_iso: due.toISOString(),
-    vencimento_br: formatBRDate(due),
-    data: due,
-    tipo_pagamento: parsed.tipoPagamento || "",
-    codigo_pagamento: "",
-    status: "pendente",
-    fixa: "sim",
-    fix_parent_id: rowId,
-    vencimento_dia: due.getDate(),
-    categoria: categoria.slug,
-    categoria_emoji: categoria.emoji,
-    descricao: parsed.descricao,
-    recorrencia_tipo: parsed.recurrence.type,
-    recorrencia_valor: parsed.recurrence.value?.toString() || "",
-  };
-  await createRow(payload);
-  const categoryInfo = getCategoryInfo(payload.categoria);
-  const recurrenceLabel = describeRecurrence(payload);
+  const count = parsed.installmentCount || 1;
+  const isInstallment = count > 1;
 
-  const installmentLine = parsed.installmentCount
-    ? `\n🔢 *Parcelas*: ${parsed.installmentCount}x de ${formatCurrencyBR(payload.valor)}\n`
-    : "";
+  for (let i = 0; i < count; i++) {
+    const installmentDue = i === 0 ? due : addMonthsSafe(due, i);
+    if (!installmentDue) continue;
+    const rowId = i === 0 ? parentId : generateRowId();
+    const descWithInstallment = isInstallment
+      ? `${parsed.descricao} (${i + 1}/${count})`
+      : parsed.descricao;
+    const payload = {
+      row_id: rowId,
+      timestamp: new Date().toISOString(),
+      user: userNorm,
+      user_raw: fromRaw,
+      tipo: "conta_pagar",
+      conta: descWithInstallment,
+      valor: parsed.valor,
+      vencimento_iso: installmentDue.toISOString(),
+      vencimento_br: formatBRDate(installmentDue),
+      data: installmentDue,
+      tipo_pagamento: parsed.tipoPagamento || "",
+      codigo_pagamento: "",
+      status: "pendente",
+      fixa: isInstallment ? "nao" : "sim",
+      fix_parent_id: isInstallment ? "" : parentId,
+      vencimento_dia: installmentDue.getDate(),
+      categoria: categoria.slug,
+      categoria_emoji: categoria.emoji,
+      descricao: descWithInstallment,
+      recorrencia_tipo: isInstallment ? "" : (parsed.recurrence.type || ""),
+      recorrencia_valor: isInstallment ? "" : (parsed.recurrence.value?.toString() || ""),
+    };
+    await createRow(payload);
+  }
 
-  let message = `♻️ *Conta Fixa Cadastrada!*
+  const categoryInfo = getCategoryInfo(categoria.slug);
 
-💸 *Valor*: ${formatCurrencyBR(payload.valor)}
-${installmentLine}
+  if (isInstallment) {
+    const lastDue = addMonthsSafe(due, count - 1);
+    const totalValue = parsed.valor * count;
+    let message = `🔢 *Parcelamento Cadastrado!*
+
+💸 *Valor da parcela*: ${formatCurrencyBR(parsed.valor)}
+📊 *Total*: ${count}x de ${formatCurrencyBR(parsed.valor)} = ${formatCurrencyBR(totalValue)}
+
 ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
-🏷️ *Descrição*: ${payload.descricao}
+🏷️ *Descrição*: ${parsed.descricao}
+
+📅 *Primeira parcela*: ${formatBRDate(due)}
+📅 *Última parcela*: ${lastDue ? formatBRDate(lastDue) : "—"}
+
+💡 Todas as ${count} parcelas foram criadas como contas a pagar!`;
+    await sendText(fromRaw, message);
+  } else {
+    const recurrenceLabel = describeRecurrence({
+      fixa: "sim",
+      recorrencia_tipo: parsed.recurrence.type,
+      recorrencia_valor: parsed.recurrence.value?.toString() || "",
+    });
+    let message = `♻️ *Conta Fixa Cadastrada!*
+
+💸 *Valor*: ${formatCurrencyBR(parsed.valor)}
+
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${parsed.descricao}
 
 📅 *Próximo Vencimento*: ${formatBRDate(due)}
 
 🔄 *Recorrência*: ${recurrenceLabel}
 
 💡 A próxima cobrança será gerada automaticamente!`;
-
-  await sendText(fromRaw, message);
-  if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
-    await promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
+    await sendText(fromRaw, message);
+    if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
+      await promptAttachPaymentCode(fromRaw, userNorm, {
+        row_id: parentId, categoria: categoria.slug,
+      }, "fixed_register");
+    }
   }
   await sendMainMenu(fromRaw);
 }
