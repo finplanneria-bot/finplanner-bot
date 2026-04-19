@@ -360,8 +360,8 @@ const checkoutLimiter = rateLimit({
 
 // Aplica rate limiting (exceto em caminhos específicos)
 app.use((req, res, next) => {
-  // Pula rate limit para health check e wake
-  if (req.path === "/health" || req.path === "/internal/wake") {
+  // Pula rate limit para health check, wake e Stripe webhook (evitar bloquear retries do Stripe)
+  if (req.path === "/health" || req.path === "/internal/wake" || req.path === "/webhook/stripe") {
     return next();
   }
   return generalLimiter(req, res, next);
@@ -5533,6 +5533,31 @@ async function handleUserText(fromRaw, text) {
       await sendCronReminderForUser(userNorm, fromRaw, { bypassWindow: true });
       return;
     }
+    // Comando: "ativar 5511999999999 mensal" ou "ativar 5511999999999"
+    const ativarMatch = /^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i.test(normalizedMessage)
+      ? normalizedMessage.match(/^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i)
+      : null;
+    if (ativarMatch) {
+      const targetNorm = normalizeUser(ativarMatch[1]);
+      const plano = (ativarMatch[2] || "mensal").toLowerCase();
+      try {
+        const now = new Date();
+        const vencimento = new Date(now);
+        vencimento.setMonth(vencimento.getMonth() + (plano === "anual" ? 12 : plano === "trimestral" ? 3 : 1));
+        await upsertUsuarioFromSubscription({
+          userNorm: targetNorm,
+          plano,
+          ativo: true,
+          data_inicio: formatISODate(now),
+          extendVencimento: false,
+          vencimento_trial: formatISODate(vencimento),
+        });
+        await sendText(fromRaw, `✅ Usuário *${targetNorm}* ativado com plano *${plano}* até ${formatBRDate(vencimento)}.`, { bypassWindow: true });
+      } catch (e) {
+        await sendText(fromRaw, `❌ Erro ao ativar: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
   }
 
   if (!userNorm || !isAdminUser(userNorm)) {
@@ -5731,14 +5756,25 @@ async function handleStripeWebhook(req, res) {
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error("⚠️ Stripe raw body inválido:", {
+    console.error("⚠️ Stripe webhook assinatura inválida:", {
       isBuffer: Buffer.isBuffer(req.body),
       contentType: req.headers["content-type"],
       error: err.message,
     });
+    // Notifica admin — pode indicar STRIPE_WEBHOOK_SECRET errado (ex: test vs live)
+    if (ADMIN_WA_NUMBER) {
+      sendText(ADMIN_WA_NUMBER,
+        `⚠️ *Stripe*: falha na verificação de assinatura do webhook.\n` +
+        `Erro: ${err.message}\n\n` +
+        `_Verifique se STRIPE_WEBHOOK_SECRET no .env corresponde ao segredo do endpoint no Stripe Dashboard (modo live vs test)._`,
+        { bypassWindow: true }
+      ).catch(() => {});
+    }
     res.status(400).send(`Webhook error: ${err.message}`);
     return;
   }
+
+  console.log("[STRIPE] Webhook recebido:", event.type, event.id);
 
   try {
     if (event.type === "checkout.session.completed") {
@@ -5921,7 +5957,16 @@ async function handleStripeWebhook(req, res) {
       });
     }
   } catch (error) {
-    console.error("Erro ao processar evento Stripe:", error.message);
+    console.error("Erro ao processar evento Stripe:", event?.type, error.message);
+    if (ADMIN_WA_NUMBER) {
+      sendText(ADMIN_WA_NUMBER,
+        `🚨 *Stripe*: erro ao processar webhook *${event?.type || "desconhecido"}*.\n` +
+        `Erro: ${error.message}\n` +
+        `Event ID: ${event?.id || "—"}\n\n` +
+        `_O usuário pode não ter sido ativado. Verifique os logs e ative manualmente se necessário._`,
+        { bypassWindow: true }
+      ).catch(() => {});
+    }
   }
 
   res.sendStatus(200);
