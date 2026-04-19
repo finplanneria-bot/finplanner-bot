@@ -1537,7 +1537,7 @@ const buildCategoryPrompt = async (description, tipo) => {
       role: "system",
       content: [
         {
-          type: "text",
+          type: "input_text",
           text: `Você é um classificador inteligente de categorias financeiras.
 
 TAREFA: Analisar o lançamento e escolher ou criar a categoria mais adequada.
@@ -1563,7 +1563,7 @@ Se criar categoria nova:
       role: "user",
       content: [
         {
-          type: "text",
+          type: "input_text",
           text: `Categorias disponíveis:\n${allCategoriesHint}\n\nDescrição do lançamento: "${truncateForPrompt(description)}"\nTipo: ${tipo === "conta_receber" ? "recebimento" : "pagamento"}\n\nResponda com o JSON da categoria.`,
         },
       ],
@@ -4966,7 +4966,7 @@ const buildIntentPrompt = (text) => {
       role: "system",
       content: [
         {
-          type: "text",
+          type: "input_text",
           text: `Você é um assistente de IA especializado em detectar intenções de mensagens financeiras no WhatsApp.
 
 🎯 OBJETIVO: Classificar a mensagem do usuário em UMA das intenções disponíveis.
@@ -5012,7 +5012,7 @@ const buildIntentPrompt = (text) => {
       role: "user",
       content: [
         {
-          type: "text",
+          type: "input_text",
           text: `Opções válidas: ${options}
 
 Mensagem do usuário: "${text}"
