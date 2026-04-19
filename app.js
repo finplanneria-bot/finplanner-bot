@@ -589,11 +589,29 @@ function getUserCandidates(userNorm) {
   const candidates = new Set();
   if (userNorm) candidates.add(userNorm);
   const digits = String(userNorm || "").replace(/\D/g, "");
+  // BR mobile with country code + "9": "5511999999999" (13 digits)
   if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
-    candidates.add(digits.slice(0, 4) + digits.slice(5));
+    candidates.add(digits.slice(0, 4) + digits.slice(5)); // without "9": 551199999999
+    candidates.add(digits.slice(2));                       // without country code: 11999999999
+    candidates.add(digits.slice(2, 4) + digits.slice(5));  // without country code and without "9": 1199999999
   }
+  // BR with country code without "9": "551199999999" (12 digits)
   if (digits.startsWith("55") && digits.length === 12) {
-    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
+    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4)); // with "9": 5511999999999
+    candidates.add(digits.slice(2));                             // without country code: 1199999999
+    candidates.add(digits.slice(2, 4) + "9" + digits.slice(4));  // without country code + with "9": 11999999999
+  }
+  // BR mobile without country code, with "9": "11999999999" (11 digits, 3rd digit is "9")
+  if (!digits.startsWith("55") && digits.length === 11 && digits[2] === "9") {
+    candidates.add("55" + digits);                                // +country code: 5511999999999
+    candidates.add("55" + digits.slice(0, 2) + digits.slice(3));  // +country code, -"9": 551199999999
+    candidates.add(digits.slice(0, 2) + digits.slice(3));         // -"9": 1199999999
+  }
+  // BR without country code, 10 digits (landline or mobile without "9"): "1199999999"
+  if (!digits.startsWith("55") && digits.length === 10) {
+    candidates.add("55" + digits);                                   // +country code: 551199999999
+    candidates.add("55" + digits.slice(0, 2) + "9" + digits.slice(2)); // +country code +"9": 5511999999999
+    candidates.add(digits.slice(0, 2) + "9" + digits.slice(2));      // +"9": 11999999999
   }
   return Array.from(candidates);
 }
@@ -2577,7 +2595,11 @@ const upsertUsuarioFromSubscription = async ({
   if (!userNorm) throw new Error("Usuário inválido.");
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
-  const target = rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm);
+  // Look up using all phone-format variants so we don't create duplicate rows
+  const candidates = getUserCandidates(userNorm);
+  const target =
+    rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm) ||
+    rows.find((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
   const normalizedPlan = normalizePlan(plano) || normalizePlan(getVal(target, "plano"));
   const existingDataInicio = parseISODateSafe(getVal(target, "data_inicio"));
   const payloadDataInicio = parseISODateSafe(data_inicio);
@@ -2622,7 +2644,6 @@ const upsertUsuarioFromSubscription = async ({
   } catch (sheetErr) {
     console.error("⚠️ Erro ao criar aba do usuário:", userNorm, sheetErr.message);
   }
-  const candidates = getUserCandidates(userNorm);
   candidates.forEach((candidate) => usuarioStatusCache.delete(candidate));
   console.log("✅ Usuario atualizado:", userNorm, update.plano, update.ativo);
   return update;
