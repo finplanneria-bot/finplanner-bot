@@ -2900,23 +2900,25 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `Olá! Bem-vindo à FinPlanner IA
+          ? `Olá! Bem-vindo à FinPlanner IA 💰
 
-Sua assistente financeira pessoal! 💰
+Sou sua assistente financeira no WhatsApp. Basta me mandar uma mensagem normal:
 
-✅ Registrar gastos e ganhos
-✅ Gerenciar contas a pagar
-✅ Ver relatórios completos
-✅ Acompanhar seu saldo
+✍️ *Exemplos que funcionam:*
+• _"Paguei R$89,90 de mercado"_
+• _"Recebi R$2.500 de salário"_
+• _"Gastei 45 no almoço hoje"_
+• _"Conta de luz R$180 vence dia 15"_
 
-Toque em Abrir menu ou digite o que deseja fazer.
+📊 *Consultas:*
+• Digite *saldo* para ver seu balanço
+• Digite *pendentes* para ver contas a pagar
+• Digite *menu* para ver todas as opções
 
-💡 Ex: _"quero ver meu relatório"_
+🚀 Pode começar digitando um gasto ou recebimento!`
+          : `Toque em *Abrir menu* ou digite o que deseja fazer.
 
-🚀 Vamos começar?`
-          : `Toque em Abrir menu ou digite o que deseja fazer.
-
-💡 Ex: _"quero ver meu relatório"_`,
+💡 _Ex: "Paguei R$50 de mercado"_ ou _"saldo"_`,
       },
       action: {
         button: "Abrir menu",
@@ -3389,12 +3391,18 @@ const parseRegisterText = (text) => {
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
     .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
     .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
-    .replace(/\b(recebimento|receber|recebido|recebi|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
+    .replace(/\b(recebimento|receber|recebido|recebi|recebemos|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
+    .replace(/\b(gastei|comprei|ganhei|vendi|transferi|mandei|depositei|pix(?:ei)?)\b/gi, "")
     .replace(/\b(dia|data)\b/gi, "")
-    .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
+    .replace(/\b(valor|lançamento|lancamento|novo|registrar|registro)\b/gi, "")
     .replace(/r\$/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+
+  // Remove filler words from the start (greetings, pronouns)
+  descricao = descricao.replace(/^(oi|ei|opa|olá|ola|ah|eh|bom|bem|então|entao|ok|oi,|ei,|opa,)\s+/gi, "").trim();
+  // Remove subject pronouns from the start
+  descricao = descricao.replace(/^(eu|vc|voce|você)\s+/gi, "").trim();
 
   if (descricao) {
     const tokens = descricao.split(/\s+/);
@@ -3408,7 +3416,11 @@ const parseRegisterText = (text) => {
     descricao = filtered.join(" ");
   }
 
-  descricao = descricao.trim();
+  // Remove leading prepositions/articles that ended up at the start after cleaning
+  descricao = descricao.replace(/^(com|de|do|da|no|na|nos|nas|pro|pra|para|num|numa|o|a|os|as|um|uma)\s+/gi, "").trim();
+  // Remove trailing loose punctuation
+  descricao = descricao.replace(/[\s.,;!?]+$/, "").trim();
+
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
 
   let tipoPagamento = "";
@@ -3979,15 +3991,17 @@ async function handleEditFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (state.awaiting === "field") {
-    const field = normalizeDiacritics(text.trim()).toLowerCase();
-    if (/^cancelar/.test(field)) {
+    const fieldRaw = normalizeDiacritics(text.trim()).toLowerCase();
+    if (/^cancelar/.test(fieldRaw)) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
     }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
+    // Accept "valor 150" or "descricao Mercado" — extract the field name from the first word
+    const field = fieldRaw.split(/\s+/)[0];
     if (!valid.includes(field)) {
-      await sendText(fromRaw, "Campo inválido. Tente novamente.");
+      await sendText(fromRaw, `Campo inválido. Escolha um dos campos:\n\n🏷 *conta*\n📝 *descrição*\n💰 *valor*\n📅 *data*\n📌 *status*\n📂 *categoria*`);
       return true;
     }
     sessionEdit.set(userNorm, {
@@ -4918,6 +4932,7 @@ const KNOWN_INTENTS = new Set([
   "registrar_recebimento",
   "registrar_pagamento",
   "contas_fixas",
+  "ajuda_parcelamento",
   "desconhecido",
 ]);
 
@@ -4926,6 +4941,10 @@ const detectIntentHeuristic = (text) => {
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
+  // Parcelamento — resposta educativa
+  if (/parcela(mento|s?)|prestac(ao|oes)|em\s+\d+\s+vezes?|parcelad/.test(normalized)) return "ajuda_parcelamento";
+  // Relatório completo / saldo / balanço
+  if (/saldo|balanco|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes/.test(normalized)) return "relatorio_completo";
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
     return "relatorio_pagamentos_mes";
   }
@@ -4939,10 +4958,16 @@ const detectIntentHeuristic = (text) => {
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
   if (/contas?\s+a\s+pagar|pendentes|a pagar/.test(lower)) return "listar_pendentes";
+  // Vencimentos próximos
+  if (/\bvenc(e|er|imento|imentos)\b|o que (devo|falta pagar)|proximas? contas?/.test(normalized)) return "listar_pendentes";
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
+  // Registrar recebimento — formas naturais
+  if (/\b(recebi|ganhei|vendi|entrou|me pagaram|me transferiram|deposito recebido|pix recebido)\b/.test(normalized)) return "registrar_recebimento";
   if (/registrar recebimento|\brecebimento\b/.test(lower)) return "registrar_recebimento";
+  // Registrar pagamento — formas naturais
+  if (/\b(paguei|gastei|comprei|transferi|mandei pix|fiz compra|debito|boleto pago)\b/.test(normalized)) return "registrar_pagamento";
   if (/registrar pagamento|\bpagamento\b|\bpagar\b/.test(lower)) return "registrar_pagamento";
   return "desconhecido";
 };
@@ -4998,6 +5023,10 @@ const buildIntentPrompt = (text) => {
    • editar: "editar lançamento", "alterar registro"
    • excluir: "excluir lançamento", "apagar registro"
    • contas_fixas: "contas fixas", "cadastrar conta fixa"
+   • ajuda_parcelamento: "como parcelar", "lançar em parcelas", "em X vezes", "como funciona parcelamento"
+
+🔹 RELATÓRIO COMPLETO / SALDO:
+   • relatorio_completo: "saldo", "balanço", "quanto tenho", "quanto sobrou", "resumo", "situação financeira"
 
 🔹 NAVEGAÇÃO:
    • boas_vindas: "oi", "olá", "bom dia"
@@ -5624,13 +5653,34 @@ async function handleUserText(fromRaw, text) {
     case "registrar_pagamento":
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
       break;
+    case "ajuda_parcelamento":
+      await sendText(
+        fromRaw,
+        `📦 *Parcelamento no FinPlanner IA*\n\nO bot não tem lançamento automático de parcelas por enquanto, mas é simples fazer manualmente:\n\n` +
+        `1️⃣ Registre cada parcela separadamente com a data de vencimento de cada uma.\n` +
+        `Exemplo:\n` +
+        `• _"Parcela 1/3 notebook R$500 vence 10/05"_\n` +
+        `• _"Parcela 2/3 notebook R$500 vence 10/06"_\n` +
+        `• _"Parcela 3/3 notebook R$500 vence 10/07"_\n\n` +
+        `2️⃣ Ou use *Contas fixas* para lançar um valor recorrente todo mês automaticamente.\n\n` +
+        `Digite *menu* para ver todas as opções.`
+      );
+      break;
     default:
       if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
       } else if (!trimmed) {
         console.log("[handleUserText] Texto vazio recebido, ignorando.", { fromRaw, userNorm });
       } else {
-        console.log("[handleUserText] Enviando menu (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
+        console.log("[handleUserText] Fallback contextual (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
+        await sendText(
+          fromRaw,
+          `Não entendi exatamente o que você quer fazer. 🤔\n\n` +
+          `Você pode:\n` +
+          `• Digitar o valor direto: *"Paguei R$150 de mercado"*\n` +
+          `• Digitar *saldo* para ver seu balanço do mês\n` +
+          `• Digitar *menu* para ver todas as opções`
+        );
         await sendMainMenu(fromRaw);
       }
       break;
