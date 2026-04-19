@@ -210,6 +210,25 @@ const normalizePromptMessages = (input) => {
   });
 };
 
+const adaptInputForResponses = (input) => {
+  if (!Array.isArray(input)) return input;
+  return input.map((msg) => {
+    if (!msg || !Array.isArray(msg.content)) return msg;
+    const isAssistant = msg.role === "assistant";
+    const mappedContent = msg.content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      if (part.type === "text") {
+        return { ...part, type: isAssistant ? "output_text" : "input_text" };
+      }
+      if (part.type === "image_url" || part.type === "image") {
+        return { ...part, type: "input_image" };
+      }
+      return part;
+    });
+    return { ...msg, content: mappedContent };
+  });
+};
+
 const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 }) => {
   if (!openaiClient) return null;
   const messages = normalizePromptMessages(input);
@@ -218,7 +237,7 @@ const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 
     if (responsesClient && typeof responsesClient.create === "function") {
       const response = await responsesClient.create({
         model,
-        input,
+        input: adaptInputForResponses(input),
         temperature,
         max_output_tokens: maxOutputTokens,
       });
