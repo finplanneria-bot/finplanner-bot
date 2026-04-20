@@ -210,6 +210,25 @@ const normalizePromptMessages = (input) => {
   });
 };
 
+const adaptInputForResponses = (input) => {
+  if (!Array.isArray(input)) return input;
+  return input.map((msg) => {
+    if (!msg || !Array.isArray(msg.content)) return msg;
+    const isAssistant = msg.role === "assistant";
+    const mappedContent = msg.content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      if (part.type === "text") {
+        return { ...part, type: isAssistant ? "output_text" : "input_text" };
+      }
+      if (part.type === "image_url" || part.type === "image") {
+        return { ...part, type: "input_image" };
+      }
+      return part;
+    });
+    return { ...msg, content: mappedContent };
+  });
+};
+
 const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 }) => {
   if (!openaiClient) return null;
   const messages = normalizePromptMessages(input);
@@ -218,7 +237,7 @@ const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 
     if (responsesClient && typeof responsesClient.create === "function") {
       const response = await responsesClient.create({
         model,
-        input,
+        input: adaptInputForResponses(input),
         temperature,
         max_output_tokens: maxOutputTokens,
       });
@@ -487,6 +506,7 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
   if (!whatsapp) {
     return res.status(400).json({ error: "whatsapp obrigatório." });
   }
+  const whatsappNorm = normalizeWhatsAppNumber(String(whatsapp));
   const planoNorm = normalizePlan(plano) || "mensal";
   const priceMap = {
     mensal: STRIPE_PRICE_MENSAL,
@@ -511,14 +531,14 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
       cancel_url: STRIPE_CANCEL_URL,
       subscription_data: {
         metadata: {
-          whatsapp: String(whatsapp || ""),
+          whatsapp: whatsappNorm,
           plano: planoNorm,
           nome: String(nome || ""),
           email: String(email || ""),
         },
       },
       metadata: {
-        whatsapp: String(whatsapp || ""),
+        whatsapp: whatsappNorm,
         plano: planoNorm,
       },
     });
@@ -533,6 +553,15 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
 // Utils
 // ============================
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
+
+const normalizeWhatsAppNumber = (num) => {
+  const digits = (num || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return "55" + digits;
+  return digits;
+};
+
 const userFirstNames = new Map();
 
 const extractFirstName = (value) => {
@@ -612,6 +641,21 @@ function getUserCandidates(userNorm) {
     candidates.add("55" + digits);                                   // +country code: 551199999999
     candidates.add("55" + digits.slice(0, 2) + "9" + digits.slice(2)); // +country code +"9": 5511999999999
     candidates.add(digits.slice(0, 2) + "9" + digits.slice(2));      // +"9": 11999999999
+  }
+  // Número sem prefixo 55 → adicionar com prefixo
+  if (!digits.startsWith("55") && (digits.length === 10 || digits.length === 11)) {
+    const with55 = "55" + digits;
+    candidates.add(with55);
+    if (with55.length === 13 && with55[4] === "9") {
+      candidates.add(with55.slice(0, 4) + with55.slice(5));
+    }
+    if (with55.length === 12) {
+      candidates.add(with55.slice(0, 4) + "9" + with55.slice(4));
+    }
+  }
+  // Número com prefixo 55 → adicionar sem prefixo
+  if (digits.startsWith("55") && digits.length >= 12) {
+    candidates.add(digits.slice(2));
   }
   return Array.from(candidates);
 }
@@ -1240,20 +1284,40 @@ const CATEGORY_DEFINITIONS = [
     slug: "mercado",
     label: "Mercado / Supermercado",
     emoji: "🛒",
-    description: "Compras de supermercado, feira e itens de despensa para casa.",
+    description: "Compras de supermercado, feira, açougue e itens de despensa para casa.",
     keywords: [
       "mercado",
       "supermercado",
       "hortifruti",
+      "hortifruit",
       "atacado",
       "atacadista",
+      "atacadao",
       "sacolao",
       "mercearia",
       "açougue",
       "acougue",
       "feira",
+      "quitanda",
+      "empório",
+      "emporio",
+      "armazém",
+      "armazem",
       "compras do mes",
+      "compras da semana",
       "cesta basica",
+      "rancho",
+      "assai",
+      "assaí",
+      "makro",
+      "sam's",
+      "sams",
+      "costco",
+      "carrefour",
+      "extra",
+      "pao de acucar",
+      "big bompreço",
+      "big bompeco",
     ],
     aliases: ["supermercado", "mercado_supermercado"],
   },
@@ -1261,7 +1325,7 @@ const CATEGORY_DEFINITIONS = [
     slug: "alimentacao",
     label: "Alimentação",
     emoji: "🍽️",
-    description: "Refeições prontas, lanches e alimentação fora de casa.",
+    description: "Refeições prontas, lanches, fast food e alimentação fora de casa.",
     keywords: [
       "restaurante",
       "lanche",
@@ -1270,13 +1334,53 @@ const CATEGORY_DEFINITIONS = [
       "almoço",
       "almoco",
       "jantar",
+      "café da manhã",
+      "cafe da manha",
       "padaria",
       "marmita",
+      "marmitex",
       "self-service",
       "delivery",
       "comida pronta",
+      "comida",
       "quentinha",
       "espetinho",
+      "hamburguer",
+      "hambúrguer",
+      "pizza",
+      "pizzaria",
+      "sushi",
+      "japonês",
+      "japones",
+      "açaí",
+      "acai",
+      "food",
+      "refeição",
+      "refeicao",
+      "cantina",
+      "buffet",
+      "rodízio",
+      "rodizio",
+      "fast food",
+      "mcdonalds",
+      "mc donalds",
+      "burger king",
+      "subway",
+      "kfc",
+      "bobs",
+      "habibs",
+      "habib's",
+      "rappi",
+      "dogão",
+      "dogao",
+      "hot dog",
+      "tapioca",
+      "coxinha",
+      "salgado",
+      "doceria",
+      "confeitaria",
+      "sorveteria",
+      "sorvete",
     ],
   },
   {
@@ -1287,157 +1391,909 @@ const CATEGORY_DEFINITIONS = [
     keywords: [
       "bebida",
       "cerveja",
+      "cervejaria",
       "refrigerante",
       "vinho",
       "drink",
       "drinks",
       "bar",
       "chopp",
+      "chope",
       "suco",
-      "água",
-      "agua",
+      "água mineral",
       "whisky",
+      "whiskey",
       "gin",
+      "vodka",
+      "rum",
+      "tequila",
+      "champagne",
+      "espumante",
+      "cachaça",
+      "cachaca",
+      "destilado",
       "café",
       "cafe",
+      "cafeteria",
+      "cappuccino",
+      "capuccino",
       "energético",
       "energetico",
+      "chá",
+      "cha",
+      "milkshake",
+      "limonada",
+      "kombucha",
+      "isotônico",
+      "isotonico",
     ],
   },
   {
     slug: "higiene_pessoal",
-    label: "Higiene Pessoal",
+    label: "Higiene / Beleza",
     emoji: "🧴",
-    description: "Produtos de cuidado pessoal, higiene e cosméticos.",
+    description: "Produtos de cuidado pessoal, higiene, cosméticos, salão de beleza e barbearia.",
     keywords: [
       "higiene",
       "sabonete",
       "shampoo",
       "condicionador",
       "creme",
+      "hidratante",
+      "protetor solar",
       "desodorante",
       "perfume",
-      "escova",
-      "pasta",
+      "colônia",
+      "colonia",
+      "escova de dente",
+      "pasta de dente",
       "fio dental",
       "absorvente",
       "barbeador",
+      "gilete",
       "cotonete",
       "higiene pessoal",
       "cosmetico",
       "cosmético",
+      "maquiagem",
+      "batom",
+      "rimel",
+      "base",
+      "esmalte",
+      "unha",
+      "manicure",
+      "pedicure",
+      "salão",
+      "salao",
+      "salão de beleza",
+      "cabelo",
+      "cabeleireiro",
+      "cabeleireira",
+      "corte de cabelo",
+      "tintura",
+      "progressiva",
+      "barbeiro",
+      "barbearia",
+      "depilação",
+      "depilacao",
+      "cera",
+      "sobrancelha",
+      "skincare",
     ],
   },
   {
     slug: "utilidades",
     label: "Utilidades",
     emoji: "🔌",
-    description: "Contas essenciais como luz, água e gás.",
-    keywords: ["luz", "energia", "água", "agua", "gás", "gas", "conta de luz", "conta de agua"],
+    description: "Contas essenciais de consumo da casa: luz, água, gás, esgoto e saneamento.",
+    keywords: [
+      "luz",
+      "energia",
+      "energia elétrica",
+      "energia eletrica",
+      "eletricidade",
+      "conta de luz",
+      "conta de energia",
+      "água",
+      "agua",
+      "conta de agua",
+      "conta de água",
+      "gás",
+      "gas",
+      "conta de gas",
+      "conta de gás",
+      "gás encanado",
+      "gas encanado",
+      "botijão",
+      "botijao",
+      "esgoto",
+      "saneamento",
+      "lixo",
+      "taxa de lixo",
+      "cemig",
+      "enel",
+      "cpfl",
+      "light",
+      "celpe",
+      "coelba",
+      "sabesp",
+      "compesa",
+      "embasa",
+      "copasa",
+      "cagece",
+      "comgas",
+      "comgás",
+    ],
   },
   {
     slug: "internet_telefonia",
     label: "Internet / Telefonia",
     emoji: "🌐",
-    description: "Planos de internet, telefonia fixa ou celular.",
-    keywords: ["internet", "fibra", "vivo", "claro", "tim", "oi", "telefonia", "celular", "telefone"],
+    description: "Planos de internet, telefonia fixa ou celular e recargas.",
+    keywords: [
+      "internet",
+      "fibra",
+      "fibra óptica",
+      "fibra optica",
+      "wifi",
+      "wi-fi",
+      "vivo fibra",
+      "claro internet",
+      "tim internet",
+      "oi fibra",
+      "telefonia",
+      "celular",
+      "telefone",
+      "recarga",
+      "recarga celular",
+      "plano celular",
+      "plano internet",
+      "plano de celular",
+      "plano de internet",
+      "dados moveis",
+      "dados móveis",
+      "chip",
+      "linha telefônica",
+      "linha telefonica",
+    ],
   },
   {
     slug: "moradia",
     label: "Moradia",
     emoji: "🏠",
-    description: "Custos de moradia como aluguel, condomínio e financiamentos.",
-    keywords: ["aluguel", "condomínio", "condominio", "iptu", "financiamento", "alojamento", "imovel", "imóvel"],
+    description: "Custos de moradia: aluguel, condomínio, financiamento imobiliário, IPTU, reforma e mudança.",
+    keywords: [
+      "aluguel",
+      "condomínio",
+      "condominio",
+      "iptu",
+      "financiamento",
+      "prestação do apartamento",
+      "prestação da casa",
+      "alojamento",
+      "imovel",
+      "imóvel",
+      "apartamento",
+      "casa",
+      "reforma",
+      "obra",
+      "pedreiro",
+      "pintura",
+      "mudança",
+      "mudanca",
+      "escritura",
+      "cartório imóvel",
+      "seguro residencial",
+      "seguro casa",
+      "mobília",
+      "mobilia",
+      "decoração",
+      "decoracao",
+    ],
   },
   {
     slug: "transporte",
     label: "Transporte",
     emoji: "🚗",
-    description: "Deslocamentos, combustível, pedágios e manutenção de veículos.",
+    description: "Deslocamentos, combustível, pedágios, manutenção de veículos, IPVA, seguro auto e transporte público.",
     keywords: [
       "uber",
       "99",
+      "99pop",
       "gasolina",
       "combustível",
       "combustivel",
+      "etanol",
+      "álcool",
+      "alcool",
+      "diesel",
+      "gnv",
+      "abastecimento",
+      "posto",
       "passagem",
       "ônibus",
       "onibus",
       "transporte",
+      "metrô",
+      "metro",
+      "trem",
+      "barca",
+      "balsa",
+      "táxi",
+      "taxi",
+      "cabify",
       "estacionamento",
       "pedágio",
       "pedagio",
       "manutenção carro",
       "manutencao carro",
+      "oficina",
+      "mecânico",
+      "mecanico",
+      "revisão carro",
+      "revisao carro",
+      "pneu",
+      "troca de óleo",
+      "troca de oleo",
+      "borracheiro",
+      "guincho",
+      "lavagem",
+      "lava jato",
+      "lava rápido",
+      "lava rapido",
+      "ipva",
+      "seguro auto",
+      "seguro carro",
+      "seguro veicular",
+      "seguro automotivo",
+      "seguro moto",
+      "seguro do carro",
+      "licenciamento veiculo",
+      "dpvat",
+      "detran",
+      "cnh",
+      "habilitação",
+      "habilitacao",
+      "moto",
+      "bicicleta",
+      "bike",
+      "patinete",
     ],
   },
   {
     slug: "saude",
     label: "Saúde",
     emoji: "💊",
-    description: "Cuidados com saúde, planos, exames e medicamentos.",
+    description: "Cuidados com saúde: consultas médicas, planos de saúde, odontologia, farmácia, exames, terapia, academia e atividade física.",
     keywords: [
       "academia",
-      "plano",
+      "gym",
+      "crossfit",
+      "pilates",
+      "yoga",
+      "musculação",
+      "musculacao",
+      "personal",
       "consulta",
+      "consulta médica",
+      "consulta medica",
+      "médico",
+      "medico",
       "dentista",
+      "odonto",
+      "odontologia",
+      "ortodontia",
+      "ortodontista",
+      "plano de saude",
+      "plano de saúde",
+      "plano saude",
+      "plano odontologico",
+      "plano odontológico",
+      "plano odonto",
+      "convênio",
+      "convenio",
+      "unimed",
+      "amil",
+      "sulamerica",
+      "hapvida",
+      "bradesco saude",
+      "notredame",
       "farmácia",
       "farmacia",
+      "drogaria",
       "remédio",
       "remedio",
+      "medicamento",
+      "suplemento",
+      "vitamina",
+      "proteína",
+      "proteina",
+      "whey",
+      "creatina",
       "exame",
+      "exame de sangue",
+      "ultrassom",
+      "raio x",
+      "ressonância",
+      "ressonancia",
+      "tomografia",
       "hospital",
+      "clínica",
+      "clinica",
+      "pronto socorro",
+      "emergência",
+      "emergencia",
+      "urgência",
+      "urgencia",
+      "internação",
+      "internacao",
+      "cirurgia",
       "terapia",
+      "psicólogo",
+      "psicologo",
+      "psicóloga",
+      "psicologa",
+      "psiquiatra",
+      "psicoterapia",
+      "fisioterapia",
+      "fisioterapeuta",
+      "fonoaudiólogo",
+      "fonoaudiologo",
+      "nutricionista",
+      "oftalmologista",
+      "oculista",
+      "dermatologista",
+      "ortopedista",
+      "cardiologista",
+      "ginecologista",
+      "urologista",
+      "pediatra",
+      "otorrino",
+      "vacina",
+      "laboratório",
+      "laboratorio",
+      "óculos",
+      "oculos",
+      "lente de contato",
+      "aparelho ortodôntico",
+      "aparelho ortodontico",
     ],
+    aliases: ["saude", "saúde"],
   },
   {
     slug: "educacao",
     label: "Educação",
     emoji: "🎓",
-    description: "Cursos, mensalidades, materiais e formação.",
-    keywords: ["curso", "faculdade", "escola", "mensalidade", "aula", "material", "livro", "apostila"],
+    description: "Cursos, mensalidades escolares/universitárias, materiais didáticos, idiomas e formação profissional.",
+    keywords: [
+      "curso",
+      "faculdade",
+      "universidade",
+      "escola",
+      "colégio",
+      "colegio",
+      "creche",
+      "berçário",
+      "bercario",
+      "mensalidade escolar",
+      "mensalidade faculdade",
+      "aula",
+      "aula particular",
+      "material escolar",
+      "livro",
+      "apostila",
+      "caderno",
+      "uniforme escolar",
+      "pós-graduação",
+      "pos graduacao",
+      "graduação",
+      "graduacao",
+      "mestrado",
+      "doutorado",
+      "mba",
+      "inglês",
+      "ingles",
+      "espanhol",
+      "idioma",
+      "intercâmbio",
+      "intercambio",
+      "treinamento",
+      "capacitação",
+      "capacitacao",
+      "certificação",
+      "certificacao",
+      "ead",
+      "ensino",
+      "educação",
+      "educacao",
+      "alura",
+      "udemy",
+      "coursera",
+      "hotmart",
+      "workshop",
+      "palestra",
+      "seminário",
+      "seminario",
+    ],
+  },
+  {
+    slug: "assinaturas",
+    label: "Assinaturas / Streaming",
+    emoji: "📺",
+    description: "Assinaturas digitais de streaming, música, jogos e serviços online recorrentes.",
+    keywords: [
+      "netflix",
+      "spotify",
+      "disney",
+      "disney+",
+      "hbo",
+      "hbo max",
+      "max",
+      "amazon prime",
+      "prime video",
+      "globoplay",
+      "telecine",
+      "paramount",
+      "paramount+",
+      "apple tv",
+      "youtube premium",
+      "youtube music",
+      "deezer",
+      "tidal",
+      "crunchyroll",
+      "twitch",
+      "xbox game pass",
+      "playstation plus",
+      "ps plus",
+      "steam",
+      "assinatura",
+      "streaming",
+      "icloud",
+      "google one",
+      "google drive",
+      "dropbox",
+      "onedrive",
+      "chatgpt",
+      "chatgpt plus",
+      "canva",
+      "adobe",
+      "office 365",
+      "microsoft 365",
+      "antivírus",
+      "antivirus",
+      "vpn",
+      "kindle unlimited",
+      "audible",
+      "starzplay",
+      "star+",
+      "pluto tv",
+      "kwai",
+    ],
   },
   {
     slug: "lazer",
-    label: "Lazer",
+    label: "Lazer / Entretenimento",
     emoji: "🎭",
-    description: "Atividades de lazer, cultura, assinaturas e viagens.",
-    keywords: ["netflix", "spotify", "cinema", "show", "lazer", "entretenimento", "viagem", "passeio", "parque"],
+    description: "Atividades de lazer, cultura, viagens, eventos, esportes e diversão.",
+    keywords: [
+      "cinema",
+      "show",
+      "lazer",
+      "entretenimento",
+      "viagem",
+      "passeio",
+      "parque",
+      "parque aquático",
+      "parque aquatico",
+      "teatro",
+      "museu",
+      "exposição",
+      "exposicao",
+      "ingresso",
+      "evento",
+      "festival",
+      "festa",
+      "aniversário",
+      "aniversario",
+      "balada",
+      "boate",
+      "karaoke",
+      "churrasco",
+      "pescaria",
+      "camping",
+      "trilha",
+      "escalada",
+      "esporte",
+      "futebol",
+      "pelada",
+      "natação",
+      "natacao",
+      "corrida",
+      "maratona",
+      "jogo",
+      "videogame",
+      "game",
+      "brinquedo",
+      "diversão",
+      "diversao",
+      "zoo",
+      "zoológico",
+      "zoologico",
+      "aquário",
+      "aquario",
+      "praia",
+      "piscina",
+      "hotel",
+      "pousada",
+      "resort",
+      "airbnb",
+      "hospedagem",
+      "excursão",
+      "excursao",
+      "cruzeiro",
+      "spa",
+    ],
+  },
+  {
+    slug: "pets",
+    label: "Pets / Animais",
+    emoji: "🐾",
+    description: "Gastos com animais de estimação: ração, veterinário, petshop, banho e tosa, medicamentos e acessórios para pets.",
+    keywords: [
+      "pet",
+      "pets",
+      "cachorro",
+      "gato",
+      "cão",
+      "cao",
+      "gatinho",
+      "filhote",
+      "veterinário",
+      "veterinario",
+      "veterinária",
+      "veterinaria",
+      "vet",
+      "ração",
+      "racao",
+      "petshop",
+      "pet shop",
+      "banho e tosa",
+      "banho tosa",
+      "tosa",
+      "antipulgas",
+      "vermífugo",
+      "vermifugo",
+      "coleira",
+      "caminha pet",
+      "brinquedo pet",
+      "areia de gato",
+      "areia sanitária",
+      "areia sanitaria",
+      "cobasi",
+      "petz",
+      "canil",
+      "gatil",
+      "adestramento",
+      "castração",
+      "castracao",
+      "vacina pet",
+      "vacina cachorro",
+      "vacina gato",
+    ],
+  },
+  {
+    slug: "roupas",
+    label: "Roupas / Vestuário",
+    emoji: "👗",
+    description: "Compras de roupas, calçados, acessórios de moda e vestuário em geral.",
+    keywords: [
+      "roupa",
+      "roupas",
+      "vestuário",
+      "vestuario",
+      "calça",
+      "calca",
+      "camisa",
+      "camiseta",
+      "blusa",
+      "vestido",
+      "saia",
+      "short",
+      "bermuda",
+      "sapato",
+      "tênis",
+      "tenis",
+      "chinelo",
+      "sandália",
+      "sandalia",
+      "bota",
+      "sapatênis",
+      "sapatenis",
+      "jaqueta",
+      "casaco",
+      "moletom",
+      "pijama",
+      "cueca",
+      "calcinha",
+      "sutiã",
+      "sutia",
+      "meia",
+      "cinto",
+      "gravata",
+      "terno",
+      "social",
+      "acessório moda",
+      "bolsa",
+      "mochila",
+      "relógio",
+      "relogio",
+      "joia",
+      "joias",
+      "bijuteria",
+      "anel",
+      "pulseira",
+      "colar",
+      "brinco",
+      "renner",
+      "riachuelo",
+      "c&a",
+      "cea",
+      "marisa",
+      "zara",
+      "shein",
+      "shopee",
+      "centauro",
+      "netshoes",
+      "dafiti",
+      "hering",
+      "loja de roupa",
+    ],
   },
   {
     slug: "impostos_taxas",
     label: "Impostos e Taxas",
     emoji: "🧾",
-    description: "Tributos, licenças, multas e encargos governamentais.",
-    keywords: ["multa", "taxa", "imposto", "receita", "darf", "alvará", "alvara", "licenciamento"],
+    description: "Tributos, impostos, multas, taxas governamentais, anuidades e encargos oficiais.",
+    keywords: [
+      "multa",
+      "taxa",
+      "imposto",
+      "tributo",
+      "receita federal",
+      "darf",
+      "alvará",
+      "alvara",
+      "licenciamento",
+      "ir",
+      "irpf",
+      "irpj",
+      "inss",
+      "iss",
+      "icms",
+      "pis",
+      "cofins",
+      "csll",
+      "contribuição",
+      "contribuicao",
+      "anuidade",
+      "crea",
+      "crm",
+      "oab",
+      "crc",
+      "coren",
+      "cartório",
+      "cartorio",
+      "registro",
+      "certidão",
+      "certidao",
+      "das",
+      "simples nacional",
+      "mei",
+      "guia",
+    ],
   },
   {
     slug: "servicos_domesticos",
     label: "Serviços Domésticos",
     emoji: "🧹",
-    description: "Serviços para casa como faxina, diarista e reparos.",
-    keywords: ["faxina", "diarista", "limpeza", "serviço doméstico", "servico domestico", "manutenção", "manutencao"],
+    description: "Serviços para casa: faxina, diarista, jardinagem, lavanderia, reparos e manutenção residencial.",
+    keywords: [
+      "faxina",
+      "faxineira",
+      "diarista",
+      "limpeza",
+      "serviço doméstico",
+      "servico domestico",
+      "empregada",
+      "doméstica",
+      "domestica",
+      "jardineiro",
+      "jardinagem",
+      "eletricista",
+      "encanador",
+      "pintor",
+      "marceneiro",
+      "vidraceiro",
+      "serralheiro",
+      "dedetização",
+      "dedetizacao",
+      "desentupimento",
+      "lavanderia",
+      "passadeira",
+      "conserto",
+      "reparo",
+      "manutenção casa",
+      "manutencao casa",
+      "porteiro",
+      "zelador",
+    ],
+  },
+  {
+    slug: "presentes",
+    label: "Presentes / Doações",
+    emoji: "🎁",
+    description: "Presentes, doações, dízimos, ofertas religiosas e contribuições beneficentes.",
+    keywords: [
+      "presente",
+      "presentes",
+      "doação",
+      "doacao",
+      "doações",
+      "doacoes",
+      "dízimo",
+      "dizimo",
+      "oferta",
+      "oferta religiosa",
+      "caridade",
+      "ong",
+      "contribuição social",
+      "contribuicao social",
+      "vaquinha",
+      "ajuda",
+      "esmola",
+      "bazar",
+      "lembrancinha",
+      "mimo",
+      "gift",
+      "mesada",
+    ],
   },
   {
     slug: "salario_trabalho",
     label: "Salário / Trabalho",
     emoji: "💼",
-    description: "Receitas de salário, folha de pagamento e pró-labore.",
-    keywords: ["salário", "salario", "pagamento", "folha", "pro labore", "adiantamento", "contrato"],
+    description: "Receitas de salário, freelance, holerite, comissões, vale e benefícios trabalhistas.",
+    keywords: [
+      "salário",
+      "salario",
+      "pagamento",
+      "folha",
+      "pro labore",
+      "pró-labore",
+      "adiantamento",
+      "contrato",
+      "holerite",
+      "contracheque",
+      "vale transporte",
+      "vale alimentação",
+      "vale alimentacao",
+      "vale refeição",
+      "vale refeicao",
+      "vt",
+      "va",
+      "vr",
+      "bonificação",
+      "bonificacao",
+      "comissão",
+      "comissao",
+      "freelance",
+      "freela",
+      "bico",
+      "renda extra",
+      "hora extra",
+      "décimo terceiro",
+      "decimo terceiro",
+      "13º",
+      "férias",
+      "ferias",
+      "rescisão",
+      "rescisao",
+      "fgts",
+      "seguro desemprego",
+      "pis",
+      "abono",
+    ],
   },
   {
     slug: "vendas_receitas",
     label: "Vendas e Receitas",
     emoji: "💵",
-    description: "Recebimentos por vendas, serviços e entradas diversas.",
-    keywords: ["venda", "recebimento", "cliente", "boleto recebido", "serviço", "servico", "entrada", "receita"],
+    description: "Recebimentos por vendas, serviços prestados, faturamento e entradas diversas.",
+    keywords: [
+      "venda",
+      "vendas",
+      "recebimento",
+      "cliente",
+      "boleto recebido",
+      "serviço prestado",
+      "servico prestado",
+      "entrada",
+      "receita",
+      "faturamento",
+      "nota fiscal",
+      "nf",
+      "nfe",
+      "cobrança",
+      "cobranca",
+      "reembolso",
+      "pix recebido",
+      "transferência recebida",
+      "transferencia recebida",
+      "lucro",
+      "ganho",
+      "honorário",
+      "honorario",
+      "consultoria",
+      "projeto",
+    ],
   },
   {
     slug: "investimentos",
     label: "Investimentos",
     emoji: "📈",
-    description: "Aportes, resgates e movimentações financeiras de investimentos.",
-    keywords: ["investimento", "bolsa", "renda fixa", "tesouro", "ação", "acao", "cripto", "poupança", "poupanca"],
+    description: "Aportes, resgates, dividendos, rendimentos e movimentações financeiras de investimentos.",
+    keywords: [
+      "investimento",
+      "bolsa",
+      "renda fixa",
+      "tesouro",
+      "tesouro direto",
+      "ação",
+      "acao",
+      "ações",
+      "acoes",
+      "cripto",
+      "criptomoeda",
+      "bitcoin",
+      "btc",
+      "ethereum",
+      "eth",
+      "poupança",
+      "poupanca",
+      "cdb",
+      "lci",
+      "lca",
+      "lc",
+      "fundo",
+      "fundo imobiliário",
+      "fundo imobiliario",
+      "fii",
+      "dividendo",
+      "dividendos",
+      "rendimento",
+      "juros",
+      "debênture",
+      "debenture",
+      "previdência",
+      "previdencia",
+      "pgbl",
+      "vgbl",
+      "day trade",
+      "swing trade",
+      "forex",
+      "dólar",
+      "dolar",
+      "câmbio",
+      "cambio",
+      "ouro",
+      "commodities",
+      "coe",
+      "nft",
+      "aporte",
+      "resgate",
+      "aplicação",
+      "aplicacao",
+    ],
   },
   {
     slug: "outros",
@@ -2595,7 +3451,6 @@ const upsertUsuarioFromSubscription = async ({
   if (!userNorm) throw new Error("Usuário inválido.");
   const sheet = await ensureSheetUsuarios();
   const rows = await withRetry(() => sheet.getRows(), "get-usuarios");
-  // Look up using all phone-format variants so we don't create duplicate rows
   const candidates = getUserCandidates(userNorm);
   const target =
     rows.find((row) => normalizeUser(getVal(row, "user")) === userNorm) ||
@@ -3049,7 +3904,7 @@ const sendContasFixasMenu = (to) =>
 const sendCadastrarContaFixaMessage = (to) =>
   sendText(
     to,
-    `♻ Cadastro de conta fixa\n\nEnvie tudo em uma única mensagem neste formato:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n🔁 Recorrência: Informe o intervalo\n(ex: todo dia 05, a cada 15 dias, semanal, quinzenal)\n\n💡 Exemplos:\n➡ Internet 120 todo dia 05\n➡ Aluguel 150 a cada 15 dias\n➡ Academia 90 semanal\n\nDigite *cancelar* para sair.`
+    `♻ Cadastro de conta fixa\n\nEnvie tudo em uma única mensagem neste formato:\n\n📝 Descrição: Nome da conta\n(ex: Internet, Academia, Aluguel)\n\n💰 Valor: Valor fixo da conta\n(ex: 120,00)\n\n🔁 Recorrência: Informe o intervalo\n(ex: todo dia 05, a cada 15 dias, semanal, quinzenal)\n\n💡 Exemplos:\n➡ Internet 120 todo dia 05\n➡ Aluguel 150 a cada 15 dias\n➡ Academia 90 semanal\n➡ Tênis 3 parcelas de 80 todo dia 10\n\n📦 *Várias de uma vez?* Envie uma por linha!\n\nDigite *cancelar* para sair.`
   );
 
 const sendListarContasFixasMessage = async (to, userNorm) => {
@@ -3197,9 +4052,12 @@ const hasActiveSession = (userNorm) =>
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
 
-const sendCancelMessage = async (to) => {
-  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to });
-  await sendText(to, "Operação cancelada.");
+const sendCancelMessage = async (to, { reason } = {}) => {
+  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to, reason });
+  const msg = reason === "timeout"
+    ? "⏰ Operação cancelada por inatividade.\n\n💡 Você pode recomeçar a qualquer momento — basta enviar sua mensagem novamente ou tocar em *Abrir menu*."
+    : "Operação cancelada.";
+  await sendText(to, msg);
   await sendMainMenu(to);
 };
 
@@ -3725,7 +4583,7 @@ async function listRowsForSelection(fromRaw, userNorm, mode) {
   }
 }
 
-const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const selectionStopWords = new Set(
   [
@@ -3899,7 +4757,7 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   if (!state || state.awaiting !== "confirm") return false;
   if (deleteStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (!confirmed) {
@@ -3978,7 +4836,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (state.awaiting === "index") {
@@ -4012,16 +4870,39 @@ async function handleEditFlow(fromRaw, userNorm, text) {
     return true;
   }
   if (state.awaiting === "field") {
-    const fieldRaw = normalizeDiacritics(text.trim()).toLowerCase();
-    if (/^cancelar/.test(fieldRaw)) {
+    const input = normalizeDiacritics(text.trim()).toLowerCase();
+    if (/^cancelar/.test(input)) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
     }
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
-    // Accept "valor 150" or "descricao Mercado" — extract the field name from the first word
-    const field = fieldRaw.split(/\s+/)[0];
-    if (!valid.includes(field)) {
+    const fieldAliases = {
+      descricao: "descricao", descrição: "descricao", desc: "descricao",
+      valor: "valor", preço: "valor", preco: "valor", price: "valor",
+      data: "data", vencimento: "data", date: "data",
+      status: "status", situacao: "status", situação: "status",
+      categoria: "categoria", cat: "categoria",
+      conta: "conta", nome: "conta",
+    };
+
+    const words = input.split(/\s+/);
+    const firstWord = words[0];
+    const resolvedField = fieldAliases[firstWord] || (valid.includes(firstWord) ? firstWord : null);
+
+    if (resolvedField && words.length > 1) {
+      const inlineValue = text.trim().slice(text.trim().indexOf(" ") + 1).trim();
+      sessionEdit.set(userNorm, {
+        ...state,
+        awaiting: "value",
+        field: resolvedField,
+        expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+      });
+      return handleEditFlow(fromRaw, userNorm, inlineValue);
+    }
+
+    const field = resolvedField || fieldAliases[input];
+    if (!field) {
       await sendText(fromRaw, `Campo inválido. Escolha um dos campos:\n\n🏷 *conta*\n📝 *descrição*\n💰 *valor*\n📅 *data*\n📌 *status*\n📂 *categoria*`);
       return true;
     }
@@ -4130,7 +5011,7 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (state.expiresAt && Date.now() > state.expiresAt) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   const trimmed = (text || "").trim();
@@ -4143,17 +5024,44 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
     await sendCancelMessage(fromRaw);
     return true;
   }
-  const parsed = parseFixedAccountCommand(text);
-  if (!parsed) {
+
+  const lines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const results = [];
+  const failures = [];
+  for (const line of lines) {
+    const parsed = parseFixedAccountCommand(line);
+    if (parsed) {
+      results.push({ line, parsed });
+    } else if (lines.length > 1) {
+      failures.push(line);
+    }
+  }
+
+  if (!results.length) {
+    const parsed = parseFixedAccountCommand(text);
+    if (parsed) {
+      sessionFixedRegister.delete(userNorm);
+      await registerFixedAccount(fromRaw, userNorm, parsed);
+      return true;
+    }
     await sendText(
       fromRaw,
-      "Não consegui entender. Informe algo como \"Internet 120 todo dia 05\" ou \"Aluguel 150 a cada 15 dias\"."
+      "Não consegui entender. Informe algo como \"Internet 120 todo dia 05\" ou \"Aluguel 150 a cada 15 dias\".\n\n💡 Para cadastrar várias de uma vez, envie uma por linha."
     );
     sessionFixedRegister.set(userNorm, { expiresAt: Date.now() + SESSION_TIMEOUT_MS });
     return true;
   }
+
   sessionFixedRegister.delete(userNorm);
-  await registerFixedAccount(fromRaw, userNorm, parsed);
+  for (const { parsed } of results) {
+    await registerFixedAccount(fromRaw, userNorm, parsed);
+  }
+  if (results.length > 1) {
+    await sendText(fromRaw, `✅ ${results.length} contas fixas cadastradas com sucesso!`);
+  }
+  if (failures.length) {
+    await sendText(fromRaw, `⚠️ Não consegui entender ${failures.length} linha(s):\n${failures.map((f) => `• ${f}`).join("\n")}\n\nEnvie no formato: Descrição Valor todo dia X`);
+  }
   return true;
 }
 
@@ -4162,7 +5070,7 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (deleteStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (state.awaiting === "index") {
@@ -4476,7 +5384,7 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   if (!state) return;
   if (statusStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return;
   }
   const entry = { ...state.entry };
@@ -4497,7 +5405,7 @@ async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (statusStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
@@ -4523,7 +5431,7 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (paymentCodeStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   if (state.awaiting !== "input") return false;
@@ -4559,7 +5467,7 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   if (!state) return false;
   if (payStateExpired(state)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    await sendCancelMessage(fromRaw, { reason: "timeout" });
     return true;
   }
   const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
@@ -4796,6 +5704,22 @@ const parseFixedAccountCommand = (text) => {
 
   if (!recurrence) return null;
 
+  // Detecta parcelamentos ANTES de extrair valor (ex: "4 parcelas de 127", "3x de 50")
+  let installmentCount = null;
+  let installmentValue = null;
+  const installmentPatterns = [
+    /(\d+)\s*(?:parcelas?|vezes|x)\s*(?:de\s+)?(?:R\$\s*)?(\d+(?:[.,]\d+)?)/i,
+    /(?:parcelar|parcelado)\s*(?:em\s+)?(\d+)\s*(?:vezes|x)?\s*(?:de\s+)?(?:R\$\s*)?(\d+(?:[.,]\d+)?)/i,
+  ];
+  for (const pat of installmentPatterns) {
+    const m = normalized.match(pat);
+    if (m) {
+      installmentCount = Number(m[1]);
+      installmentValue = parseFloat(m[2].replace(",", "."));
+      break;
+    }
+  }
+
   // Remove padrões de recorrência ANTES de extrair o valor
   let cleanedText = original;
   removalPatterns.forEach((pattern) => {
@@ -4816,7 +5740,9 @@ const parseFixedAccountCommand = (text) => {
     .trim();
 
   // Agora extrai o valor do texto limpo
-  const amountInfo = extractAmountFromText(cleanedText);
+  const amountInfo = installmentValue
+    ? { amount: installmentValue, raw: String(installmentValue) }
+    : extractAmountFromText(cleanedText);
   if (!amountInfo.amount) return null;
 
   const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
@@ -4854,6 +5780,8 @@ const parseFixedAccountCommand = (text) => {
     descricao = descricao.replace(dateRegex, " ");
   }
   descricao = descricao
+    .replace(/\d+\s*(?:parcelas?|vezes|x)\s*(?:de\s+)?(?:R\$\s*)?\d+(?:[.,]\d+)?/gi, " ")
+    .replace(/(?:parcelar|parcelado)\s*(?:em\s+)?\d+\s*(?:vezes|x)?\s*(?:de\s+)?(?:R\$\s*)?\d+(?:[.,]\d+)?/gi, " ")
     .replace(/conta\s+fixa/gi, " ")
     .replace(/\bfixa\b/gi, " ")
     .replace(/\brecorrente\b/gi, " ")
@@ -4879,58 +5807,95 @@ const parseFixedAccountCommand = (text) => {
     recurrence,
     dueDate,
     tipoPagamento,
+    installmentCount: installmentCount && installmentCount > 1 ? installmentCount : null,
   };
 };
 
 async function registerFixedAccount(fromRaw, userNorm, parsed) {
   if (!parsed) return;
   const categoria = await resolveCategory(parsed.descricao, "conta_pagar", userNorm);
-  const rowId = generateRowId();
+  const parentId = generateRowId();
   const due = parsed.dueDate instanceof Date ? parsed.dueDate : new Date();
-  const payload = {
-    row_id: rowId,
-    timestamp: new Date().toISOString(),
-    user: userNorm,
-    user_raw: fromRaw,
-    tipo: "conta_pagar",
-    conta: parsed.descricao,
-    valor: parsed.valor,
-    vencimento_iso: due.toISOString(),
-    vencimento_br: formatBRDate(due),
-    data: due,
-    tipo_pagamento: parsed.tipoPagamento || "",
-    codigo_pagamento: "",
-    status: "pendente",
-    fixa: "sim",
-    fix_parent_id: rowId,
-    vencimento_dia: due.getDate(),
-    categoria: categoria.slug,
-    categoria_emoji: categoria.emoji,
-    descricao: parsed.descricao,
-    recorrencia_tipo: parsed.recurrence.type,
-    recorrencia_valor: parsed.recurrence.value?.toString() || "",
-  };
-  await createRow(payload);
-  const categoryInfo = getCategoryInfo(payload.categoria);
-  const recurrenceLabel = describeRecurrence(payload);
+  const count = parsed.installmentCount || 1;
+  const isInstallment = count > 1;
 
-  let message = `♻️ *Conta Fixa Cadastrada!*
+  for (let i = 0; i < count; i++) {
+    const installmentDue = i === 0 ? due : addMonthsSafe(due, i);
+    if (!installmentDue) continue;
+    const rowId = i === 0 ? parentId : generateRowId();
+    const descWithInstallment = isInstallment
+      ? `${parsed.descricao} (${i + 1}/${count})`
+      : parsed.descricao;
+    const payload = {
+      row_id: rowId,
+      timestamp: new Date().toISOString(),
+      user: userNorm,
+      user_raw: fromRaw,
+      tipo: "conta_pagar",
+      conta: descWithInstallment,
+      valor: parsed.valor,
+      vencimento_iso: installmentDue.toISOString(),
+      vencimento_br: formatBRDate(installmentDue),
+      data: installmentDue,
+      tipo_pagamento: parsed.tipoPagamento || "",
+      codigo_pagamento: "",
+      status: "pendente",
+      fixa: isInstallment ? "nao" : "sim",
+      fix_parent_id: isInstallment ? "" : parentId,
+      vencimento_dia: installmentDue.getDate(),
+      categoria: categoria.slug,
+      categoria_emoji: categoria.emoji,
+      descricao: descWithInstallment,
+      recorrencia_tipo: isInstallment ? "" : (parsed.recurrence.type || ""),
+      recorrencia_valor: isInstallment ? "" : (parsed.recurrence.value?.toString() || ""),
+    };
+    await createRow(payload);
+  }
 
-💸 *Valor*: ${formatCurrencyBR(payload.valor)}
+  const categoryInfo = getCategoryInfo(categoria.slug);
+
+  if (isInstallment) {
+    const lastDue = addMonthsSafe(due, count - 1);
+    const totalValue = parsed.valor * count;
+    let message = `🔢 *Parcelamento Cadastrado!*
+
+💸 *Valor da parcela*: ${formatCurrencyBR(parsed.valor)}
+📊 *Total*: ${count}x de ${formatCurrencyBR(parsed.valor)} = ${formatCurrencyBR(totalValue)}
 
 ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
-🏷️ *Descrição*: ${payload.descricao}
+🏷️ *Descrição*: ${parsed.descricao}
+
+📅 *Primeira parcela*: ${formatBRDate(due)}
+📅 *Última parcela*: ${lastDue ? formatBRDate(lastDue) : "—"}
+
+💡 Todas as ${count} parcelas foram criadas como contas a pagar!`;
+    await sendText(fromRaw, message);
+  } else {
+    const recurrenceLabel = describeRecurrence({
+      fixa: "sim",
+      recorrencia_tipo: parsed.recurrence.type,
+      recorrencia_valor: parsed.recurrence.value?.toString() || "",
+    });
+    let message = `♻️ *Conta Fixa Cadastrada!*
+
+💸 *Valor*: ${formatCurrencyBR(parsed.valor)}
+
+${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
+
+🏷️ *Descrição*: ${parsed.descricao}
 
 📅 *Próximo Vencimento*: ${formatBRDate(due)}
 
 🔄 *Recorrência*: ${recurrenceLabel}
 
 💡 A próxima cobrança será gerada automaticamente!`;
-
-  await sendText(fromRaw, message);
-  if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
-    await promptAttachPaymentCode(fromRaw, userNorm, payload, "fixed_register");
+    await sendText(fromRaw, message);
+    if (["pix", "boleto"].includes((parsed.tipoPagamento || "").toLowerCase())) {
+      await promptAttachPaymentCode(fromRaw, userNorm, {
+        row_id: parentId, categoria: categoria.slug,
+      }, "fixed_register");
+    }
   }
   await sendMainMenu(fromRaw);
 }
@@ -5561,14 +6526,31 @@ async function handleUserText(fromRaw, text) {
   }
 
   if (!userNorm || !isAdminUser(userNorm)) {
-    const active = await isUsuarioAtivo(userNorm);
+    let active = await isUsuarioAtivo(userNorm);
     if (!active) {
       const nome = getStoredFirstName(userNorm);
       const classification = await classifyInactiveUserMessage(trimmed);
-      const response = buildInactiveUserResponse(classification, nome);
-      await sendText(fromRaw, response, { bypassWindow: true });
-      await sendSupportButton(fromRaw);
-      return;
+
+      if (classification === "acredita_que_pagou") {
+        const candidates = getUserCandidates(userNorm);
+        candidates.forEach((c) => usuarioStatusCache.delete(c));
+        active = await isUsuarioAtivo(userNorm);
+        if (active) {
+          console.log("[AccessRetry] Usuário reativado após cache clear:", userNorm);
+        } else if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Usuário diz que já pagou mas não está ativo*\n\n📱 Número: ${fromRaw}\n🔑 Normalizado: ${userNorm}\n💬 Mensagem: "${trimmed}"\n\n_Verifique a planilha e ative manualmente se necessário._`,
+            { bypassWindow: true }
+          );
+        }
+      }
+
+      if (!active) {
+        const response = buildInactiveUserResponse(classification, nome);
+        await sendText(fromRaw, response, { bypassWindow: true });
+        await sendSupportButton(fromRaw);
+        return;
+      }
     }
   }
 
@@ -5621,9 +6603,20 @@ async function handleUserText(fromRaw, text) {
   }
 
   // Verificar se é uma conta fixa ANTES de detectar intenção
-  const fixedParsed = parseFixedAccountCommand(text);
-  if (fixedParsed) {
-    await registerFixedAccount(fromRaw, userNorm, fixedParsed);
+  const fixedLines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const fixedResults = fixedLines.map((l) => ({ line: l, parsed: parseFixedAccountCommand(l) })).filter((r) => r.parsed);
+  if (fixedResults.length) {
+    for (const { parsed } of fixedResults) {
+      await registerFixedAccount(fromRaw, userNorm, parsed);
+    }
+    if (fixedResults.length > 1) {
+      await sendText(fromRaw, `✅ ${fixedResults.length} contas fixas cadastradas com sucesso!`);
+    }
+    const failed = fixedLines.length - fixedResults.length;
+    if (failed > 0 && fixedLines.length > 1) {
+      const failedLines = fixedLines.filter((l) => !parseFixedAccountCommand(l));
+      await sendText(fromRaw, `⚠️ Não consegui entender ${failed} linha(s):\n${failedLines.map((f) => `• ${f}`).join("\n")}\n\nEnvie no formato: Descrição Valor todo dia X`);
+    }
     return;
   }
 
@@ -5855,7 +6848,7 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const userNorm = normalizeUser(whatsapp);
+      const userNorm = normalizeWhatsAppNumber(whatsapp);
       if (!userNorm) {
         console.error("⚠️ Stripe: whatsapp inválido no metadata:", whatsapp);
         if (ADMIN_WA_NUMBER) {
@@ -5953,7 +6946,7 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const userNorm = normalizeUser(whatsapp);
+      const userNorm = normalizeWhatsAppNumber(whatsapp);
       if (!userNorm) {
         return res.sendStatus(200);
       }
@@ -5987,7 +6980,7 @@ async function handleStripeWebhook(req, res) {
         console.log("⚠️ Evento Stripe sem whatsapp metadata.");
         return res.sendStatus(200);
       }
-      const userNorm = normalizeUser(whatsapp);
+      const userNorm = normalizeWhatsAppNumber(whatsapp);
       if (!userNorm) {
         return res.sendStatus(200);
       }
