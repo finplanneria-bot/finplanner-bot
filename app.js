@@ -5813,12 +5813,42 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const whatsapp = session.metadata?.whatsapp;
+      // Busca whatsapp em múltiplas fontes (em ordem de preferência)
+      let whatsapp = session.metadata?.whatsapp || subMeta?.whatsapp || "";
+      let whatsappSource = whatsapp ? "metadata" : "";
+
+      if (!whatsapp && session.customer_details?.phone) {
+        whatsapp = session.customer_details.phone;
+        whatsappSource = "customer_details.phone";
+      }
+
+      if (!whatsapp && Array.isArray(session.custom_fields)) {
+        const phoneField = session.custom_fields.find((f) => {
+          const key = String(f?.key || "").toLowerCase();
+          return /whats|telefone|celular|phone/.test(key);
+        });
+        const fieldVal = phoneField?.text?.value || phoneField?.numeric?.value || "";
+        if (fieldVal) {
+          whatsapp = fieldVal;
+          whatsappSource = `custom_fields.${phoneField.key}`;
+        }
+      }
+
+      if (whatsappSource && whatsappSource !== "metadata") {
+        console.log("📱 WhatsApp resolvido via fallback:", { whatsappSource, whatsapp });
+      }
+
       if (!whatsapp) {
-        console.error("⚠️ Evento Stripe sem whatsapp metadata. Session:", session.id);
+        console.error("⚠️ Evento Stripe sem whatsapp em nenhuma fonte. Session:", {
+          id: session.id,
+          metadata: session.metadata,
+          customer_details: session.customer_details,
+          custom_fields: session.custom_fields,
+          subscription: session.subscription,
+        });
         if (ADMIN_WA_NUMBER) {
           await sendText(ADMIN_WA_NUMBER,
-            `⚠️ *Stripe*: checkout sem número de WhatsApp no metadata.\nSession: ${session.id}\nPlano: ${plano}\nEmail: ${session.customer_details?.email || "—"}\n\n_Ative manualmente na planilha._`,
+            `⚠️ *Stripe*: checkout sem número de WhatsApp em nenhuma fonte.\nSession: ${session.id}\nPlano: ${plano}\nEmail: ${session.customer_details?.email || "—"}\nSubscription: ${session.subscription || "—"}\n\n_Ative manualmente na planilha._`,
             { bypassWindow: true }
           );
         }
@@ -5905,9 +5935,21 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const whatsapp = pickFirst(invoice.metadata?.whatsapp, subMeta?.whatsapp);
+      let whatsapp = pickFirst(invoice.metadata?.whatsapp, subMeta?.whatsapp);
+      if (!whatsapp && invoice.customer_phone) whatsapp = invoice.customer_phone;
       if (!whatsapp) {
-        console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+        console.log("⚠️ invoice.payment_succeeded sem whatsapp em nenhuma fonte:", {
+          invoiceId: invoice.id,
+          metadata: invoice.metadata,
+          subMeta,
+          customer: invoice.customer,
+        });
+        if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Stripe*: invoice ${invoice.id} sem WhatsApp.\nCustomer: ${invoice.customer || "—"}\nPlano: ${plano}\n\n_Ative/renove manualmente na planilha._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
         return res.sendStatus(200);
       }
 
