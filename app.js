@@ -379,8 +379,8 @@ const checkoutLimiter = rateLimit({
 
 // Aplica rate limiting (exceto em caminhos específicos)
 app.use((req, res, next) => {
-  // Pula rate limit para health check e wake
-  if (req.path === "/health" || req.path === "/internal/wake") {
+  // Pula rate limit para health check, wake e Stripe webhook (evitar bloquear retries do Stripe)
+  if (req.path === "/health" || req.path === "/internal/wake" || req.path === "/webhook/stripe") {
     return next();
   }
   return generalLimiter(req, res, next);
@@ -618,11 +618,29 @@ function getUserCandidates(userNorm) {
   const candidates = new Set();
   if (userNorm) candidates.add(userNorm);
   const digits = String(userNorm || "").replace(/\D/g, "");
+  // BR mobile with country code + "9": "5511999999999" (13 digits)
   if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
-    candidates.add(digits.slice(0, 4) + digits.slice(5));
+    candidates.add(digits.slice(0, 4) + digits.slice(5)); // without "9": 551199999999
+    candidates.add(digits.slice(2));                       // without country code: 11999999999
+    candidates.add(digits.slice(2, 4) + digits.slice(5));  // without country code and without "9": 1199999999
   }
+  // BR with country code without "9": "551199999999" (12 digits)
   if (digits.startsWith("55") && digits.length === 12) {
-    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4));
+    candidates.add(digits.slice(0, 4) + "9" + digits.slice(4)); // with "9": 5511999999999
+    candidates.add(digits.slice(2));                             // without country code: 1199999999
+    candidates.add(digits.slice(2, 4) + "9" + digits.slice(4));  // without country code + with "9": 11999999999
+  }
+  // BR mobile without country code, with "9": "11999999999" (11 digits, 3rd digit is "9")
+  if (!digits.startsWith("55") && digits.length === 11 && digits[2] === "9") {
+    candidates.add("55" + digits);                                // +country code: 5511999999999
+    candidates.add("55" + digits.slice(0, 2) + digits.slice(3));  // +country code, -"9": 551199999999
+    candidates.add(digits.slice(0, 2) + digits.slice(3));         // -"9": 1199999999
+  }
+  // BR without country code, 10 digits (landline or mobile without "9"): "1199999999"
+  if (!digits.startsWith("55") && digits.length === 10) {
+    candidates.add("55" + digits);                                   // +country code: 551199999999
+    candidates.add("55" + digits.slice(0, 2) + "9" + digits.slice(2)); // +country code +"9": 5511999999999
+    candidates.add(digits.slice(0, 2) + "9" + digits.slice(2));      // +"9": 11999999999
   }
   // Número sem prefixo 55 → adicionar com prefixo
   if (!digits.startsWith("55") && (digits.length === 10 || digits.length === 11)) {
@@ -3758,23 +3776,25 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `Olá! Bem-vindo à FinPlanner IA
+          ? `Olá! Bem-vindo à FinPlanner IA 💰
 
-Sua assistente financeira pessoal! 💰
+Sou sua assistente financeira no WhatsApp. Basta me mandar uma mensagem normal:
 
-✅ Registrar gastos e ganhos
-✅ Gerenciar contas a pagar
-✅ Ver relatórios completos
-✅ Acompanhar seu saldo
+✍️ *Exemplos que funcionam:*
+• _"Paguei R$89,90 de mercado"_
+• _"Recebi R$2.500 de salário"_
+• _"Gastei 45 no almoço hoje"_
+• _"Conta de luz R$180 vence dia 15"_
 
-Toque em Abrir menu ou digite o que deseja fazer.
+📊 *Consultas:*
+• Digite *saldo* para ver seu balanço
+• Digite *pendentes* para ver contas a pagar
+• Digite *menu* para ver todas as opções
 
-💡 Ex: _"quero ver meu relatório"_
+🚀 Pode começar digitando um gasto ou recebimento!`
+          : `Toque em *Abrir menu* ou digite o que deseja fazer.
 
-🚀 Vamos começar?`
-          : `Toque em Abrir menu ou digite o que deseja fazer.
-
-💡 Ex: _"quero ver meu relatório"_`,
+💡 _Ex: "Paguei R$50 de mercado"_ ou _"saldo"_`,
       },
       action: {
         button: "Abrir menu",
@@ -4250,12 +4270,18 @@ const parseRegisterText = (text) => {
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
     .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
     .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
-    .replace(/\b(recebimento|receber|recebido|recebi|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
+    .replace(/\b(recebimento|receber|recebido|recebi|recebemos|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
+    .replace(/\b(gastei|comprei|ganhei|vendi|transferi|mandei|depositei|pix(?:ei)?)\b/gi, "")
     .replace(/\b(dia|data)\b/gi, "")
-    .replace(/\b(valor|lançamento|lancamento|novo)\b/gi, "")
+    .replace(/\b(valor|lançamento|lancamento|novo|registrar|registro)\b/gi, "")
     .replace(/r\$/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+
+  // Remove filler words from the start (greetings, pronouns)
+  descricao = descricao.replace(/^(oi|ei|opa|olá|ola|ah|eh|bom|bem|então|entao|ok|oi,|ei,|opa,)\s+/gi, "").trim();
+  // Remove subject pronouns from the start
+  descricao = descricao.replace(/^(eu|vc|voce|você)\s+/gi, "").trim();
 
   if (descricao) {
     const tokens = descricao.split(/\s+/);
@@ -4269,7 +4295,11 @@ const parseRegisterText = (text) => {
     descricao = filtered.join(" ");
   }
 
-  descricao = descricao.trim();
+  // Remove leading prepositions/articles that ended up at the start after cleaning
+  descricao = descricao.replace(/^(com|de|do|da|no|na|nos|nas|pro|pra|para|num|numa|o|a|os|as|um|uma)\s+/gi, "").trim();
+  // Remove trailing loose punctuation
+  descricao = descricao.replace(/[\s.,;!?]+$/, "").trim();
+
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
 
   let tipoPagamento = "";
@@ -4873,7 +4903,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
 
     const field = resolvedField || fieldAliases[input];
     if (!field) {
-      await sendText(fromRaw, "Campo inválido. Tente: *valor*, *data*, *status*, *categoria*, *descricao* ou *conta*.");
+      await sendText(fromRaw, `Campo inválido. Escolha um dos campos:\n\n🏷 *conta*\n📝 *descrição*\n💰 *valor*\n📅 *data*\n📌 *status*\n📂 *categoria*`);
       return true;
     }
     sessionEdit.set(userNorm, {
@@ -5888,6 +5918,7 @@ const KNOWN_INTENTS = new Set([
   "registrar_recebimento",
   "registrar_pagamento",
   "contas_fixas",
+  "ajuda_parcelamento",
   "desconhecido",
 ]);
 
@@ -5896,6 +5927,10 @@ const detectIntentHeuristic = (text) => {
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
+  // Parcelamento — resposta educativa
+  if (/parcela(mento|s?)|prestac(ao|oes)|em\s+\d+\s+vezes?|parcelad/.test(normalized)) return "ajuda_parcelamento";
+  // Relatório completo / saldo / balanço
+  if (/saldo|balanco|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes/.test(normalized)) return "relatorio_completo";
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
     return "relatorio_pagamentos_mes";
   }
@@ -5909,10 +5944,16 @@ const detectIntentHeuristic = (text) => {
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
   if (/contas?\s+a\s+pagar|pendentes|a pagar/.test(lower)) return "listar_pendentes";
+  // Vencimentos próximos
+  if (/\bvenc(e|er|imento|imentos)\b|o que (devo|falta pagar)|proximas? contas?/.test(normalized)) return "listar_pendentes";
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
+  // Registrar recebimento — formas naturais
+  if (/\b(recebi|ganhei|vendi|entrou|me pagaram|me transferiram|deposito recebido|pix recebido)\b/.test(normalized)) return "registrar_recebimento";
   if (/registrar recebimento|\brecebimento\b/.test(lower)) return "registrar_recebimento";
+  // Registrar pagamento — formas naturais
+  if (/\b(paguei|gastei|comprei|transferi|mandei pix|fiz compra|debito|boleto pago)\b/.test(normalized)) return "registrar_pagamento";
   if (/registrar pagamento|\bpagamento\b|\bpagar\b/.test(lower)) return "registrar_pagamento";
   return "desconhecido";
 };
@@ -5968,6 +6009,10 @@ const buildIntentPrompt = (text) => {
    • editar: "editar lançamento", "alterar registro"
    • excluir: "excluir lançamento", "apagar registro"
    • contas_fixas: "contas fixas", "cadastrar conta fixa"
+   • ajuda_parcelamento: "como parcelar", "lançar em parcelas", "em X vezes", "como funciona parcelamento"
+
+🔹 RELATÓRIO COMPLETO / SALDO:
+   • relatorio_completo: "saldo", "balanço", "quanto tenho", "quanto sobrou", "resumo", "situação financeira"
 
 🔹 NAVEGAÇÃO:
    • boas_vindas: "oi", "olá", "bom dia"
@@ -6453,6 +6498,31 @@ async function handleUserText(fromRaw, text) {
       await sendCronReminderForUser(userNorm, fromRaw, { bypassWindow: true });
       return;
     }
+    // Comando: "ativar 5511999999999 mensal" ou "ativar 5511999999999"
+    const ativarMatch = /^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i.test(normalizedMessage)
+      ? normalizedMessage.match(/^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i)
+      : null;
+    if (ativarMatch) {
+      const targetNorm = normalizeUser(ativarMatch[1]);
+      const plano = (ativarMatch[2] || "mensal").toLowerCase();
+      try {
+        const now = new Date();
+        const vencimento = new Date(now);
+        vencimento.setMonth(vencimento.getMonth() + (plano === "anual" ? 12 : plano === "trimestral" ? 3 : 1));
+        await upsertUsuarioFromSubscription({
+          userNorm: targetNorm,
+          plano,
+          ativo: true,
+          data_inicio: formatISODate(now),
+          extendVencimento: false,
+          vencimento_trial: formatISODate(vencimento),
+        });
+        await sendText(fromRaw, `✅ Usuário *${targetNorm}* ativado com plano *${plano}* até ${formatBRDate(vencimento)}.`, { bypassWindow: true });
+      } catch (e) {
+        await sendText(fromRaw, `❌ Erro ao ativar: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
   }
 
   if (!userNorm || !isAdminUser(userNorm)) {
@@ -6622,13 +6692,34 @@ async function handleUserText(fromRaw, text) {
     case "registrar_pagamento":
       await registerEntry(fromRaw, userNorm, text, "conta_pagar");
       break;
+    case "ajuda_parcelamento":
+      await sendText(
+        fromRaw,
+        `📦 *Parcelamento no FinPlanner IA*\n\nO bot não tem lançamento automático de parcelas por enquanto, mas é simples fazer manualmente:\n\n` +
+        `1️⃣ Registre cada parcela separadamente com a data de vencimento de cada uma.\n` +
+        `Exemplo:\n` +
+        `• _"Parcela 1/3 notebook R$500 vence 10/05"_\n` +
+        `• _"Parcela 2/3 notebook R$500 vence 10/06"_\n` +
+        `• _"Parcela 3/3 notebook R$500 vence 10/07"_\n\n` +
+        `2️⃣ Ou use *Contas fixas* para lançar um valor recorrente todo mês automaticamente.\n\n` +
+        `Digite *menu* para ver todas as opções.`
+      );
+      break;
     default:
       if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
       } else if (!trimmed) {
         console.log("[handleUserText] Texto vazio recebido, ignorando.", { fromRaw, userNorm });
       } else {
-        console.log("[handleUserText] Enviando menu (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
+        console.log("[handleUserText] Fallback contextual (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
+        await sendText(
+          fromRaw,
+          `Não entendi exatamente o que você quer fazer. 🤔\n\n` +
+          `Você pode:\n` +
+          `• Digitar o valor direto: *"Paguei R$150 de mercado"*\n` +
+          `• Digitar *saldo* para ver seu balanço do mês\n` +
+          `• Digitar *menu* para ver todas as opções`
+        );
         await sendMainMenu(fromRaw);
       }
       break;
@@ -6658,14 +6749,25 @@ async function handleStripeWebhook(req, res) {
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error("⚠️ Stripe raw body inválido:", {
+    console.error("⚠️ Stripe webhook assinatura inválida:", {
       isBuffer: Buffer.isBuffer(req.body),
       contentType: req.headers["content-type"],
       error: err.message,
     });
+    // Notifica admin — pode indicar STRIPE_WEBHOOK_SECRET errado (ex: test vs live)
+    if (ADMIN_WA_NUMBER) {
+      sendText(ADMIN_WA_NUMBER,
+        `⚠️ *Stripe*: falha na verificação de assinatura do webhook.\n` +
+        `Erro: ${err.message}\n\n` +
+        `_Verifique se STRIPE_WEBHOOK_SECRET no .env corresponde ao segredo do endpoint no Stripe Dashboard (modo live vs test)._`,
+        { bypassWindow: true }
+      ).catch(() => {});
+    }
     res.status(400).send(`Webhook error: ${err.message}`);
     return;
   }
+
+  console.log("[STRIPE] Webhook recebido:", event.type, event.id);
 
   try {
     if (event.type === "checkout.session.completed") {
@@ -6704,12 +6806,42 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const whatsapp = session.metadata?.whatsapp;
+      // Busca whatsapp em múltiplas fontes (em ordem de preferência)
+      let whatsapp = session.metadata?.whatsapp || subMeta?.whatsapp || "";
+      let whatsappSource = whatsapp ? "metadata" : "";
+
+      if (!whatsapp && session.customer_details?.phone) {
+        whatsapp = session.customer_details.phone;
+        whatsappSource = "customer_details.phone";
+      }
+
+      if (!whatsapp && Array.isArray(session.custom_fields)) {
+        const phoneField = session.custom_fields.find((f) => {
+          const key = String(f?.key || "").toLowerCase();
+          return /whats|telefone|celular|phone/.test(key);
+        });
+        const fieldVal = phoneField?.text?.value || phoneField?.numeric?.value || "";
+        if (fieldVal) {
+          whatsapp = fieldVal;
+          whatsappSource = `custom_fields.${phoneField.key}`;
+        }
+      }
+
+      if (whatsappSource && whatsappSource !== "metadata") {
+        console.log("📱 WhatsApp resolvido via fallback:", { whatsappSource, whatsapp });
+      }
+
       if (!whatsapp) {
-        console.error("⚠️ Evento Stripe sem whatsapp metadata. Session:", session.id);
+        console.error("⚠️ Evento Stripe sem whatsapp em nenhuma fonte. Session:", {
+          id: session.id,
+          metadata: session.metadata,
+          customer_details: session.customer_details,
+          custom_fields: session.custom_fields,
+          subscription: session.subscription,
+        });
         if (ADMIN_WA_NUMBER) {
           await sendText(ADMIN_WA_NUMBER,
-            `⚠️ *Stripe*: checkout sem número de WhatsApp no metadata.\nSession: ${session.id}\nPlano: ${plano}\nEmail: ${session.customer_details?.email || "—"}\n\n_Ative manualmente na planilha._`,
+            `⚠️ *Stripe*: checkout sem número de WhatsApp em nenhuma fonte.\nSession: ${session.id}\nPlano: ${plano}\nEmail: ${session.customer_details?.email || "—"}\nSubscription: ${session.subscription || "—"}\n\n_Ative manualmente na planilha._`,
             { bypassWindow: true }
           );
         }
@@ -6796,9 +6928,21 @@ async function handleStripeWebhook(req, res) {
         return res.sendStatus(200);
       }
 
-      const whatsapp = pickFirst(invoice.metadata?.whatsapp, subMeta?.whatsapp);
+      let whatsapp = pickFirst(invoice.metadata?.whatsapp, subMeta?.whatsapp);
+      if (!whatsapp && invoice.customer_phone) whatsapp = invoice.customer_phone;
       if (!whatsapp) {
-        console.log("⚠️ Evento Stripe sem whatsapp metadata.");
+        console.log("⚠️ invoice.payment_succeeded sem whatsapp em nenhuma fonte:", {
+          invoiceId: invoice.id,
+          metadata: invoice.metadata,
+          subMeta,
+          customer: invoice.customer,
+        });
+        if (ADMIN_WA_NUMBER) {
+          await sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Stripe*: invoice ${invoice.id} sem WhatsApp.\nCustomer: ${invoice.customer || "—"}\nPlano: ${plano}\n\n_Ative/renove manualmente na planilha._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
         return res.sendStatus(200);
       }
 
@@ -6848,7 +6992,16 @@ async function handleStripeWebhook(req, res) {
       });
     }
   } catch (error) {
-    console.error("Erro ao processar evento Stripe:", error.message);
+    console.error("Erro ao processar evento Stripe:", event?.type, error.message);
+    if (ADMIN_WA_NUMBER) {
+      sendText(ADMIN_WA_NUMBER,
+        `🚨 *Stripe*: erro ao processar webhook *${event?.type || "desconhecido"}*.\n` +
+        `Erro: ${error.message}\n` +
+        `Event ID: ${event?.id || "—"}\n\n` +
+        `_O usuário pode não ter sido ativado. Verifique os logs e ative manualmente se necessário._`,
+        { bypassWindow: true }
+      ).catch(() => {});
+    }
   }
 
   res.sendStatus(200);
