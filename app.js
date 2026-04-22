@@ -2513,7 +2513,6 @@ if (!WA_ACCESS_TOKEN) {
   console.warn("[WA] missing access token env");
 }
 const WA_TEXT_LIMIT = 4000;
-const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_NAME_V2 = "lembrete_finplanner_2";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
@@ -2794,43 +2793,8 @@ const sendTemplateReminderV2 = async (to, userNorm, {
   return success;
 };
 
-const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
-  const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
-  const safeName = firstName || "-";
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "template",
-    template: {
-      name: TEMPLATE_REMINDER_NAME,
-      language: { code: "pt_BR" },
-      components: [
-        {
-          type: "body",
-          parameters: [{ type: "text", text: safeName }],
-        },
-        {
-          type: "button",
-          sub_type: "quick_reply",
-          index: "0",
-          parameters: [{ type: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
-        },
-      ],
-    },
-  };
-  console.log("[WA] sending", {
-    to,
-    kind: "template",
-    withinWindow: false,
-    hasBody: false,
-    templateName: TEMPLATE_REMINDER_NAME,
-  });
-  const success = await sendWA(payload, { kind: "template" });
-  if (success) {
-    console.log("✅ Template de reengajamento enviado para", to);
-  }
-  return success;
-};
+const sendTemplateReminder = async (to, userNorm, nameHint = "") =>
+  sendTemplateReminderV2(to, userNorm, { nameHint });
 
 const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = false }) => {
   if (!to) return false;
