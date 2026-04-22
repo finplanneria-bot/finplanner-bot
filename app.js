@@ -1239,15 +1239,7 @@ const parseDateToken = (token) => {
       const month = Number(dateMatch[5]) - 1;
 
       if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
-        let year = currentYear;
-        const tentative = new Date(year, month, day);
-
-        // Se a data já passou este ano, usa ano que vem
-        if (tentative < startOfDay(now)) {
-          year = currentYear + 1;
-        }
-
-        const d = new Date(year, month, day);
+        const d = new Date(currentYear, month, day);
         if (!Number.isNaN(d.getTime())) return d;
       }
     }
@@ -4051,6 +4043,7 @@ const hasActiveSession = (userNorm) =>
   sessionPeriod.has(userNorm);
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
+const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
 
 const sendCancelMessage = async (to, { reason } = {}) => {
   console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to, reason });
@@ -6554,10 +6547,14 @@ async function handleUserText(fromRaw, text) {
     }
   }
 
-  // 🚪 Interceptor global: qualquer palavra de escape cancela o fluxo ativo e abre o menu
+  // 🚪 Interceptor global: palavras de escape cancelam o fluxo ativo e abrem o menu
   if (hasActiveSession(userNorm) && ESCAPE_REGEX.test(trimmed)) {
     resetSession(userNorm);
-    await sendCancelMessage(fromRaw);
+    if (NAVIGATE_REGEX.test(trimmed)) {
+      await sendMainMenu(fromRaw);
+    } else {
+      await sendCancelMessage(fromRaw);
+    }
     return;
   }
 
@@ -7206,9 +7203,17 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
   return results;
 }
 
+let _avisoCronRunning = false;
+
 async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = false } = {}) {
+  if (_avisoCronRunning) {
+    console.log(`[CRON] runAvisoCron já em execução (requestedBy=${requestedBy}), ignorando chamada duplicada.`);
+    return { skipped: true, reason: "already_running" };
+  }
+  _avisoCronRunning = true;
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
 
+  try {
   // 🕗 Guard de horário: só executa entre 07h e 09h (horário de Brasília, UTC-3)
   if (!forceHour && requestedBy !== "admin") {
     const nowUtc = new Date();
@@ -7490,6 +7495,9 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
   };
   console.log("[CRON] runAvisoCron done", resumo);
   return resumo;
+  } finally {
+    _avisoCronRunning = false;
+  }
 }
 
 // ============================
