@@ -7550,6 +7550,34 @@ if (isCronAviso) {
       console.log("[INTERNAL-CRON] Concluído às", new Date().toISOString());
     }, { timezone: "America/Sao_Paulo" });
     console.log("[BOOT] Scheduler interno configurado: cron diário às 08:00 BRT");
+
+    // Após boot, verifica se o cron de hoje foi pulado (ex: PM2 reiniciou após 08:00)
+    setTimeout(async () => {
+      try {
+        const now = new Date();
+        const brHour = (now.getUTCHours() - 3 + 24) % 24;
+        if (brHour < 8) return; // Ainda não deu 08:00 BRT hoje, nada a verificar
+
+        const todayKey = getTodayBRTKey();
+        const lockPath = `${AVISO_LOCK_DIR}/finplanner-aviso-${todayKey}.lock`;
+        if (fs.existsSync(lockPath)) return; // Cron já rodou
+
+        console.warn(`[BOOT] ⚠️ Cron de hoje (${todayKey}) não rodou — lock ausente em ${lockPath}`);
+        if (ADMIN_WA_NUMBER) {
+          sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Cron pode ter sido pulado*\n` +
+            `Data: ${todayKey}\n` +
+            `Boot: ${now.toISOString()}\n` +
+            `Lock ausente: ${lockPath}\n\n` +
+            `_O bot reiniciou após as 08:00 BRT e o cron do dia não foi executado. ` +
+            `Mande "cron teste" pra disparar manualmente._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
+      } catch (e) {
+        console.error("[BOOT] Erro ao verificar cron missed:", e.message);
+      }
+    }, 30_000); // 30s pra dar tempo do boot completar (sheets, migração, etc.)
   });
 }
 
