@@ -7529,11 +7529,23 @@ if (isCronAviso) {
         await runAvisoCron({ requestedBy: "internal-scheduler" });
       } catch (e) {
         console.error("[INTERNAL-CRON] Erro em runAvisoCron:", e.message);
+        if (ADMIN_WA_NUMBER) {
+          sendText(ADMIN_WA_NUMBER,
+            `🚨 *Cron falhou* — runAvisoCron\nErro: ${e.message}\nHorário: ${new Date().toISOString()}\n\n_Verifique logs do PM2._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
       }
       try {
         await runOnboardingCron({ requestedBy: "internal-scheduler" });
       } catch (e) {
         console.error("[INTERNAL-CRON] Erro em runOnboardingCron:", e.message);
+        if (ADMIN_WA_NUMBER) {
+          sendText(ADMIN_WA_NUMBER,
+            `🚨 *Cron falhou* — runOnboardingCron\nErro: ${e.message}\nHorário: ${new Date().toISOString()}\n\n_Verifique logs do PM2._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
       }
       console.log("[INTERNAL-CRON] Concluído às", new Date().toISOString());
     }, { timezone: "America/Sao_Paulo" });
