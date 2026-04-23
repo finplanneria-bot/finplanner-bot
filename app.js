@@ -7562,15 +7562,49 @@ if (isCronAviso) {
         const lockPath = `${AVISO_LOCK_DIR}/finplanner-aviso-${todayKey}.lock`;
         if (fs.existsSync(lockPath)) return; // Cron já rodou
 
-        console.warn(`[BOOT] ⚠️ Cron de hoje (${todayKey}) não rodou — lock ausente em ${lockPath}`);
-        if (ADMIN_WA_NUMBER) {
+        const inRecoveryWindow = brHour >= 8 && brHour < 12; // 08h-12h BRT
+        console.warn(`[BOOT] ⚠️ Cron de hoje (${todayKey}) não rodou — lock ausente. brHour=${brHour}, autoRun=${inRecoveryWindow}`);
+
+        if (inRecoveryWindow) {
+          if (ADMIN_WA_NUMBER) {
+            sendText(ADMIN_WA_NUMBER,
+              `🔄 *Cron recuperado automaticamente*\n` +
+              `Data: ${todayKey}\n` +
+              `Boot: ${now.toISOString()} (${brHour}h BRT)\n\n` +
+              `_Bot reiniciou após as 08:00, disparando runAvisoCron + runOnboardingCron agora._`,
+              { bypassWindow: true }
+            ).catch(() => {});
+          }
+          try {
+            await runAvisoCron({ requestedBy: "boot-recovery" });
+          } catch (e) {
+            console.error("[BOOT-RECOVERY] Erro em runAvisoCron:", e.message);
+            if (ADMIN_WA_NUMBER) {
+              sendText(ADMIN_WA_NUMBER,
+                `🚨 *Recovery falhou* — runAvisoCron\nErro: ${e.message}`,
+                { bypassWindow: true }
+              ).catch(() => {});
+            }
+          }
+          try {
+            await runOnboardingCron({ requestedBy: "boot-recovery" });
+          } catch (e) {
+            console.error("[BOOT-RECOVERY] Erro em runOnboardingCron:", e.message);
+            if (ADMIN_WA_NUMBER) {
+              sendText(ADMIN_WA_NUMBER,
+                `🚨 *Recovery falhou* — runOnboardingCron\nErro: ${e.message}`,
+                { bypassWindow: true }
+              ).catch(() => {});
+            }
+          }
+        } else if (ADMIN_WA_NUMBER) {
+          // Fora da janela de recovery (>= 12h BRT) — só avisa, não dispara
           sendText(ADMIN_WA_NUMBER,
             `⚠️ *Cron pode ter sido pulado*\n` +
             `Data: ${todayKey}\n` +
-            `Boot: ${now.toISOString()}\n` +
-            `Lock ausente: ${lockPath}\n\n` +
-            `_O bot reiniciou após as 08:00 BRT e o cron do dia não foi executado. ` +
-            `Mande "cron teste" pra disparar manualmente._`,
+            `Boot: ${now.toISOString()} (${brHour}h BRT)\n\n` +
+            `_Fora da janela segura de auto-recovery (08h-12h). ` +
+            `Mande "cron teste" pra disparar manualmente se desejar._`,
             { bypassWindow: true }
           ).catch(() => {});
         }
