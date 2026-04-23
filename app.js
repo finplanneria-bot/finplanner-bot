@@ -7169,11 +7169,40 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
 
 let _avisoCronRunning = false;
 
+const getTodayBRTKey = () => {
+  const now = new Date();
+  const brHour = (now.getUTCHours() - 3 + 24) % 24;
+  const brt = new Date(now);
+  brt.setUTCHours(brt.getUTCHours() - 3);
+  if (brHour >= 21) brt.setUTCDate(brt.getUTCDate());
+  return `${brt.getUTCFullYear()}-${String(brt.getUTCMonth() + 1).padStart(2, "0")}-${String(brt.getUTCDate()).padStart(2, "0")}`;
+};
+
+const AVISO_LOCK_DIR = process.env.AVISO_LOCK_DIR || "/tmp";
+
 async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = false } = {}) {
   if (_avisoCronRunning) {
     console.log(`[CRON] runAvisoCron já em execução (requestedBy=${requestedBy}), ignorando chamada duplicada.`);
     return { skipped: true, reason: "already_running" };
   }
+
+  const todayKey = getTodayBRTKey();
+  const lockPath = `${AVISO_LOCK_DIR}/finplanner-aviso-${todayKey}.lock`;
+  if (!forceHour && requestedBy !== "admin") {
+    try {
+      fs.writeFileSync(lockPath, `${process.pid} ${new Date().toISOString()} ${requestedBy}\n`, { flag: "wx" });
+      console.log(`[CRON] Lock adquirido: ${lockPath}`);
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        let lockInfo = "";
+        try { lockInfo = fs.readFileSync(lockPath, "utf8").trim(); } catch {}
+        console.log(`[CRON] Lock ${lockPath} já existe, outro processo rodou hoje. Info: ${lockInfo}. Ignorando (requestedBy=${requestedBy}).`);
+        return { skipped: true, reason: "lock_exists", lockInfo };
+      }
+      console.warn(`[CRON] Erro ao criar lock ${lockPath}: ${err.message}. Prosseguindo sem lock.`);
+    }
+  }
+
   _avisoCronRunning = true;
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
 
