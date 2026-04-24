@@ -6129,6 +6129,46 @@ const sendSupportButton = (to) =>
     },
   });
 
+const PLAN_CARDS = [
+  {
+    body: "💰 *Plano Mensal*\n\nR$ 9,90/mês\n\n✅ Registro ilimitado de gastos e ganhos\n✅ Relatórios completos\n✅ Lembretes automáticos\n✅ Contas fixas e parceladas\n\n_Cancele quando quiser._",
+    display_text: "Assinar Mensal — R$ 9,90",
+    url_param: "mensal",
+  },
+  {
+    body: "💎 *Plano Trimestral*\n\nR$ 24,90 a cada 3 meses _(R$ 8,30/mês)_\n\n✅ Tudo do plano mensal\n💸 Economia de 16%\n\n_Cancele quando quiser._",
+    display_text: "Assinar Trimestral — R$ 24,90",
+    url_param: "trimestral",
+  },
+  {
+    body: "🏆 *Plano Anual — Melhor custo-benefício!*\n\nR$ 79,90/ano _(R$ 6,66/mês)_\n\n✅ Tudo do plano mensal\n💸 Economia de 33%\n\n_Cancele quando quiser._",
+    display_text: "Assinar Anual — R$ 79,90",
+    url_param: "anual",
+  },
+];
+
+const sendPlanCards = async (to) => {
+  const site = "https://www.finplanneria.com.br";
+  for (const plan of PLAN_CARDS) {
+    await sendWA({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        body: { text: plan.body },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: plan.display_text,
+            url: `${site}?plano=${plan.url_param}`,
+          },
+        },
+      },
+    });
+  }
+};
+
 // ============================
 
 const detectIntent = async (text) => {
@@ -6193,6 +6233,7 @@ async function handleInteractiveMessage(from, payload) {
       const nome = getStoredFirstName(userNorm);
       const response = buildInactiveUserResponse("outro", nome);
       await sendText(from, response, { bypassWindow: true });
+      await sendPlanCards(from);
       await sendSupportButton(from);
       return;
     }
@@ -6541,6 +6582,7 @@ async function handleUserText(fromRaw, text) {
       if (!active) {
         const response = buildInactiveUserResponse(classification, nome);
         await sendText(fromRaw, response, { bypassWindow: true });
+        await sendPlanCards(fromRaw);
         await sendSupportButton(fromRaw);
         return;
       }
