@@ -413,7 +413,8 @@ app.post("/internal/cron-aviso", async (req, res) => {
   try {
     const resumo = await runAvisoCron({ requestedBy: "cron-job" });
     const onboardingResumo = await runOnboardingCron({ requestedBy: "cron-job" });
-    return res.status(200).json({ ok: true, resumo, onboardingResumo });
+    const reengagementResumo = await runReengagementCron({ requestedBy: "cron-job" });
+    return res.status(200).json({ ok: true, resumo, onboardingResumo, reengagementResumo });
   } catch (e) {
     console.error("[CRON] endpoint error:", e);
     return res.status(500).json({ ok: false, error: "internal_error" });
@@ -994,10 +995,20 @@ const parseNumericToken = (rawToken) => {
       token = token.replace(/,/g, ".");
     }
   } else if (token.includes(".")) {
-    const lastDot = token.lastIndexOf(".");
-    const decimals = token.length - lastDot - 1;
-    if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
-      token = token.replace(/\./g, "");
+    const dotCount = (token.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      // "3.197.78" → múltiplos pontos: todos menos o último são separadores de milhar
+      const parts = token.split(".");
+      const intPart = parts.slice(0, -1).join("");
+      const decPart = parts[parts.length - 1];
+      // Se a última parte tem 3 dígitos, também é milhar (ex: "1.000.000")
+      token = decPart.length <= 2 ? `${intPart}.${decPart}` : intPart + decPart;
+    } else {
+      const lastDot = token.lastIndexOf(".");
+      const decimals = token.length - lastDot - 1;
+      if (decimals === 3 && token.replace(/[^0-9]/g, "").length > 3) {
+        token = token.replace(/\./g, "");
+      }
     }
   }
 
@@ -2513,7 +2524,6 @@ if (!WA_ACCESS_TOKEN) {
   console.warn("[WA] missing access token env");
 }
 const WA_TEXT_LIMIT = 4000;
-const TEMPLATE_REMINDER_NAME = "lembrete_finplanner_1";
 const TEMPLATE_REMINDER_NAME_V2 = "lembrete_finplanner_2";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
@@ -2794,43 +2804,8 @@ const sendTemplateReminderV2 = async (to, userNorm, {
   return success;
 };
 
-const sendTemplateReminder = async (to, userNorm, nameHint = "") => {
-  const firstName = (nameHint || getStoredFirstName(userNorm) || "").trim();
-  const safeName = firstName || "-";
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "template",
-    template: {
-      name: TEMPLATE_REMINDER_NAME,
-      language: { code: "pt_BR" },
-      components: [
-        {
-          type: "body",
-          parameters: [{ type: "text", text: safeName }],
-        },
-        {
-          type: "button",
-          sub_type: "quick_reply",
-          index: "0",
-          parameters: [{ type: "payload", payload: TEMPLATE_REMINDER_BUTTON_ID }],
-        },
-      ],
-    },
-  };
-  console.log("[WA] sending", {
-    to,
-    kind: "template",
-    withinWindow: false,
-    hasBody: false,
-    templateName: TEMPLATE_REMINDER_NAME,
-  });
-  const success = await sendWA(payload, { kind: "template" });
-  if (success) {
-    console.log("✅ Template de reengajamento enviado para", to);
-  }
-  return success;
-};
+const sendTemplateReminder = async (to, userNorm, nameHint = "") =>
+  sendTemplateReminderV2(to, userNorm, { nameHint });
 
 const ensureSessionWindow = async ({ to, userNorm, nameHint, bypassWindow = false }) => {
   if (!to) return false;
@@ -4013,6 +3988,7 @@ const sessionFixedDelete = new Map();
 const sessionStatusConfirm = new Map();
 const sessionPaymentCode = new Map();
 const sessionPayConfirm = new Map();
+const sessionLastRegistered = new Map(); // rowId do último lançamento registrado (para correção rápida)
 
 const startReportCategoryFlow = async (to, userNorm, category) => {
   sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
@@ -4029,6 +4005,7 @@ const resetSession = (userNorm) => {
   sessionStatusConfirm.delete(userNorm);
   sessionPaymentCode.delete(userNorm);
   sessionPayConfirm.delete(userNorm);
+  sessionLastRegistered.delete(userNorm);
 };
 
 const hasActiveSession = (userNorm) =>
@@ -5356,6 +5333,12 @@ ${entry.status === "pago" ? "✓" : "⏳"} *Status*: ${statusLabel}
     await sendText(fromRaw, message);
   }
 
+  // Guarda rowId para correção rápida (digitando "errado" logo após o registro)
+  sessionLastRegistered.set(userNorm, {
+    rowId: entry.row_id,
+    expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+  });
+
   if (options.autoStatus) {
     await sendRegistrationEditPrompt(fromRaw, entry.row_id, statusLabel);
   }
@@ -6251,6 +6234,36 @@ async function handleInteractiveMessage(from, payload) {
       );
       return;
     }
+    if (id.startsWith("CORR:")) {
+      const parts = id.split(":");
+      const corrType = parts[1]; // VALOR | DESC | DELETE
+      const corrRowId = parts[2];
+      const row = await findRowById(userNorm, corrRowId);
+      if (!row) {
+        await sendText(from, "Lançamento não encontrado. Pode já ter sido excluído.");
+        return;
+      }
+      if (corrType === "DELETE") {
+        await deleteRow(row);
+        sessionLastRegistered.delete(userNorm);
+        await sendText(from, "🗑️ Lançamento excluído. Me conta novamente como foi e eu registro de novo.");
+        return;
+      }
+      const field = corrType === "VALOR" ? "valor" : "descricao";
+      const prompt = corrType === "VALOR" ? "Digite o valor correto:" : "Digite a descrição correta:";
+      sessionEdit.set(userNorm, {
+        awaiting: "value",
+        field,
+        rows: [row],
+        queue: [{ row, displayIndex: 1 }],
+        currentIndex: 0,
+        row,
+        displayIndex: 1,
+        expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+      });
+      await sendText(from, prompt);
+      return;
+    }
     if (id.startsWith("PAYCODE:ADD:")) {
       const [, , rowId] = id.split(":");
       const state = sessionPaymentCode.get(userNorm);
@@ -6514,6 +6527,31 @@ async function handleUserText(fromRaw, text) {
       } catch (e) {
         await sendText(fromRaw, `❌ Erro ao ativar: ${e.message}`, { bypassWindow: true });
       }
+      return;
+    }
+  }
+
+  // Correção rápida: "errado", "incorreto" etc logo após um registro
+  const correctionRegex = /^(errad[oa]|incorret[oa]|errei|tá errad[oa]|ta errad[oa]|não é isso|nao e isso|ops?|opa|me enganei|lancei errado|registrei errado)\b/i;
+  if (correctionRegex.test(normalizedMessage)) {
+    const last = sessionLastRegistered.get(userNorm);
+    if (last && last.expiresAt > Date.now()) {
+      await sendWA({
+        messaging_product: "whatsapp",
+        to: fromRaw,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: "O que deseja corrigir no último lançamento?" },
+          action: {
+            buttons: [
+              { type: "reply", reply: { id: `CORR:VALOR:${last.rowId}`, title: "✏️ Editar valor" } },
+              { type: "reply", reply: { id: `CORR:DESC:${last.rowId}`, title: "📝 Editar descrição" } },
+              { type: "reply", reply: { id: `CORR:DELETE:${last.rowId}`, title: "🗑️ Excluir e refazer" } },
+            ],
+          },
+        },
+      });
       return;
     }
   }
@@ -7203,13 +7241,120 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
   return results;
 }
 
+async function runReengagementCron({ requestedBy = "cron", forceHour = false } = {}) {
+  console.log(`[REENGAGEMENT] start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
+
+  if (!forceHour && requestedBy !== "admin") {
+    const nowUtc = new Date();
+    const brazilHour = (nowUtc.getUTCHours() - 3 + 24) % 24;
+    if (brazilHour < 7 || brazilHour >= 9) {
+      console.log(`[REENGAGEMENT] Fora do horário permitido (${brazilHour}h BRT). Abortando.`);
+      return { skipped: true, reason: "outside_allowed_hours" };
+    }
+  }
+
+  const INACTIVE_MIN_DAYS = 6;   // Considera inativo após 6 dias sem uso
+  const INACTIVE_MAX_DAYS = 30;  // Não tenta usuários sumidos há mais de 30 dias
+  const results = { sent: 0, skipped: 0, errors: 0 };
+
+  let usuariosRows;
+  try {
+    const sheet = await ensureSheetUsuarios();
+    usuariosRows = await withRetry(() => sheet.getRows(), "get-usuarios-reengagement");
+  } catch (err) {
+    console.error("[REENGAGEMENT] Erro ao ler planilha:", err.message);
+    return { ...results, errors: 1 };
+  }
+
+  const now = new Date();
+  const nowMs = now.getTime();
+
+  for (const row of usuariosRows) {
+    const rawUser = getVal(row, "user");
+    const userNorm = normalizeUser(rawUser);
+    if (!userNorm) { results.skipped += 1; continue; }
+    if (!isTruthy(getVal(row, "ativo"))) { results.skipped += 1; continue; }
+
+    const lastIso = getVal(row, "last_interaction");
+    if (!lastIso) { results.skipped += 1; continue; }
+
+    const lastMs = new Date(lastIso).getTime();
+    if (!lastMs || Number.isNaN(lastMs)) { results.skipped += 1; continue; }
+
+    const daysSince = (nowMs - lastMs) / (24 * 60 * 60 * 1000);
+    if (daysSince < INACTIVE_MIN_DAYS || daysSince > INACTIVE_MAX_DAYS) {
+      results.skipped += 1;
+      continue;
+    }
+
+    const withinWindow = nowMs - lastMs <= WA_SESSION_WINDOW_MS;
+    const firstName = extractFirstName(getVal(row, "nome")) || getStoredFirstName(userNorm) || "";
+    const greeting = firstName ? `Oi, ${firstName}! 👋` : "Oi! 👋";
+    const days = Math.floor(daysSince);
+    const diasStr = days === 1 ? "1 dia" : `${days} dias`;
+
+    try {
+      if (withinWindow) {
+        const msg =
+          `${greeting}\n\nFaz ${diasStr} que você não registra nada por aqui. Tudo bem?\n\n` +
+          `Quando quiser retomar, é só me contar um gasto ou entrada do dia — estou aqui. 😊`;
+        await sendText(rawUser, msg, { bypassWindow: true });
+      } else {
+        await sendTemplateReminderV2(rawUser, userNorm, {
+          nameHint: firstName,
+          pagarVencidas: 0, pagarHoje: 0,
+          receberVencidas: 0, receberHoje: 0,
+          total: "0,00",
+        });
+      }
+      console.log(`[REENGAGEMENT] Enviado para ${userNorm} (${days} dias inativo, withinWindow=${withinWindow})`);
+      results.sent += 1;
+    } catch (err) {
+      console.error(`[REENGAGEMENT] Erro para ${userNorm}:`, err.message);
+      results.errors += 1;
+    }
+  }
+
+  console.log("[REENGAGEMENT] done", results);
+  return results;
+}
+
 let _avisoCronRunning = false;
+
+const getTodayBRTKey = () => {
+  const now = new Date();
+  const brHour = (now.getUTCHours() - 3 + 24) % 24;
+  const brt = new Date(now);
+  brt.setUTCHours(brt.getUTCHours() - 3);
+  if (brHour >= 21) brt.setUTCDate(brt.getUTCDate());
+  return `${brt.getUTCFullYear()}-${String(brt.getUTCMonth() + 1).padStart(2, "0")}-${String(brt.getUTCDate()).padStart(2, "0")}`;
+};
+
+const AVISO_LOCK_DIR = process.env.AVISO_LOCK_DIR || "/tmp";
 
 async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = false } = {}) {
   if (_avisoCronRunning) {
     console.log(`[CRON] runAvisoCron já em execução (requestedBy=${requestedBy}), ignorando chamada duplicada.`);
     return { skipped: true, reason: "already_running" };
   }
+
+  const todayKey = getTodayBRTKey();
+  const lockPath = `${AVISO_LOCK_DIR}/finplanner-aviso-${todayKey}.lock`;
+  if (!forceHour && requestedBy !== "admin") {
+    try {
+      fs.writeFileSync(lockPath, `${process.pid} ${new Date().toISOString()} ${requestedBy}\n`, { flag: "wx" });
+      console.log(`[CRON] Lock adquirido: ${lockPath}`);
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        let lockInfo = "";
+        try { lockInfo = fs.readFileSync(lockPath, "utf8").trim(); } catch {}
+        console.log(`[CRON] Lock ${lockPath} já existe, outro processo rodou hoje. Info: ${lockInfo}. Ignorando (requestedBy=${requestedBy}).`);
+        return { skipped: true, reason: "lock_exists", lockInfo };
+      }
+      console.warn(`[CRON] Erro ao criar lock ${lockPath}: ${err.message}. Prosseguindo sem lock.`);
+    }
+  }
+
   _avisoCronRunning = true;
   console.log(`[CRON] runAvisoCron start requestedBy=${requestedBy} at ${new Date().toISOString()}`);
 
@@ -7536,15 +7681,100 @@ if (isCronAviso) {
         await runAvisoCron({ requestedBy: "internal-scheduler" });
       } catch (e) {
         console.error("[INTERNAL-CRON] Erro em runAvisoCron:", e.message);
+        if (ADMIN_WA_NUMBER) {
+          sendText(ADMIN_WA_NUMBER,
+            `🚨 *Cron falhou* — runAvisoCron\nErro: ${e.message}\nHorário: ${new Date().toISOString()}\n\n_Verifique logs do PM2._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
       }
       try {
         await runOnboardingCron({ requestedBy: "internal-scheduler" });
       } catch (e) {
         console.error("[INTERNAL-CRON] Erro em runOnboardingCron:", e.message);
+        if (ADMIN_WA_NUMBER) {
+          sendText(ADMIN_WA_NUMBER,
+            `🚨 *Cron falhou* — runOnboardingCron\nErro: ${e.message}\nHorário: ${new Date().toISOString()}\n\n_Verifique logs do PM2._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
+      }
+      try {
+        await runReengagementCron({ requestedBy: "internal-scheduler" });
+      } catch (e) {
+        console.error("[INTERNAL-CRON] Erro em runReengagementCron:", e.message);
+        if (ADMIN_WA_NUMBER) {
+          sendText(ADMIN_WA_NUMBER,
+            `🚨 *Cron falhou* — runReengagementCron\nErro: ${e.message}\nHorário: ${new Date().toISOString()}\n\n_Verifique logs do PM2._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
       }
       console.log("[INTERNAL-CRON] Concluído às", new Date().toISOString());
     }, { timezone: "America/Sao_Paulo" });
     console.log("[BOOT] Scheduler interno configurado: cron diário às 08:00 BRT");
+
+    // Após boot, verifica se o cron de hoje foi pulado (ex: PM2 reiniciou após 08:00)
+    setTimeout(async () => {
+      try {
+        const now = new Date();
+        const brHour = (now.getUTCHours() - 3 + 24) % 24;
+        if (brHour < 8) return; // Ainda não deu 08:00 BRT hoje, nada a verificar
+
+        const todayKey = getTodayBRTKey();
+        const lockPath = `${AVISO_LOCK_DIR}/finplanner-aviso-${todayKey}.lock`;
+        if (fs.existsSync(lockPath)) return; // Cron já rodou
+
+        const inRecoveryWindow = brHour >= 8 && brHour < 12; // 08h-12h BRT
+        console.warn(`[BOOT] ⚠️ Cron de hoje (${todayKey}) não rodou — lock ausente. brHour=${brHour}, autoRun=${inRecoveryWindow}`);
+
+        if (inRecoveryWindow) {
+          if (ADMIN_WA_NUMBER) {
+            sendText(ADMIN_WA_NUMBER,
+              `🔄 *Cron recuperado automaticamente*\n` +
+              `Data: ${todayKey}\n` +
+              `Boot: ${now.toISOString()} (${brHour}h BRT)\n\n` +
+              `_Bot reiniciou após as 08:00, disparando runAvisoCron + runOnboardingCron agora._`,
+              { bypassWindow: true }
+            ).catch(() => {});
+          }
+          try {
+            await runAvisoCron({ requestedBy: "boot-recovery" });
+          } catch (e) {
+            console.error("[BOOT-RECOVERY] Erro em runAvisoCron:", e.message);
+            if (ADMIN_WA_NUMBER) {
+              sendText(ADMIN_WA_NUMBER,
+                `🚨 *Recovery falhou* — runAvisoCron\nErro: ${e.message}`,
+                { bypassWindow: true }
+              ).catch(() => {});
+            }
+          }
+          try {
+            await runOnboardingCron({ requestedBy: "boot-recovery" });
+          } catch (e) {
+            console.error("[BOOT-RECOVERY] Erro em runOnboardingCron:", e.message);
+            if (ADMIN_WA_NUMBER) {
+              sendText(ADMIN_WA_NUMBER,
+                `🚨 *Recovery falhou* — runOnboardingCron\nErro: ${e.message}`,
+                { bypassWindow: true }
+              ).catch(() => {});
+            }
+          }
+        } else if (ADMIN_WA_NUMBER) {
+          // Fora da janela de recovery (>= 12h BRT) — só avisa, não dispara
+          sendText(ADMIN_WA_NUMBER,
+            `⚠️ *Cron pode ter sido pulado*\n` +
+            `Data: ${todayKey}\n` +
+            `Boot: ${now.toISOString()} (${brHour}h BRT)\n\n` +
+            `_Fora da janela segura de auto-recovery (08h-12h). ` +
+            `Mande "cron teste" pra disparar manualmente se desejar._`,
+            { bypassWindow: true }
+          ).catch(() => {});
+        }
+      } catch (e) {
+        console.error("[BOOT] Erro ao verificar cron missed:", e.message);
+      }
+    }, 30_000); // 30s pra dar tempo do boot completar (sheets, migração, etc.)
   });
 }
 
