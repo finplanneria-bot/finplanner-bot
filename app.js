@@ -892,11 +892,6 @@ const NUMBER_WORDS = {
 
 const NUMBER_CONNECTORS = new Set([
   "e",
-  "de",
-  "da",
-  "do",
-  "das",
-  "dos",
   "reais",
   "real",
   "centavos",
@@ -952,7 +947,7 @@ const extractNumberWords = (text) => {
 
 const DATE_TOKEN_PATTERN = "\\b(\\d{1,2}[\\/-]\\d{1,2}(?:[\\/-]\\d{2,4})?)\\b";
 const VALUE_TOKEN_PATTERN =
-  "(?:R\\$?\\s*)?(?:\\d{1,3}(?:[.,]\\d{3})+(?:[.,]\\d{1,2})?|\\d+(?:[.,]\\d{1,2})?)(?!\\s*[\\/-]\\d)";
+  "(?:\\bR\\$?\\s*)?(?:\\d{1,3}(?:[.,]\\d{3})+(?:[.,]\\d{1,2})?|\\d+(?:[.,]\\d{1,2})?)(?!\\s*[\\/-]\\d)";
 
 const parseNumericToken = (rawToken) => {
   if (rawToken === undefined || rawToken === null) return null;
@@ -1404,6 +1399,10 @@ const CATEGORY_DEFINITIONS = [
       "chope",
       "suco",
       "água mineral",
+      "ze delivery",
+      "zé delivery",
+      "zedelivery",
+      "ze entrega",
       "whisky",
       "whiskey",
       "gin",
@@ -2360,12 +2359,18 @@ const humanizeCategorySlug = (value) => {
 
 const detectCategoryHeuristic = (description, tipo) => {
   const normalized = normalizeDiacritics((description || "").toLowerCase());
+  let bestMatch = null;
+  let bestLen = 0;
   for (const category of CATEGORY_DEFINITIONS) {
     const keywords = category.normalizedKeywords || [];
-    if (keywords.some((kw) => kw && normalized.includes(kw))) {
-      return { slug: category.slug, emoji: category.emoji };
+    for (const kw of keywords) {
+      if (kw && kw.length > bestLen && normalized.includes(kw)) {
+        bestMatch = { slug: category.slug, emoji: category.emoji };
+        bestLen = kw.length;
+      }
     }
   }
+  if (bestMatch) return bestMatch;
   if (tipo === "conta_receber") {
     const fallback = getCategoryDefinition("vendas_receitas") || getCategoryDefinition("outros");
     return { slug: fallback.slug, emoji: fallback.emoji };
@@ -3533,9 +3538,10 @@ const isUsuarioAtivo = async (userNorm) => {
     return false;
   }
   const vencimentoRaw = getVal(target, "vencimento_plano");
-  const vencimentoDate = parseDateLoose(vencimentoRaw);
+  const vencimentoTrialRaw = getVal(target, "vencimento_trial");
+  const vencimentoDate = parseDateLoose(vencimentoRaw) || parseDateLoose(vencimentoTrialRaw);
   const today = startOfDay(new Date());
-  const vencOk = vencimentoDate ? startOfDay(vencimentoDate).getTime() >= today.getTime() : true;
+  const vencOk = vencimentoDate ? startOfDay(vencimentoDate).getTime() >= today.getTime() : false;
   const planoVal = getVal(target, "plano");
   const active = Boolean(ativoOk && vencOk);
   console.log("🔐 AccessCheck:", {
@@ -3989,6 +3995,17 @@ const sessionStatusConfirm = new Map();
 const sessionPaymentCode = new Map();
 const sessionPayConfirm = new Map();
 const sessionLastRegistered = new Map(); // rowId do último lançamento registrado (para correção rápida)
+const sessionDuplicateConfirm = new Map(); // payload aguardando confirmação de duplicado
+const lastMessagesHistory = new Map(); // userNorm → [últimas 5 mensagens normalizadas]
+
+const trackMessageAndDetectLoop = (userNorm, normalizedMessage) => {
+  if (!normalizedMessage || normalizedMessage.length < 2) return false;
+  const history = lastMessagesHistory.get(userNorm) || [];
+  history.push(normalizedMessage);
+  while (history.length > 5) history.shift();
+  lastMessagesHistory.set(userNorm, history);
+  return history.length >= 3 && history.slice(-3).every((m) => m === normalizedMessage);
+};
 
 const startReportCategoryFlow = async (to, userNorm, category) => {
   sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
@@ -4006,6 +4023,7 @@ const resetSession = (userNorm) => {
   sessionPaymentCode.delete(userNorm);
   sessionPayConfirm.delete(userNorm);
   sessionLastRegistered.delete(userNorm);
+  sessionDuplicateConfirm.delete(userNorm);
 };
 
 const hasActiveSession = (userNorm) =>
@@ -4846,6 +4864,20 @@ async function handleEditFlow(fromRaw, userNorm, text) {
       await sendCancelMessage(fromRaw);
       return true;
     }
+
+    if (/^(exclu[ií]|delet|apag|remov)/.test(input)) {
+      try {
+        await deleteRow(state.row);
+        resetSession(userNorm);
+        await sendText(fromRaw, "🗑️ Lançamento excluído com sucesso.");
+        await sendMainMenu(fromRaw);
+      } catch (err) {
+        console.error("[Edit→Delete] Erro:", err.message);
+        await sendText(fromRaw, "Não consegui excluir agora. Tente novamente.");
+      }
+      return true;
+    }
+
     const valid = ["conta", "descricao", "valor", "data", "status", "categoria"];
     const fieldAliases = {
       descricao: "descricao", descrição: "descricao", desc: "descricao",
@@ -5292,8 +5324,56 @@ async function promptNextPaymentConfirmation(to, userNorm) {
   }
 }
 
+const findRecentDuplicate = async (userNorm, payload) => {
+  const allRows = await allRowsForUser(userNorm);
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  const targetDesc = normalizeDiacritics((payload.descricao || "").trim()).toLowerCase();
+  const targetValue = Number(payload.valor) || 0;
+  if (!targetDesc || !targetValue) return null;
+  return allRows.find((row) => {
+    const ts = new Date(getVal(row, "timestamp")).getTime();
+    if (!ts || ts < cutoff) return false;
+    const rowDesc = normalizeDiacritics((getVal(row, "descricao") || "").trim()).toLowerCase();
+    const rowValue = Number(getVal(row, "valor")) || 0;
+    return rowDesc === targetDesc && Math.abs(rowValue - targetValue) < 0.01;
+  });
+};
+
 async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
   const statusSource = options.statusSource || "auto";
+
+  if (!options.skipDuplicateCheck) {
+    try {
+      const dup = await findRecentDuplicate(userNorm, entry);
+      if (dup) {
+        sessionDuplicateConfirm.set(userNorm, {
+          entry,
+          options,
+          expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+        });
+        const valor = formatCurrencyBR(entry.valor);
+        await sendWA({
+          messaging_product: "whatsapp",
+          to: fromRaw,
+          type: "interactive",
+          interactive: {
+            type: "button",
+            body: { text: `⚠️ Já registrei *${entry.descricao}* de *${valor}* nas últimas 2h. Deseja registrar de novo?` },
+            action: {
+              buttons: [
+                { type: "reply", reply: { id: "DUP:CONFIRM", title: "✅ Sim, registrar" } },
+                { type: "reply", reply: { id: "DUP:CANCEL", title: "❌ Cancelar" } },
+              ],
+            },
+          },
+        });
+        return;
+      }
+    } catch (err) {
+      console.error("[Duplicate check] Erro:", err.message);
+    }
+  }
+
   await createRow(entry);
   const resumo = formatEntrySummary(entry);
   const statusLabel = statusIconLabel(entry.status);
@@ -6185,6 +6265,26 @@ async function handleInteractiveMessage(from, payload) {
     const id = payload.button_reply.id;
     const payloadId = payload.button_reply?.payload;
     const title = payload.button_reply?.title?.toLowerCase?.() || "";
+
+    if (id === "DUP:CONFIRM") {
+      const pending = sessionDuplicateConfirm.get(userNorm);
+      sessionDuplicateConfirm.delete(userNorm);
+      if (pending && pending.expiresAt > Date.now()) {
+        await finalizeRegisterEntry(from, userNorm, pending.entry, {
+          ...pending.options,
+          skipDuplicateCheck: true,
+        });
+      } else {
+        await sendText(from, "Confirmação expirou. Envie o lançamento novamente se desejar registrar.");
+      }
+      return;
+    }
+    if (id === "DUP:CANCEL") {
+      sessionDuplicateConfirm.delete(userNorm);
+      await sendText(from, "OK, lançamento não foi registrado.");
+      return;
+    }
+
     if (
       id === TEMPLATE_REMINDER_BUTTON_ID ||
       payloadId === TEMPLATE_REMINDER_BUTTON_ID ||
@@ -6494,6 +6594,20 @@ async function handleUserText(fromRaw, text) {
     console.error("Log save failed:", err.message)
   );
   recordUserInteraction(userNorm);
+
+  if (trackMessageAndDetectLoop(userNorm, normalizedMessage)) {
+    await sendText(
+      fromRaw,
+      `Parece que estamos em círculo. 😅 Posso ajudar de outra forma:\n\n` +
+      `• Digite *menu* — opções principais\n` +
+      `• Digite *ajuda* — dicas de uso\n` +
+      `• Ex: _"Paguei R$50 de mercado"_ — registrar gasto\n\n` +
+      `Se preferir falar com alguém, mande um e-mail: suporte@finplanner.app`
+    );
+    lastMessagesHistory.delete(userNorm);
+    return;
+  }
+
   const adminCronCommand =
     /\baviso\s*cron\b/i.test(normalizedMessage) ||
     /\bcron\s*(teste|agora)?\b/i.test(normalizedMessage);
@@ -7288,6 +7402,14 @@ async function runReengagementCron({ requestedBy = "cron", forceHour = false } =
     }
 
     const withinWindow = nowMs - lastMs <= WA_SESSION_WINDOW_MS;
+
+    // Skip se runAvisoCron já enviou para este usuário hoje (cross-cron dedup)
+    if (!shouldNotifyAdminReminder(userNorm)) {
+      console.log(`[REENGAGEMENT] Já recebeu lembrete hoje, pulando: ${userNorm}`);
+      results.skipped += 1;
+      continue;
+    }
+
     const firstName = extractFirstName(getVal(row, "nome")) || getStoredFirstName(userNorm) || "";
     const greeting = firstName ? `Oi, ${firstName}! 👋` : "Oi! 👋";
     const days = Math.floor(daysSince);
