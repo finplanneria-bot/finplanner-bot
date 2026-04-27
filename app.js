@@ -2357,6 +2357,33 @@ const humanizeCategorySlug = (value) => {
   return parts.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" / ");
 };
 
+const detectCategoryWithCustom = async (description, tipo, userNorm = null) => {
+  const baseMatch = detectCategoryHeuristic(description, tipo);
+  if (!userNorm) return baseMatch;
+  try {
+    const normalized = normalizeDiacritics((description || "").toLowerCase());
+    const customCats = await loadCustomCategories(userNorm);
+    let bestCustom = null;
+    let bestCustomLen = baseMatch ? 0 : -1;
+    for (const cat of customCats) {
+      const kwList = (cat.keywords || "")
+        .split(",")
+        .map((k) => normalizeDiacritics(k.trim()).toLowerCase())
+        .filter(Boolean);
+      for (const kw of kwList) {
+        if (kw && kw.length > bestCustomLen && normalized.includes(kw)) {
+          bestCustom = { slug: cat.slug, emoji: cat.emoji };
+          bestCustomLen = kw.length;
+        }
+      }
+    }
+    if (bestCustom) return bestCustom;
+  } catch (err) {
+    console.error("⚠️ detectCategoryWithCustom error:", err.message);
+  }
+  return baseMatch;
+};
+
 const detectCategoryHeuristic = (description, tipo) => {
   const normalized = normalizeDiacritics((description || "").toLowerCase());
   let bestMatch = null;
@@ -2403,9 +2430,8 @@ const truncateForPrompt = (value, max = 200) => {
   return `${str.slice(0, max - 1)}…`;
 };
 
-const buildCategoryPrompt = async (description, tipo) => {
-  // Carregar categorias base + customizadas
-  const customCats = await loadCustomCategories();
+const buildCategoryPrompt = async (description, tipo, userNorm = null) => {
+  const customCats = await loadCustomCategories(userNorm);
   const baseHint = CATEGORY_PROMPT_HINT;
   const customHint = customCats.length
     ? customCats
@@ -2437,7 +2463,7 @@ Se usar categoria existente:
 {"slug":"nome_slug","isNew":false}
 
 Se criar categoria nova:
-{"slug":"slug_novo","label":"Nome da Categoria","emoji":"🏷️","description":"Descrição breve","isNew":true}`,
+{"slug":"slug_novo","label":"Nome da Categoria","emoji":"🏷️","description":"Descrição breve","keywords":"palavra1,palavra2,palavra3","isNew":true}`,
         },
       ],
     },
@@ -2454,18 +2480,17 @@ Se criar categoria nova:
 };
 
 const resolveCategory = async (description, tipo, userNorm) => {
-  const fallback = detectCategoryHeuristic(description, tipo);
+  const fallback = await detectCategoryWithCustom(description, tipo, userNorm);
   if (!description || !description.toString().trim() || !openaiClient) return fallback;
   try {
-    const prompt = await buildCategoryPrompt(description, tipo);
+    const prompt = await buildCategoryPrompt(description, tipo, userNorm);
     const output = await callOpenAI({
       model: OPENAI_CATEGORY_MODEL,
       input: prompt,
       temperature: 0,
-      maxOutputTokens: 120,
+      maxOutputTokens: 150,
     });
 
-    // Tentar parsear como JSON (novo formato com categorias dinâmicas)
     let parsed = null;
     try {
       const jsonStr = (output || "").trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
@@ -2478,32 +2503,29 @@ const resolveCategory = async (description, tipo, userNorm) => {
       const cleanSlug = (parsed.slug || "").toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/__+/g, "_").replace(/^_|_$/g, "");
 
       if (parsed.isNew && parsed.label) {
-        // Salvar nova categoria em background (não bloquear o fluxo)
         saveCustomCategory({
           slug: cleanSlug,
           label: parsed.label,
           emoji: parsed.emoji || "🏷️",
           description: parsed.description || "",
+          keywords: parsed.keywords || "",
           created_by: userNorm || "",
         }).catch((err) => console.error("⚠️ Erro ao salvar nova categoria:", err.message));
 
         return { slug: cleanSlug, emoji: parsed.emoji || "🏷️" };
       }
 
-      // Categoria existente — verificar em base ou customizadas
       const baseDef = getCategoryDefinition(cleanSlug);
       if (baseDef) return { slug: baseDef.slug, emoji: baseDef.emoji };
 
-      const customCats = await loadCustomCategories();
+      const customCats = await loadCustomCategories(userNorm);
       const customDef = customCats.find((c) => c.slug === cleanSlug);
       if (customDef) {
-        // Incrementar uso em background
         incrementCategoryUsage(cleanSlug).catch(() => {});
         return { slug: customDef.slug, emoji: customDef.emoji };
       }
     }
 
-    // Fallback: tentar interpretar como slug simples (compatibilidade)
     const predicted = (output || "").trim();
     if (predicted) {
       const def = getCategoryDefinition(predicted);
@@ -2962,6 +2984,7 @@ const CUSTOM_CATEGORIES_HEADERS = [
   "label",          // Nome legível da categoria
   "emoji",          // Emoji representativo
   "description",    // Descrição da categoria
+  "keywords",       // Palavras-chave separadas por vírgula para detecção automática
   "created_by",     // Usuário que gerou a categoria
   "created_at",     // Timestamp de criação
   "usage_count",    // Contagem de uso
@@ -3146,10 +3169,12 @@ async function ensureCustomCategoriesSheet() {
   return sheet;
 }
 
-const loadCustomCategories = async () => {
+const loadCustomCategories = async (userNorm = null) => {
   const now = Date.now();
   if (customCategoriesCache && now < customCategoriesCacheExpiry) {
-    return customCategoriesCache;
+    return userNorm
+      ? customCategoriesCache.filter((c) => !c.created_by || c.created_by === userNorm)
+      : customCategoriesCache;
   }
   try {
     const sheet = await ensureCustomCategoriesSheet();
@@ -3160,14 +3185,19 @@ const loadCustomCategories = async () => {
         label: (getVal(row, "label") || "").trim(),
         emoji: (getVal(row, "emoji") || "🏷️").trim(),
         description: (getVal(row, "description") || "").trim(),
+        keywords: (getVal(row, "keywords") || "").trim(),
+        created_by: (getVal(row, "created_by") || "").trim(),
         isCustom: true,
       }))
       .filter((c) => c.slug);
     customCategoriesCacheExpiry = now + CUSTOM_CATEGORIES_CACHE_TTL;
-    return customCategoriesCache;
+    return userNorm
+      ? customCategoriesCache.filter((c) => !c.created_by || c.created_by === userNorm)
+      : customCategoriesCache;
   } catch (err) {
     console.error("⚠️ Erro ao carregar categorias customizadas:", err.message);
-    return customCategoriesCache || [];
+    const fallback = customCategoriesCache || [];
+    return userNorm ? fallback.filter((c) => !c.created_by || c.created_by === userNorm) : fallback;
   }
 };
 
@@ -3176,19 +3206,18 @@ const invalidateCustomCategoriesCache = () => {
   customCategoriesCacheExpiry = 0;
 };
 
-const saveCustomCategory = async ({ slug, label, emoji, description, created_by }) => {
+const saveCustomCategory = async ({ slug, label, emoji, description, keywords = "", created_by }) => {
   try {
-    // Validar slug (apenas letras, números e underscore)
     const cleanSlug = (slug || "").toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/__+/g, "_").replace(/^_|_$/g, "");
     if (!cleanSlug || cleanSlug.length < 2) return;
     const cleanLabel = (label || "").toString().slice(0, 50).trim();
     const cleanEmoji = (emoji || "🏷️").toString().trim().slice(0, 4);
     if (!cleanLabel) return;
 
-    // Verificar se já existe (no cache ou buscando direto)
-    const existing = await loadCustomCategories();
+    // Verificar duplicata apenas para este usuário (não global)
+    const existing = await loadCustomCategories(created_by || null);
     if (existing.some((c) => c.slug === cleanSlug)) {
-      console.log("⚠️ Categoria customizada já existe:", cleanSlug);
+      console.log("⚠️ Categoria já existe para este usuário:", cleanSlug);
       return;
     }
 
@@ -3200,14 +3229,15 @@ const saveCustomCategory = async ({ slug, label, emoji, description, created_by 
           label: cleanLabel,
           emoji: cleanEmoji,
           description: (description || "").slice(0, 200),
+          keywords: (keywords || "").toString().slice(0, 500),
           created_by: created_by || "",
           created_at: new Date().toISOString(),
           usage_count: "1",
         }),
       "add-custom-category"
     );
-    invalidateCustomCategoriesCache(); // Forçar reload no próximo acesso
-    console.log("✨ Nova categoria criada e salva:", cleanSlug, cleanLabel, cleanEmoji);
+    invalidateCustomCategoriesCache();
+    console.log("✨ Nova categoria criada:", cleanSlug, cleanLabel, cleanEmoji);
   } catch (err) {
     console.error("⚠️ Erro ao salvar categoria customizada:", err.message);
   }
@@ -3996,6 +4026,7 @@ const sessionPaymentCode = new Map();
 const sessionPayConfirm = new Map();
 const sessionLastRegistered = new Map(); // rowId do último lançamento registrado (para correção rápida)
 const sessionDuplicateConfirm = new Map(); // payload aguardando confirmação de duplicado
+const sessionNewCategory = new Map(); // estado do fluxo guiado de criação de categoria
 const lastMessagesHistory = new Map(); // userNorm → [últimas 5 mensagens normalizadas]
 
 const trackMessageAndDetectLoop = (userNorm, normalizedMessage) => {
@@ -4024,6 +4055,7 @@ const resetSession = (userNorm) => {
   sessionPayConfirm.delete(userNorm);
   sessionLastRegistered.delete(userNorm);
   sessionDuplicateConfirm.delete(userNorm);
+  sessionNewCategory.delete(userNorm);
 };
 
 const hasActiveSession = (userNorm) =>
@@ -4035,7 +4067,9 @@ const hasActiveSession = (userNorm) =>
   sessionEdit.has(userNorm) ||
   sessionDelete.has(userNorm) ||
   sessionRegister.has(userNorm) ||
-  sessionPeriod.has(userNorm);
+  sessionPeriod.has(userNorm) ||
+  sessionDuplicateConfirm.has(userNorm) ||
+  sessionNewCategory.has(userNorm);
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
 const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
@@ -6571,6 +6605,87 @@ function parseRangeMessage(text) {
   return { start: startOfDay(start), end: endOfDay(end) };
 }
 
+async function handleNewCategoryFlow(fromRaw, userNorm, text) {
+  const state = sessionNewCategory.get(userNorm);
+  if (!state || state.expiresAt < Date.now()) {
+    sessionNewCategory.delete(userNorm);
+    return false;
+  }
+
+  const input = text.trim();
+
+  if (state.awaiting === "name") {
+    if (!input || input.length < 2 || input.length > 40) {
+      await sendText(fromRaw, "Nome muito curto ou longo. Use entre 2 e 40 caracteres. Ou *cancelar* para sair.");
+      return true;
+    }
+    const slug = normalizeDiacritics(input)
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "")
+      .replace(/__+/g, "_")
+      .replace(/^_|_$/g, "");
+    if (!slug || slug.length < 2) {
+      await sendText(fromRaw, "Nome inválido. Use letras e números.");
+      return true;
+    }
+    const baseDef = getCategoryDefinition(slug);
+    const customExists = (await loadCustomCategories(userNorm)).some((c) => c.slug === slug);
+    if (baseDef || customExists) {
+      await sendText(fromRaw, `A categoria *${input}* já existe. Escolha outro nome.`);
+      return true;
+    }
+    sessionNewCategory.set(userNorm, { ...state, awaiting: "keywords", name: input, slug, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+    await sendText(
+      fromRaw,
+      `Ótimo! Agora me diga as *palavras-chave* para reconhecer *${input}* automaticamente.\n\n` +
+      `Separe por vírgula:\n_Ex: academia, musculação, gym, crossfit_`
+    );
+    return true;
+  }
+
+  if (state.awaiting === "keywords") {
+    const kwList = input.split(",").map((k) => k.trim()).filter((k) => k.length >= 2);
+    if (!kwList.length) {
+      await sendText(fromRaw, "Adicione pelo menos uma palavra-chave com 2 ou mais letras. Ou *cancelar* para sair.");
+      return true;
+    }
+    const keywords = kwList.slice(0, 20).join(",");
+    sessionNewCategory.set(userNorm, { ...state, awaiting: "emoji", keywords, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+    await sendText(
+      fromRaw,
+      `Quase pronto! Escolha um *emoji* para *${state.name}* (ou envie *pular* para usar 🏷️):`
+    );
+    return true;
+  }
+
+  if (state.awaiting === "emoji") {
+    const emojiMatch = [...input].find((c) => /\p{Emoji}/u.test(c) && c !== "*");
+    const finalEmoji = emojiMatch || "🏷️";
+    sessionNewCategory.delete(userNorm);
+
+    await saveCustomCategory({
+      slug: state.slug,
+      label: state.name,
+      emoji: finalEmoji,
+      description: "",
+      keywords: state.keywords,
+      created_by: userNorm,
+    });
+
+    const kwDisplay = state.keywords.split(",").map((k) => `*${k.trim()}*`).join(", ");
+    await sendText(
+      fromRaw,
+      `✅ Categoria *${finalEmoji} ${state.name}* criada!\n\n` +
+      `Lançamentos com ${kwDisplay} serão classificados automaticamente. 📂`
+    );
+    await sendMainMenu(fromRaw);
+    return true;
+  }
+
+  return false;
+}
+
 async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text || "").trim();
@@ -6707,6 +6822,47 @@ async function handleUserText(fromRaw, text) {
     } else {
       await sendCancelMessage(fromRaw);
     }
+    return;
+  }
+
+  // 🔀 Pivot: lançamento financeiro cancela silenciosamente qualquer sessão em andamento
+  if (hasActiveSession(userNorm)) {
+    const pivotIntent = await intentPromise;
+    if (pivotIntent === "registrar_pagamento" || pivotIntent === "registrar_recebimento") {
+      console.log("[Pivot] Sessão cancelada para registrar lançamento:", { userNorm, pivotIntent });
+      resetSession(userNorm);
+      // sem mensagem de cancelamento — fluxo continua para o handler de intenção abaixo
+    }
+  }
+
+  // 📂 Fluxo de criação de categoria (multi-step)
+  if (sessionNewCategory.has(userNorm)) {
+    if (await handleNewCategoryFlow(fromRaw, userNorm, trimmed)) return;
+  }
+
+  // 📂 Intenções de categoria
+  const addCatRegex = /(adicionar?|criar?|nova?|incluir?)\s+categori/i;
+  const listCatRegex = /(ver|listar?|minha[s]?|mostrar?|quero\s+ver)\s+categori/i;
+
+  if (listCatRegex.test(normalizedMessage)) {
+    const cats = await loadCustomCategories(userNorm);
+    if (!cats.length) {
+      await sendText(fromRaw, "Você ainda não tem categorias personalizadas. 📂\n\nDigite *adicionar categoria* para criar uma!");
+    } else {
+      const list = cats.map((c) => `${c.emoji} *${c.label}*${c.keywords ? `\n_Palavras-chave: ${c.keywords}_` : ""}`).join("\n\n");
+      await sendText(fromRaw, `📂 *Suas categorias personalizadas:*\n\n${list}\n\n_Digite *adicionar categoria* para criar uma nova._`);
+    }
+    return;
+  }
+
+  if (addCatRegex.test(normalizedMessage)) {
+    sessionNewCategory.set(userNorm, { awaiting: "name", expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+    await sendText(
+      fromRaw,
+      `📂 Vamos criar uma nova categoria!\n\n` +
+      `Qual será o *nome* da categoria?\n` +
+      `_Ex: Academia, Pets, Filhos, Streaming_`
+    );
     return;
   }
 
