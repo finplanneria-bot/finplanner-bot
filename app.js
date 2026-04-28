@@ -1040,6 +1040,14 @@ const extractAmountFromText = (text) => {
     const start = match.index;
     const end = start + match[0].length;
     if (spans.some((span) => start < span.end && end > span.start)) continue;
+    // Ignorar se o número está em contexto de horário (às 11, 11h, 11 da manhã)
+    const before = source.slice(0, start).trimEnd();
+    const after = source.slice(end);
+    const isTimeContext =
+      /\b(as|às|hora[s]?)\s*$/.test(before) ||
+      /^\s*[h:]\s*\d{0,2}\b/.test(after) ||
+      /^\s*(?:da\s+(?:man[hã]|tarde|noite)|am|pm)\b/i.test(after);
+    if (isTimeContext) continue;
     const raw = match[0];
     const value = parseNumericToken(raw);
     if (value) return { amount: value, raw };
@@ -1203,6 +1211,26 @@ const parseDateToken = (token) => {
   if (lower === "ontem") {
     const d = new Date();
     d.setDate(d.getDate() - 1);
+    return d;
+  }
+
+  // Dias da semana → próxima ocorrência (nunca hoje)
+  const WEEKDAY_MAP = {
+    "segunda": 1, "segunda-feira": 1, "seg": 1,
+    "terca": 2, "terca-feira": 2, "ter": 2,
+    "quarta": 3, "quarta-feira": 3, "qua": 3,
+    "quinta": 4, "quinta-feira": 4, "qui": 4,
+    "sexta": 5, "sexta-feira": 5, "sex": 5,
+    "sabado": 6, "sabado-feira": 6, "sab": 6,
+    "domingo": 0, "dom": 0,
+  };
+  const tokenNorm = (token || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+  if (Object.prototype.hasOwnProperty.call(WEEKDAY_MAP, tokenNorm)) {
+    const wd = WEEKDAY_MAP[tokenNorm];
+    const today = new Date();
+    const diff = ((wd - today.getDay() + 7) % 7) || 7;
+    const d = new Date(today);
+    d.setDate(today.getDate() + diff);
     return d;
   }
 
@@ -5991,6 +6019,64 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 }
 
 // ============================
+// Off-topic response (bot consciente das próprias capacidades)
+// ============================
+const FINPLANNER_CAPABILITIES_PROMPT = `Você é o FinPlanner, um assistente financeiro pessoal via WhatsApp. Você conhece todas as suas capacidades em detalhe.
+
+✅ O QUE VOCÊ FAZ:
+• Registrar pagamentos: "Paguei 150 de mercado", "Academia 120 pago segunda-feira", "Uber 40 pago agora"
+• Registrar recebimentos: "Recebi 3000 de salário", "Vendi curso por 200", "Me pagaram 500"
+• Ver saldo e relatórios: "saldo", "relatório do mês", "quanto gastei", "balanço geral"
+• Listar lançamentos e pendentes: "meus lançamentos", "contas a pagar", "o que vence essa semana"
+• Editar e excluir lançamentos já registrados
+• Contas fixas e recorrentes: "Aluguel 1500 todo mês", "Academia 120 toda semana"
+• Parcelamentos: "Comprei TV 1800 em 6x", "Notebook 3000 em 12 parcelas"
+• Categorias personalizadas: "adicionar categoria", "ver categorias"
+• Receber lembretes automáticos de contas próximas do vencimento
+
+❌ O QUE VOCÊ NÃO FAZ:
+• Lembretes pessoais de consultas médicas, medicamentos, compromissos
+• Agendamentos de qualquer tipo
+• Listas de compras sem valores financeiros
+• Previsão do tempo, notícias, receitas culinárias
+• Qualquer coisa não relacionada a finanças pessoais
+
+Ao receber uma mensagem fora do seu escopo, siga estas regras:
+1. Reconheça especificamente o que o usuário tentou fazer (nunca seja genérico)
+2. Explique em 1 frase que você é um assistente financeiro e por isso não pode ajudar com isso
+3. Se existir uma função relacionada que você oferece, sugira com um exemplo concreto e prático
+4. Seja amigável, curto (máximo 3 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
+5. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer`.trim();
+
+const generateOffTopicResponse = async (fromRaw, userMessage) => {
+  if (openaiClient) {
+    try {
+      const resp = await callOpenAI({
+        model: OPENAI_INTENT_MODEL,
+        input: [
+          { role: "system", content: [{ type: "input_text", text: FINPLANNER_CAPABILITIES_PROMPT }] },
+          { role: "user", content: [{ type: "input_text", text: `Usuário disse: "${userMessage}"` }] },
+        ],
+        temperature: 0.5,
+        maxOutputTokens: 180,
+      });
+      if (resp && resp.trim()) {
+        await sendText(fromRaw, resp.trim());
+        return;
+      }
+    } catch (err) {
+      console.error("[OffTopic] Erro ao gerar resposta:", err.message);
+    }
+  }
+  await sendText(
+    fromRaw,
+    `Sou um assistente financeiro — registro gastos, receitas e acompanho seu saldo. 💰\n\n` +
+    `Ex: _"Paguei 150 de mercado"_ ou _"Recebi 3000 de salário"_\n\n` +
+    `Diga *menu* para ver todas as opções.`
+  );
+};
+
+// ============================
 // Intent detection
 // ============================
 const KNOWN_INTENTS = new Set([
@@ -6009,6 +6095,7 @@ const KNOWN_INTENTS = new Set([
   "registrar_pagamento",
   "contas_fixas",
   "ajuda_parcelamento",
+  "fora_do_escopo",
   "desconhecido",
 ]);
 
@@ -6045,6 +6132,10 @@ const detectIntentHeuristic = (text) => {
   // Registrar pagamento — formas naturais
   if (/\b(paguei|gastei|comprei|transferi|mandei pix|fiz compra|debito|boleto pago)\b/.test(normalized)) return "registrar_pagamento";
   if (/registrar pagamento|\bpagamento\b|\bpagar\b/.test(lower)) return "registrar_pagamento";
+  // Mensagens fora do escopo financeiro (sem keywords financeiras)
+  const offtopicPat = /\b(agendar?|lembrete[s]?|alarme[s]?|lista\s+de\s+compras|lista\s+da\s+semana|consulta\s+m[eé]dic|me\s+lembra|clima|tempo\s+em|receita\s+culin[aá]|ingrediente[s]?|compra[s]?\s+de\s+mercado)\b/i;
+  const financialPat = /\b(paguei|gastei|recebi|comprei|valor|reais|r\$|pagamento|recebimento|saldo|conta|despesa|boleto|pix|gastou|custou)\b/i;
+  if (offtopicPat.test(normalized) && !financialPat.test(normalized)) return "fora_do_escopo";
   return "desconhecido";
 };
 
@@ -6076,13 +6167,28 @@ const buildIntentPrompt = (text) => {
 1. Responda APENAS com o slug da intenção (ex: "registrar_pagamento")
 2. Seja MUITO flexível - usuários falam naturalmente, não seguem scripts
 3. Entenda contexto e sinônimos (ex: "comprei" = "paguei" = "gastei")
-4. Para valores numéricos, sempre prefira "registrar_pagamento" ou "registrar_recebimento"
+4. Para valores numéricos FINANCEIROS, prefira "registrar_pagamento" ou "registrar_recebimento"
 5. Use "desconhecido" SOMENTE se realmente não souber
+
+🚫 HORÁRIOS NÃO SÃO VALORES MONETÁRIOS:
+   "às 11", "11h", "11:00", "14h30", "às 9 da manhã" = horários, NÃO dinheiro.
+   Se a mensagem trata de agenda, consulta, lembrete, compromisso ou horário
+   SEM keywords financeiras (paguei, gastei, recebi, valor, R$) → use "fora_do_escopo"
+   Ex: "Agendar consulta segunda às 11" → fora_do_escopo
+   Ex: "Me lembra de tomar remédio às 8h" → fora_do_escopo
+   Ex: "Academia segunda às 7" (sem valor) → fora_do_escopo
 
 📊 CATEGORIAS PRINCIPAIS:
 
-🔹 REGISTROS (maior prioridade quando há valor):
-   • registrar_pagamento: "paguei 50", "gastei 100", "comprei X por Y"
+🔹 FORA DO ESCOPO FINANCEIRO:
+   • fora_do_escopo: agendamentos, lembretes pessoais, listas de compras sem valores,
+     previsão do tempo, receitas culinárias, perguntas gerais não financeiras
+   Ex: "Agendar consulta segunda às 11" → fora_do_escopo
+   Ex: "Lista de compras do mercado" → fora_do_escopo
+   Ex: "Qual o clima hoje?" → fora_do_escopo
+
+🔹 REGISTROS (maior prioridade quando há VALOR FINANCEIRO explícito):
+   • registrar_pagamento: "paguei 50", "gastei 100", "comprei X por Y", "academia 120 pago"
    • registrar_recebimento: "recebi 200", "vendi por 150", "ganhei X"
 
 🔹 RELATÓRIOS:
@@ -6109,7 +6215,7 @@ const buildIntentPrompt = (text) => {
    • mostrar_menu: "menu", "opções"
    • relatorios_menu: "relatórios", "ver relatórios"
 
-✨ DICA: Se houver VALOR MONETÁRIO na mensagem, sempre priorize "registrar_pagamento" ou "registrar_recebimento"!`,
+✨ DICA: Só use registrar_pagamento/recebimento quando há VALOR FINANCEIRO claro. Horários (11h, às 9) nunca são valores!`,
         },
       ],
     },
@@ -7009,6 +7115,9 @@ async function handleUserText(fromRaw, text) {
         `2️⃣ Ou use *Contas fixas* para lançar um valor recorrente todo mês automaticamente.\n\n` +
         `Digite *menu* para ver todas as opções.`
       );
+      break;
+    case "fora_do_escopo":
+      await generateOffTopicResponse(fromRaw, trimmed);
       break;
     default:
       if (extractAmountFromText(trimmed).amount) {
