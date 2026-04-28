@@ -5277,7 +5277,10 @@ const sendRegistrationEditPrompt = async (to, rowId, statusLabel) => {
       type: "button",
       body: { text: `Status identificado automaticamente: ${statusLabel}.\n\nDeseja editar este lançamento?` },
       action: {
-        buttons: [{ type: "reply", reply: { id: `REG:EDIT:${rowId}`, title: "✏ Editar" } }],
+        buttons: [
+          { type: "reply", reply: { id: `REG:EDIT:${rowId}`, title: "✏ Editar" } },
+          { type: "reply", reply: { id: `REG:DELETE:${rowId}`, title: "🗑 Excluir" } },
+        ],
       },
     },
   });
@@ -6543,6 +6546,24 @@ async function handleInteractiveMessage(from, payload) {
         from,
         `${summary}\n\n✏ Editar lançamento\n\nEscolha o que deseja alterar:\n\n🏷 Conta\n📝 Descrição\n💰 Valor\n📅 Data\n📌 Status\n📂 Categoria\n\n💡 Dica: Digite exatamente o nome do item que deseja editar.\n(ex: valor, data, categoria...)`
       );
+      return;
+    }
+    if (id.startsWith("REG:DELETE:")) {
+      const [, , rowId] = id.split(":");
+      const row = await findRowById(userNorm, rowId);
+      if (!row) {
+        await sendText(from, "Não encontrei o lançamento para excluir.");
+        return;
+      }
+      try {
+        await deleteRow(row);
+        sessionLastRegistered.delete(userNorm);
+        await sendText(from, "🗑️ Lançamento excluído com sucesso.");
+        await sendMainMenu(from);
+      } catch (err) {
+        console.error("[REG:DELETE] Erro:", err.message);
+        await sendText(from, "Não consegui excluir agora. Tente novamente.");
+      }
       return;
     }
     if (id.startsWith("CORR:")) {
