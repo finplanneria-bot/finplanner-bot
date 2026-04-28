@@ -41,6 +41,7 @@ import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
 // ✅ NOVAS DEPENDÊNCIAS - Segurança, Performance e Monitoramento
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -137,9 +138,11 @@ function validateRequiredEnv() {
 
 process.on("unhandledRejection", (err) => {
   console.error("[FATAL] unhandledRejection:", err);
+  process.exit(1); // PM2 reinicia automaticamente
 });
 process.on("uncaughtException", (err) => {
   console.error("[FATAL] uncaughtException:", err);
+  process.exit(1); // PM2 reinicia automaticamente
 });
 
 // ============================
@@ -180,6 +183,8 @@ const WEBHOOK_VERIFY_TOKEN = String(
     process.env.VERIFY_TOKEN ||
     ""
 ).trim();
+
+const WA_APP_SECRET = String(process.env.WA_APP_SECRET || "").trim();
 
 const USE_OPENAI = (USE_OPENAI_RAW || "false").toLowerCase() === "true";
 const DEBUG_SHEETS = (DEBUG_SHEETS_RAW || "false").toLowerCase() === "true";
@@ -227,6 +232,25 @@ const adaptInputForResponses = (input) => {
     });
     return { ...msg, content: mappedContent };
   });
+};
+
+// Rate limit de chamadas OpenAI por usuário: máx 20 chamadas por hora
+const openaiCallsPerUser = new Map(); // userNorm → { count, windowStart }
+const OPENAI_USER_LIMIT = 20;
+const OPENAI_USER_WINDOW_MS = 60 * 60 * 1000; // 1 hora
+
+const checkOpenAIQuota = (userNorm) => {
+  if (!userNorm) return true; // chamadas internas (cron, etc.) sem limite
+  const now = Date.now();
+  const entry = openaiCallsPerUser.get(userNorm) || { count: 0, windowStart: now };
+  if (now - entry.windowStart > OPENAI_USER_WINDOW_MS) {
+    openaiCallsPerUser.set(userNorm, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= OPENAI_USER_LIMIT) return false;
+  entry.count += 1;
+  openaiCallsPerUser.set(userNorm, entry);
+  return true;
 };
 
 const callOpenAI = async ({ model, input, temperature = 0, maxOutputTokens = 50 }) => {
@@ -324,6 +348,24 @@ setInterval(() => {
     logger.info("[Cache] Limpeza automática", { removed: cleaned });
   }
 }, 10 * 60 * 1000);
+
+// Limpeza diária de Maps sem TTL: userFirstNames, lastInboundInteraction, openaiCallsPerUser
+// Remove entradas com mais de 30 dias de inatividade para evitar crescimento ilimitado de memória
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  let cleaned = 0;
+  for (const [k, v] of lastInboundInteraction.entries()) {
+    if (v < cutoff) {
+      lastInboundInteraction.delete(k);
+      userFirstNames.delete(k);
+      openaiCallsPerUser.delete(k);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    logger.info("[Memory] Limpeza de Maps de usuários inativos", { removed: cleaned });
+  }
+}, 24 * 60 * 60 * 1000);
 const app = express();
 
 // ✅ Confiar em 1 proxy reverso (Nginx) - mais seguro que 'true' para rate limiting correto
@@ -396,7 +438,12 @@ logger.info("✅ Segurança configurada: Helmet + Rate Limiting + Compression");
 // - customer.subscription.deleted
 app.post("/webhook/stripe", express.raw({ type: "application/json" }), handleStripeWebhook);
 
-app.use(express.json());
+app.use(express.json({
+  limit: "50kb",
+  verify: (req, _res, buf) => {
+    if (req.path === "/webhook") req.rawBody = buf;
+  },
+}));
 
 app.get("/internal/wake", (_req, res) => {
   console.log(`[WAKE] Servidor acordado em ${new Date().toISOString()}`);
@@ -554,6 +601,13 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
 // Utils
 // ============================
 const normalizeUser = (num) => (num || "").replace(/\D/g, "");
+
+// Ofusca número de telefone para logs — mostra só os últimos 4 dígitos
+const maskPhone = (userNorm) => {
+  if (!userNorm) return "****";
+  const s = String(userNorm).replace(/\D/g, "");
+  return s.length >= 4 ? `****${s.slice(-4)}` : "****";
+};
 
 const normalizeWhatsAppNumber = (num) => {
   const digits = (num || "").replace(/\D/g, "");
@@ -3252,7 +3306,7 @@ const saveCustomCategory = async ({ slug, label, emoji, description, keywords = 
     const sheet = await ensureCustomCategoriesSheet();
     await withRetry(
       () =>
-        sheet.addRow({
+        sheet.addRow(sanitizePayload({
           slug: cleanSlug,
           label: cleanLabel,
           emoji: cleanEmoji,
@@ -3261,7 +3315,7 @@ const saveCustomCategory = async ({ slug, label, emoji, description, keywords = 
           created_by: created_by || "",
           created_at: new Date().toISOString(),
           usage_count: "1",
-        }),
+        })),
       "add-custom-category"
     );
     invalidateCustomCategoriesCache();
@@ -3530,7 +3584,7 @@ const upsertUsuarioFromSubscription = async ({
     console.error("⚠️ Erro ao criar aba do usuário:", userNorm, sheetErr.message);
   }
   candidates.forEach((candidate) => usuarioStatusCache.delete(candidate));
-  console.log("✅ Usuario atualizado:", userNorm, update.plano, update.ativo);
+  console.log("✅ Usuario atualizado:", maskPhone(userNorm), update.plano, update.ativo);
   return update;
 };
 
@@ -4114,11 +4168,24 @@ const sendCancelMessage = async (to, { reason } = {}) => {
 // ============================
 // Sheets operations
 // ============================
+
+// Previne injeção de fórmulas em células do Google Sheets.
+// Valores que começam com =, +, @, - são prefixados com ' (apóstrofo),
+// fazendo o Sheets tratar como texto literal em vez de executar como fórmula.
+const sanitizeSheetValue = (value) => {
+  if (typeof value !== "string") return value;
+  return /^[=+@\-]/.test(value.trimStart()) ? `'${value}` : value;
+};
+
+const sanitizePayload = (payload) =>
+  Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, sanitizeSheetValue(v)]));
+
 const createRow = async (payload) => {
   const sheet = await ensureSheet();
-  if (DEBUG_SHEETS) console.log("[Sheets] Adding row", payload);
-  await withRetry(() => sheet.addRow(payload), "append-finplanner");
-  await upsertUserSheetEntry(payload, { skipCheck: true });
+  const safePayload = sanitizePayload(payload);
+  if (DEBUG_SHEETS) console.log("[Sheets] Adding row", safePayload);
+  await withRetry(() => sheet.addRow(safePayload), "append-finplanner");
+  await upsertUserSheetEntry(safePayload, { skipCheck: true });
 };
 
 const deleteRow = async (row) => {
@@ -4845,7 +4912,7 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   } catch (error) {
     console.error("[Delete] Erro ao excluir lançamento:", error.message);
     sessionDelete.delete(userNorm);
-    await sendText(fromRaw, `❌ Erro ao excluir lançamento. Tente novamente.\n\nDetalhes: ${error.message}`);
+    await sendText(fromRaw, "❌ Erro ao excluir lançamento. Tente novamente.");
     return true;
   }
 
@@ -6048,8 +6115,8 @@ Ao receber uma mensagem fora do seu escopo, siga estas regras:
 4. Seja amigável, curto (máximo 3 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
 5. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer`.trim();
 
-const generateOffTopicResponse = async (fromRaw, userMessage) => {
-  if (openaiClient) {
+const generateOffTopicResponse = async (fromRaw, userMessage, userNorm = null) => {
+  if (openaiClient && checkOpenAIQuota(userNorm)) {
     try {
       const resp = await callOpenAI({
         model: OPENAI_INTENT_MODEL,
@@ -6334,13 +6401,17 @@ const sendSupportButton = (to) =>
 
 // ============================
 
-const detectIntent = async (text) => {
+const detectIntent = async (text, userNorm = null) => {
   const heuristic = detectIntentHeuristic(text);
   if (!text) return heuristic;
   if (!openaiClient) return heuristic;
   // Early return: se a heurística já identificou uma intenção específica (não "desconhecido"),
   // não precisamos chamar a OpenAI — economiza 1-3s por mensagem simples
   if (heuristic !== "desconhecido") return heuristic;
+  if (!checkOpenAIQuota(userNorm)) {
+    console.warn("[OpenAI] Quota por usuário excedida:", userNorm);
+    return heuristic;
+  }
   try {
     const output = await callOpenAI({
       model: OPENAI_INTENT_MODEL,
@@ -6363,7 +6434,7 @@ app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = String(req.query["hub.verify_token"] || "").trim();
   const challenge = req.query["hub.challenge"];
-  console.log("[WEBHOOK_VERIFY]", { mode, ok: mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN });
+  console.log("[WEBHOOK_VERIFY] GET verificação recebida");
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
@@ -6800,7 +6871,7 @@ async function handleUserText(fromRaw, text) {
   // Iniciar persistLastInteraction e detectIntent em paralelo — economiza 2-5s por mensagem
   // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
   const persistPromise = persistLastInteraction(userNorm);
-  const intentPromise = detectIntent(trimmed);
+  const intentPromise = detectIntent(trimmed, userNorm);
 
   await persistPromise;
   const interactionInfo = getLastInteractionInfo(userNorm);
@@ -7117,7 +7188,7 @@ async function handleUserText(fromRaw, text) {
       );
       break;
     case "fora_do_escopo":
-      await generateOffTopicResponse(fromRaw, trimmed);
+      await generateOffTopicResponse(fromRaw, trimmed, userNorm);
       break;
     default:
       if (extractAmountFromText(trimmed).amount) {
@@ -7318,7 +7389,7 @@ async function handleStripeWebhook(req, res) {
           `é só me contar seus gastos e entradas no dia a dia, como numa conversa.\n\n` +
           `Que tal começar agora? Me conta um gasto que você teve hoje. 😊`;
         await sendText(userNorm, welcomeMsg, { bypassWindow: true });
-        console.log("[ONBOARDING] Dia 1 enviado para", userNorm);
+        console.log("[ONBOARDING] Dia 1 enviado para", maskPhone(userNorm));
       } catch (onboardErr) {
         console.error("[ONBOARDING] Erro ao enviar boas-vindas Dia 1:", onboardErr.message);
       }
@@ -7421,7 +7492,30 @@ async function handleStripeWebhook(req, res) {
   res.sendStatus(200);
 }
 
+const verifyWhatsAppSignature = (req) => {
+  if (!WA_APP_SECRET) {
+    if (process.env.NODE_ENV === "production") {
+      console.warn("[SECURITY] WA_APP_SECRET não configurado — verificação de assinatura desativada");
+    }
+    return true; // graceful degradation se secret não configurado
+  }
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature) return false;
+  const rawBody = req.rawBody;
+  if (!rawBody) return false;
+  const expected = "sha256=" + crypto.createHmac("sha256", WA_APP_SECRET).update(rawBody).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+};
+
 app.post("/webhook", webhookLimiter, async (req, res) => {
+  if (!verifyWhatsAppSignature(req)) {
+    console.warn("[SECURITY] Webhook WhatsApp rejeitado: assinatura inválida ou ausente");
+    return res.sendStatus(403);
+  }
   try {
     const body = req.body;
     if (body?.object === "whatsapp_business_account") {
@@ -7572,10 +7666,10 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
           ? `${greeting}\n\nOntem você registrou *${count} ${label}*. Ótimo começo! 💪\n\nQue tal registrar o primeiro gasto de hoje?`
           : `${greeting}\n\nAinda não registrou nenhum gasto ontem. Tudo bem, vamos começar hoje — me conta um gasto que você já teve essa manhã. 😊`;
         await sendText(rawUser, msg, { bypassWindow: true });
-        console.log("[ONBOARDING] Dia 2 enviado para", userNorm, { count });
+        console.log("[ONBOARDING] Dia 2 enviado para", maskPhone(userNorm), { count });
         results.day2_sent += 1;
       } catch (err) {
-        console.error("[ONBOARDING] Erro Dia 2 para", userNorm, ":", err.message);
+        console.error("[ONBOARDING] Erro Dia 2 para", maskPhone(userNorm), ":", err.message);
         results.errors += 1;
       }
 
@@ -7607,10 +7701,10 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
         msg += conclusion;
 
         await sendText(rawUser, msg, { bypassWindow: true });
-        console.log("[ONBOARDING] Dia 3 enviado para", userNorm, { count, total });
+        console.log("[ONBOARDING] Dia 3 enviado para", maskPhone(userNorm), { count, total });
         results.day3_sent += 1;
       } catch (err) {
-        console.error("[ONBOARDING] Erro Dia 3 para", userNorm, ":", err.message);
+        console.error("[ONBOARDING] Erro Dia 3 para", maskPhone(userNorm), ":", err.message);
         results.errors += 1;
       }
     }
@@ -7670,7 +7764,7 @@ async function runReengagementCron({ requestedBy = "cron", forceHour = false } =
 
     // Skip se runAvisoCron já enviou para este usuário hoje (cross-cron dedup)
     if (!shouldNotifyAdminReminder(userNorm)) {
-      console.log(`[REENGAGEMENT] Já recebeu lembrete hoje, pulando: ${userNorm}`);
+      console.log(`[REENGAGEMENT] Já recebeu lembrete hoje, pulando: ${maskPhone(userNorm)}`);
       results.skipped += 1;
       continue;
     }
@@ -7694,10 +7788,10 @@ async function runReengagementCron({ requestedBy = "cron", forceHour = false } =
           total: "0,00",
         });
       }
-      console.log(`[REENGAGEMENT] Enviado para ${userNorm} (${days} dias inativo, withinWindow=${withinWindow})`);
+      console.log(`[REENGAGEMENT] Enviado para ${maskPhone(userNorm)} (${days} dias inativo, withinWindow=${withinWindow})`);
       results.sent += 1;
     } catch (err) {
-      console.error(`[REENGAGEMENT] Erro para ${userNorm}:`, err.message);
+      console.error(`[REENGAGEMENT] Erro para ${maskPhone(userNorm)}:`, err.message);
       results.errors += 1;
     }
   }
@@ -7909,7 +8003,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
       });
       // 🔒 Deduplicação diária: não envia mais de uma vez por dia por usuário
       if (!shouldNotifyAdminReminder(userNorm)) {
-        console.log("[CRON] Lembrete já enviado hoje para:", userNorm);
+        console.log("[CRON] Lembrete já enviado hoje para:", maskPhone(userNorm));
         skippedCount += 1;
         continue;
       }
@@ -7940,7 +8034,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
           }
         } else if (SKIP_TEMPLATE_REMINDER) {
           // Custo reduzido: não envia template para usuários fora da janela
-          console.log("[CRON] SKIP_TEMPLATE_REMINDER ativo — pulando usuário fora da janela:", userNorm);
+          console.log("[CRON] SKIP_TEMPLATE_REMINDER ativo — pulando usuário fora da janela:", maskPhone(userNorm));
           skippedCount += 1;
           continue;
         } else {
@@ -7989,7 +8083,7 @@ async function runAvisoCron({ requestedBy = "cron", dryRun = false, forceHour = 
               threw = false; // Reset error flag
             }
           } catch (fallbackError) {
-            console.error("Erro no fallback do CRON:", { userNorm, to, error: fallbackError.message });
+            console.error("Erro no fallback do CRON:", { user: maskPhone(userNorm), error: fallbackError.message });
           }
         }
       }
