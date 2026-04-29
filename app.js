@@ -50,8 +50,8 @@ import winston from "winston";
 import fs from "fs";
 import cron from "node-cron";
 
-// ✅ FIX: Caminho automático do .env (funciona em qualquer ambiente)
-dotenv.config();
+// override: true garante que .env vence mesmo se PM2 injetou valor vazio anteriormente
+dotenv.config({ override: true });
 
 // ============================
 // LOGGING ESTRUTURADO (Winston)
@@ -2659,6 +2659,11 @@ function isAdminUser(userNorm) {
 }
 
 registerAdminNumber(ADMIN_WA_NUMBER);
+if (!ADMIN_WA_NUMBER || !normalizeUser(ADMIN_WA_NUMBER)) {
+  console.warn("[ADMIN] ⚠️ ADMIN_WA_NUMBER não configurado — comandos admin desativados.");
+} else {
+  console.log("[ADMIN] ✅ Admin configurado:", maskPhone(normalizeUser(ADMIN_WA_NUMBER)), `(${ADMIN_NUMBERS.size} variantes)`);
+}
 
 const splitLongMessage = (text, limit = WA_TEXT_LIMIT) => {
   if (!text) return [];
