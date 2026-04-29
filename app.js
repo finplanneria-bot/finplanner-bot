@@ -3036,6 +3036,7 @@ const USUARIOS_HEADERS = [
   "nome",
   "checkout_id",
   "last_interaction",
+  "last_broadcast_id",
 ];
 const USER_LANC_HEADERS = [
   "row_id",
@@ -3357,6 +3358,79 @@ const setConfigValue = async (key, value) => {
   } else {
     await withRetry(() => sheet.addRow({ key, value }), "add-config-row");
   }
+};
+
+// ============================
+// Sistema de Broadcast (novidades para usuários)
+// ============================
+let broadcastCache = null; // { id, text, fetchedAt }
+const BROADCAST_CACHE_TTL = 5 * 60 * 1000;
+const broadcastReceivedInSession = new Set(); // userNorm que já recebeu nesta sessão
+
+const getBroadcastConfig = async () => {
+  if (broadcastCache && Date.now() - broadcastCache.fetchedAt < BROADCAST_CACHE_TTL) {
+    return broadcastCache;
+  }
+  try {
+    const id = await getConfigValue("broadcast_id");
+    const text = await getConfigValue("broadcast_text");
+    broadcastCache = { id: id || "", text: text || "", fetchedAt: Date.now() };
+  } catch {
+    broadcastCache = { id: "", text: "", fetchedAt: Date.now() };
+  }
+  return broadcastCache;
+};
+
+const checkAndSendBroadcast = async (fromRaw, userNorm) => {
+  try {
+    const bc = await getBroadcastConfig();
+    if (!bc.id || !bc.text) return;
+    if (broadcastReceivedInSession.has(userNorm)) return;
+    // Verificar no Sheets se já recebeu (persiste entre restarts)
+    const sheet = await ensureSheetUsuarios();
+    const rows = await withRetry(() => sheet.getRows(), "get-usuarios-broadcast-check");
+    const candidates = getUserCandidates(userNorm);
+    const row = rows.find((r) => candidates.includes(normalizeUser(getVal(r, "user"))));
+    if (!row) return;
+    const lastReceived = getVal(row, "last_broadcast_id") || "";
+    if (lastReceived >= bc.id) return;
+    await sendText(fromRaw, bc.text);
+    broadcastReceivedInSession.add(userNorm);
+    setVal(row, "last_broadcast_id", bc.id);
+    row.save().catch((e) => console.error("[Broadcast] Erro ao marcar recebido:", e.message));
+  } catch (e) {
+    console.error("[Broadcast] Erro em checkAndSendBroadcast:", e.message);
+  }
+};
+
+const runBroadcastNow = async (messageText) => {
+  const id = new Date().toISOString();
+  await setConfigValue("broadcast_id", id);
+  await setConfigValue("broadcast_text", messageText);
+  broadcastCache = { id, text: messageText, fetchedAt: Date.now() };
+  let sent = 0;
+  let skipped = 0;
+  try {
+    const sheet = await ensureSheetUsuarios();
+    const rows = await withRetry(() => sheet.getRows(), "get-usuarios-broadcast-send");
+    for (const row of rows) {
+      const uNorm = normalizeUser(getVal(row, "user"));
+      if (!uNorm) continue;
+      const ativo = await isUsuarioAtivo(uNorm);
+      if (!ativo) continue;
+      if (!hasRecentUserInteraction(uNorm)) { skipped++; continue; }
+      try {
+        await sendText(uNorm, messageText);
+        broadcastReceivedInSession.add(uNorm);
+        setVal(row, "last_broadcast_id", id);
+        row.save().catch(() => {});
+        sent++;
+      } catch { skipped++; }
+    }
+  } catch (e) {
+    console.error("[Broadcast] Erro em runBroadcastNow:", e.message);
+  }
+  return { sent, skipped };
 };
 
 const saveMessageToLog = async (userRaw, userNorm, tipo, mensagem, buttonId, buttonTitle, direcao = "entrada") => {
@@ -6907,6 +6981,8 @@ async function handleUserText(fromRaw, text) {
     console.error("Log save failed:", err.message)
   );
   recordUserInteraction(userNorm);
+  // Entrega passiva de broadcast pendente antes de processar a mensagem
+  checkAndSendBroadcast(fromRaw, userNorm).catch(() => {});
 
   if (trackMessageAndDetectLoop(userNorm, normalizedMessage)) {
     await sendText(
@@ -6929,6 +7005,28 @@ async function handleUserText(fromRaw, text) {
     if (adminCronCommand) {
       console.log("🧪 Admin cron command received:", { fromRaw, normalizedMessage });
       await sendCronReminderForUser(userNorm, fromRaw, { bypassWindow: true });
+      return;
+    }
+    // broadcast <mensagem> — envia novidade para todos os usuários
+    const broadcastMatch = /^broadcast\s+(.+)/is.exec(trimmed);
+    if (broadcastMatch) {
+      const messageText = broadcastMatch[1].trim();
+      if (messageText.toLowerCase() === "off") {
+        await setConfigValue("broadcast_id", "");
+        broadcastCache = null;
+        await sendText(fromRaw, "✅ Broadcast desativado. Usuários offline não receberão mais.", { bypassWindow: true });
+        return;
+      }
+      await sendText(fromRaw, "📢 Enviando broadcast...", { bypassWindow: true });
+      const result = await runBroadcastNow(messageText);
+      await sendText(
+        fromRaw,
+        `✅ Broadcast criado!\n\n` +
+        `📨 Enviado agora: *${result.sent}* usuários online\n` +
+        `⏳ Aguardando: *${result.skipped}* usuários offline (receberão na próxima mensagem)\n\n` +
+        `_Para cancelar, envie: broadcast off_`,
+        { bypassWindow: true }
+      );
       return;
     }
     // Comando: "ativar 5511999999999 mensal" ou "ativar 5511999999999"
