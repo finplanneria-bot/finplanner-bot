@@ -2863,12 +2863,14 @@ async function sendWA(payload, context = {}) {
 }
 
 const WA_API_TYPING = `https://graph.facebook.com/v21.0/${WA_PHONE_NUMBER_ID}/messages`;
-const sendTypingIndicator = (to) =>
+const sendTypingIndicator = (messageId) => {
+  if (!messageId) return;
   axios.post(
     WA_API_TYPING,
-    { messaging_product: "whatsapp", recipient_type: "individual", to, type: "typing_indicator", typing_indicator: { type: "text" } },
+    { messaging_product: "whatsapp", status: "read", message_id: messageId, typing_indicator: { type: "text" } },
     { headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}`, "Content-Type": "application/json" }, timeout: 5000 }
   ).catch((err) => console.warn("[TYPING] erro:", err.response?.data?.error?.message || err.message));
+};
 
 const buildReminderText = (name, {
   pagarVencidas = 0, pagarHoje = 0,
@@ -6769,10 +6771,10 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-async function handleInteractiveMessage(from, payload) {
+async function handleInteractiveMessage(from, payload, messageId) {
   const { type } = payload;
   const userNorm = normalizeUser(from);
-  sendTypingIndicator(from);
+  sendTypingIndicator(messageId);
   await persistLastInteraction(userNorm);
   const interactionInfo = getLastInteractionInfo(userNorm);
   console.log("📩 Inbound interactive:", {
@@ -7241,12 +7243,12 @@ async function handleNewCategoryFlow(fromRaw, userNorm, text) {
   return false;
 }
 
-async function handleUserText(fromRaw, text) {
+async function handleUserText(fromRaw, text, messageId) {
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
 
-  sendTypingIndicator(fromRaw);
+  sendTypingIndicator(messageId);
 
   // Iniciar persistLastInteraction e detectIntent em paralelo — economiza 2-5s por mensagem
   // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
@@ -7988,11 +7990,11 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               message.profile?.name || message.profile?.pushname || message.profile?.display_name || message.profile?.first_name;
             if (fromNorm) rememberUserName(fromNorm, profileName);
             if (type === "text") {
-              await handleUserText(from, message.text?.body || "");
+              await handleUserText(from, message.text?.body || "", messageId);
             } else if (type === "interactive") {
-              await handleInteractiveMessage(from, message.interactive);
+              await handleInteractiveMessage(from, message.interactive, messageId);
             } else if (type === "button") {
-              await handleInteractiveMessage(from, { type: "button_reply", button_reply: message.button });
+              await handleInteractiveMessage(from, { type: "button_reply", button_reply: message.button }, messageId);
             } else if (type === "audio") {
               const mediaId = message.audio?.id;
               if (mediaId && openaiClient) {
