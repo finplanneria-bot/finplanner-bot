@@ -2862,12 +2862,13 @@ async function sendWA(payload, context = {}) {
   }
 }
 
+const WA_API_TYPING = `https://graph.facebook.com/v21.0/${WA_PHONE_NUMBER_ID}/messages`;
 const sendTypingIndicator = (to) =>
   axios.post(
-    WA_API,
+    WA_API_TYPING,
     { messaging_product: "whatsapp", recipient_type: "individual", to, type: "typing_indicator", typing_indicator: { type: "text" } },
     { headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}`, "Content-Type": "application/json" }, timeout: 5000 }
-  ).catch(() => {});
+  ).catch((err) => console.warn("[TYPING] erro:", err.response?.data?.error?.message || err.message));
 
 const buildReminderText = (name, {
   pagarVencidas = 0, pagarHoje = 0,
