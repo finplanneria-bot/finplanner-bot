@@ -808,9 +808,9 @@ const persistLastInteraction = async (userNorm) => {
       setVal(target, "last_interaction", nowIso);
       await target.save();
     } else {
-      const newRow = await sheet.addRow({ user: canonical, last_interaction: nowIso });
-      rows.push(newRow);
-      rowMap?.set(canonical, newRow);
+      // Usuário não encontrado na aba Usuarios — não criar entrada.
+      // Somente usuários criados via Stripe (upsertUsuarioFromSubscription) devem existir aqui.
+      return;
     }
     console.log("[INBOUND] last_interaction saved", {
       canonicalUserId: canonical,
