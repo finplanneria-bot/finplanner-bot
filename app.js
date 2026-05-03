@@ -2862,6 +2862,13 @@ async function sendWA(payload, context = {}) {
   }
 }
 
+const sendTypingIndicator = (to) =>
+  axios.post(
+    WA_API,
+    { messaging_product: "whatsapp", recipient_type: "individual", to, type: "typing_indicator", typing_indicator: { type: "text" } },
+    { headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}`, "Content-Type": "application/json" }, timeout: 5000 }
+  ).catch(() => {});
+
 const buildReminderText = (name, {
   pagarVencidas = 0, pagarHoje = 0,
   receberVencidas = 0, receberHoje = 0,
@@ -6367,12 +6374,12 @@ const KNOWN_INTENTS = new Set([
 const detectIntentHeuristic = (text) => {
   const lower = (text || "").toLowerCase();
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
+  if (/\b(oi|ola|opa|bom dia|boa tarde|boa noite)\b/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
   // Parcelamento — resposta educativa
-  if (/parcela(mento|s?)|prestac(ao|oes)|em\s+\d+\s+vezes?|parcelad/.test(normalized)) return "ajuda_parcelamento";
+  if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
   // Relatório completo / saldo / balanço
-  if (/saldo|balanco|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes/.test(normalized)) return "relatorio_completo";
+  if (/\bsaldo\b|\bbalanco\b|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes/.test(normalized)) return "relatorio_completo";
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
     return "relatorio_pagamentos_mes";
   }
@@ -6384,8 +6391,8 @@ const detectIntentHeuristic = (text) => {
   }
   if (/\brelat[óo]rios?\b/.test(lower)) return "relatorios_menu";
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
-  if (/\blan[cç]amentos\b|extrato/.test(lower)) return "listar_lancamentos";
-  if (/contas?\s+a\s+pagar|pendentes|a pagar/.test(lower)) return "listar_pendentes";
+  if (/\blan[cç]amentos\b|\bextrato\b/.test(lower)) return "listar_lancamentos";
+  if (/contas?\s+a\s+pagar|\bpendentes?\b|a pagar/.test(lower)) return "listar_pendentes";
   // Vencimentos próximos
   if (/\bvenc(e|er|imento|imentos)\b|o que (devo|falta pagar)|proximas? contas?/.test(normalized)) return "listar_pendentes";
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
@@ -6764,6 +6771,7 @@ app.get("/webhook", (req, res) => {
 async function handleInteractiveMessage(from, payload) {
   const { type } = payload;
   const userNorm = normalizeUser(from);
+  sendTypingIndicator(from);
   await persistLastInteraction(userNorm);
   const interactionInfo = getLastInteractionInfo(userNorm);
   console.log("📩 Inbound interactive:", {
@@ -7236,6 +7244,8 @@ async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
+
+  sendTypingIndicator(fromRaw);
 
   // Iniciar persistLastInteraction e detectIntent em paralelo — economiza 2-5s por mensagem
   // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
