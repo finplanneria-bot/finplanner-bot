@@ -808,9 +808,9 @@ const persistLastInteraction = async (userNorm) => {
       setVal(target, "last_interaction", nowIso);
       await target.save();
     } else {
-      const newRow = await sheet.addRow({ user: canonical, last_interaction: nowIso });
-      rows.push(newRow);
-      rowMap?.set(canonical, newRow);
+      // Usuário não encontrado na aba Usuarios — não criar entrada.
+      // Somente usuários criados via Stripe (upsertUsuarioFromSubscription) devem existir aqui.
+      return;
     }
     console.log("[INBOUND] last_interaction saved", {
       canonicalUserId: canonical,
@@ -3928,6 +3928,38 @@ const formatCategoryLines = (rows) => {
   return aggregates.map((item) => `• ${item.label}: ${formatCurrencyBR(item.total)}`).join("\n");
 };
 
+const formatCategoryLinesWithDescriptions = (rows) => {
+  const groups = new Map();
+  for (const row of rows) {
+    const amount = toNumber(getVal(row, "valor"));
+    let slug = (getVal(row, "categoria") || "").toString();
+    let emoji = getVal(row, "categoria_emoji");
+    if (!slug) {
+      const fallback = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo"));
+      slug = fallback.slug;
+      emoji = emoji || fallback.emoji;
+    }
+    const def = getCategoryDefinition(slug) || getCategoryDefinition("outros");
+    const key = def?.slug || slug || "outros";
+    const label = formatCategoryLabel(key, emoji || def?.emoji);
+    const desc = (getVal(row, "descricao") || getVal(row, "conta") || "").toString().trim();
+    const entry = groups.get(key) || { label, total: 0, descriptions: [] };
+    entry.total += amount || 0;
+    entry.label = label;
+    if (desc) entry.descriptions.push(desc);
+    groups.set(key, entry);
+  }
+  if (!groups.size) return "✅ Nenhuma categoria encontrada no período.";
+  const sorted = Array.from(groups.values()).sort((a, b) => b.total - a.total);
+  return sorted.map((item) => {
+    let line = `• ${item.label}: ${formatCurrencyBR(item.total)}`;
+    if (item.descriptions.length) {
+      line += "\n" + item.descriptions.map((d) => `  ↳ ${d}`).join("\n");
+    }
+    return line;
+  }).join("\n");
+};
+
 const formatSaldoLine = (recebido, pago) => {
   const saldo = recebido - pago;
   const saldoText = formatSignedCurrencyBR(saldo);
@@ -4731,13 +4763,13 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
       if (receipts.length) {
         message += `\n\n${DIV}`;
         message += `\n💵 *Recebimentos* (${receipts.length} lançamento${receipts.length > 1 ? "s" : ""})`;
-        message += `\n${formatCategoryLines(receipts)}`;
+        message += `\n${formatCategoryLinesWithDescriptions(receipts)}`;
         message += `\n💵 Recebido: ${formatCurrencyBR(totalReceived)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
       }
       if (expenses.length) {
         message += `\n\n${DIV}`;
         message += `\n💸 *Contas a Pagar* (${expenses.length} lançamento${expenses.length > 1 ? "s" : ""})`;
-        message += `\n${formatCategoryLines(expenses)}`;
+        message += `\n${formatCategoryLinesWithDescriptions(expenses)}`;
         message += `\n✅ Pago: ${formatCurrencyBR(totalPaid)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingExpenses)}`;
       }
       message += `\n\n${DIV}`;
