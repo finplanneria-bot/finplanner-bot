@@ -362,6 +362,13 @@ setInterval(() => {
       cleaned++;
     }
   }
+  // Inundação: limpar entradas com janela expirada (mantém memória enxuta)
+  if (typeof userMessageCounts !== "undefined") {
+    const floodCutoff = Date.now() - (5 * 60 * 1000) * 2;
+    for (const [k, v] of userMessageCounts.entries()) {
+      if (v.windowStart < floodCutoff) userMessageCounts.delete(k);
+    }
+  }
   if (cleaned > 0) {
     logger.info("[Memory] Limpeza de Maps de usuários inativos", { removed: cleaned });
   }
@@ -2380,6 +2387,37 @@ const CATEGORY_DEFINITIONS = [
     ],
   },
   {
+    slug: "banco_financeiro",
+    label: "Banco / Financeiro",
+    emoji: "🏦",
+    description: "Operações bancárias: cheque especial, anuidade, juros, IOF, tarifas, empréstimos, fatura.",
+    keywords: [
+      "cheque especial",
+      "fatura do cartao",
+      "fatura cartao",
+      "fatura do cartão",
+      "fatura cartão",
+      "anuidade",
+      "anuidade cartao",
+      "anuidade cartão",
+      "juros",
+      "iof",
+      "tarifa bancaria",
+      "tarifa bancária",
+      "tarifa do banco",
+      "tarifa banco",
+      "emprestimo",
+      "empréstimo",
+      "financiamento",
+      "parcela do banco",
+      "limite cheque",
+      "limite do cheque",
+      "rotativo cartao",
+      "rotativo cartão",
+      "saque emergencial",
+    ],
+  },
+  {
     slug: "outros",
     label: "Outros",
     emoji: "🧩",
@@ -2530,22 +2568,31 @@ const buildCategoryPrompt = async (description, tipo, userNorm = null) => {
           type: "input_text",
           text: `Você é um classificador inteligente de categorias financeiras.
 
-TAREFA: Analisar o lançamento e escolher ou criar a categoria mais adequada.
+TAREFA: Analisar o lançamento e (1) escolher/criar a categoria mais adequada, (2) gerar uma descrição limpa e organizada do lançamento.
 
-REGRAS:
+REGRAS DE CATEGORIA:
 1. Prefira categorias existentes quando forem realmente adequadas
 2. Crie nova categoria SOMENTE se nenhuma existente for específica o suficiente
 3. A categoria "outros" deve ser usada APENAS como último recurso absoluto
 4. Slugs em snake_case minúsculo (ex: "pets", "streaming", "delivery_app")
 5. Labels curtos e descritivos (máximo 40 caracteres)
 
+REGRAS DE cleanDescription:
+- Versão limpa, organizada, com ortografia correta da descrição original
+- Máximo 60 caracteres
+- Primeira letra maiúscula
+- Remove vírgulas/pontos soltos no início/fim
+- Corrige erros óbvios de ortografia ("paderia" → "Padaria", "mêrcado" → "Mercado")
+- Mantém o sentido essencial — não invente informações novas
+- Se a descrição já está boa, devolve com pequena formatação
+
 FORMATO DE RESPOSTA — responda SOMENTE com JSON válido, sem texto adicional:
 
 Se usar categoria existente:
-{"slug":"nome_slug","isNew":false}
+{"slug":"nome_slug","isNew":false,"cleanDescription":"Texto limpo"}
 
 Se criar categoria nova:
-{"slug":"slug_novo","label":"Nome da Categoria","emoji":"🏷️","description":"Descrição breve","keywords":"palavra1,palavra2,palavra3","isNew":true}`,
+{"slug":"slug_novo","label":"Nome da Categoria","emoji":"🏷️","description":"Descrição breve","keywords":"palavra1,palavra2,palavra3","isNew":true,"cleanDescription":"Texto limpo"}`,
         },
       ],
     },
@@ -2583,6 +2630,9 @@ const resolveCategory = async (description, tipo, userNorm) => {
 
     if (parsed && parsed.slug) {
       const cleanSlug = (parsed.slug || "").toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/__+/g, "_").replace(/^_|_$/g, "");
+      const cleanDesc = (typeof parsed.cleanDescription === "string" && parsed.cleanDescription.trim())
+        ? parsed.cleanDescription.trim().slice(0, 80)
+        : null;
 
       if (parsed.isNew && parsed.label) {
         saveCustomCategory({
@@ -2594,17 +2644,17 @@ const resolveCategory = async (description, tipo, userNorm) => {
           created_by: userNorm || "",
         }).catch((err) => console.error("⚠️ Erro ao salvar nova categoria:", err.message));
 
-        return { slug: cleanSlug, emoji: parsed.emoji || "🏷️" };
+        return { slug: cleanSlug, emoji: parsed.emoji || "🏷️", cleanDescription: cleanDesc };
       }
 
       const baseDef = getCategoryDefinition(cleanSlug);
-      if (baseDef) return { slug: baseDef.slug, emoji: baseDef.emoji };
+      if (baseDef) return { slug: baseDef.slug, emoji: baseDef.emoji, cleanDescription: cleanDesc };
 
       const customCats = await loadCustomCategories(userNorm);
       const customDef = customCats.find((c) => c.slug === cleanSlug);
       if (customDef) {
         incrementCategoryUsage(cleanSlug).catch(() => {});
-        return { slug: customDef.slug, emoji: customDef.emoji };
+        return { slug: customDef.slug, emoji: customDef.emoji, cleanDescription: cleanDesc };
       }
     }
 
@@ -4199,6 +4249,32 @@ const trackMessageAndDetectLoop = (userNorm, normalizedMessage) => {
   return history.length >= 3 && history.slice(-3).every((m) => m === normalizedMessage);
 };
 
+// Inundação: muitas mensagens em curto período sem progresso → mostra mensagem de pausa
+const userMessageCounts = new Map(); // userNorm → { count, windowStart, alerted }
+const FLOOD_WINDOW_MS = 5 * 60 * 1000; // 5 minutos
+const FLOOD_THRESHOLD = 15;
+
+const trackMessageFlood = (userNorm) => {
+  const now = Date.now();
+  const entry = userMessageCounts.get(userNorm) || { count: 0, windowStart: now, alerted: false };
+  if (now - entry.windowStart > FLOOD_WINDOW_MS) {
+    userMessageCounts.set(userNorm, { count: 1, windowStart: now, alerted: false });
+    return false;
+  }
+  entry.count += 1;
+  if (entry.count >= FLOOD_THRESHOLD && !entry.alerted) {
+    entry.alerted = true;
+    userMessageCounts.set(userNorm, entry);
+    return true;
+  }
+  userMessageCounts.set(userNorm, entry);
+  return false;
+};
+
+const resetFloodCount = (userNorm) => {
+  userMessageCounts.delete(userNorm);
+};
+
 const startReportCategoryFlow = async (to, userNorm, category) => {
   sessionPeriod.set(userNorm, { mode: "report", category, awaiting: null });
   await sendPeriodoButtons(to, `REL:PER:${category}`);
@@ -5556,6 +5632,8 @@ const findRecentDuplicate = async (userNorm, payload) => {
 
 async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
   const statusSource = options.statusSource || "auto";
+  // Reset contador de inundação após registro bem-sucedido
+  resetFloodCount(userNorm);
 
   if (!options.skipDuplicateCheck) {
     try {
@@ -5865,13 +5943,15 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   if (!data || Number.isNaN(data.getTime())) data = new Date();
   const iso = data.toISOString();
   const categoria = await resolveCategory(parsed.descricao, parsed.tipo, userNorm);
+  // IA pode devolver versão limpa da descrição — preferir essa quando disponível
+  const finalDescricao = (categoria && categoria.cleanDescription) ? categoria.cleanDescription : parsed.descricao;
   const payload = {
     row_id: generateRowId(),
     timestamp: new Date().toISOString(),
     user: userNorm,
     user_raw: fromRaw,
     tipo: parsed.tipo,
-    conta: parsed.descricao,
+    conta: finalDescricao,
     valor: parsed.valor,
     vencimento_iso: iso,
     vencimento_br: formatBRDate(data),
@@ -5886,7 +5966,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     recorrencia_valor: "",
     categoria: categoria.slug,
     categoria_emoji: categoria.emoji,
-    descricao: parsed.descricao,
+    descricao: finalDescricao,
   };
   if (!parsed.statusDetected) {
     payload.status = "pendente";
@@ -6514,6 +6594,128 @@ const detectIntent = async (text, userNorm = null) => {
 };
 
 // ============================
+// Intenção + período em uma única chamada de IA
+// ============================
+const buildIntentWithContextPrompt = (text) => [
+  {
+    role: "system",
+    content: [
+      {
+        type: "input_text",
+        text: `Você é um assistente especializado em intenções financeiras no WhatsApp.
+
+RESPONDA SEMPRE com JSON válido, sem markdown:
+{"intent":"slug"} — para qualquer intenção
+{"intent":"slug","period":"codigo"} — quando há período mencionado
+
+PERÍODOS VÁLIDOS (use exatamente assim):
+"mes_atual" | "mes_passado" | "ano_atual" | "ano_passado"
+"YYYY-MM" (ex: "2026-04" para abril de 2026)
+"YYYY" (ex: "2025" para o ano inteiro)
+
+INTENÇÕES VÁLIDAS:
+${Array.from(KNOWN_INTENTS).join(", ")}
+
+REGRAS:
+- Seja MUITO tolerante com erros de ortografia, abreviações e linguagem natural ("kuanto gastei mes pasado" → entenda)
+- Para perguntas sobre quantos/quanto/qual gastei/recebi/devo, use intenções de relatório (relatorio_pagamentos_mes, relatorio_recebimentos_mes, relatorio_contas_pagar_mes, relatorio_completo)
+- "quanto gastei em abril" → {"intent":"relatorio_pagamentos_mes","period":"2026-04"}
+- "meus gastos mês passado" → {"intent":"relatorio_pagamentos_mes","period":"mes_passado"}
+- "saldo do ano passado" → {"intent":"relatorio_completo","period":"ano_passado"}
+- "paguei 50 mercado" → {"intent":"registrar_pagamento"}
+- Para registrar valor financeiro com descrição, use registrar_pagamento ou registrar_recebimento
+- "desconhecido" SOMENTE se realmente não souber
+
+🚫 HORÁRIOS NÃO SÃO VALORES: "às 11", "11h", "14h30" = horário, não dinheiro`,
+      },
+    ],
+  },
+  {
+    role: "user",
+    content: [
+      {
+        type: "input_text",
+        text: `Mensagem: "${text}"\n\nResponda SOMENTE com o JSON.`,
+      },
+    ],
+  },
+];
+
+const parsePeriodCode = (code) => {
+  if (!code || typeof code !== "string") return null;
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  if (code === "mes_atual") {
+    return { start: startOfMonth(y, m), end: endOfMonth(y, m) };
+  }
+  if (code === "mes_passado") {
+    const py = m === 0 ? y - 1 : y;
+    const pm = m === 0 ? 11 : m - 1;
+    return { start: startOfMonth(py, pm), end: endOfMonth(py, pm) };
+  }
+  if (code === "ano_atual") {
+    return { start: new Date(y, 0, 1, 0, 0, 0), end: new Date(y, 11, 31, 23, 59, 59) };
+  }
+  if (code === "ano_passado") {
+    return { start: new Date(y - 1, 0, 1, 0, 0, 0), end: new Date(y - 1, 11, 31, 23, 59, 59) };
+  }
+  const monthMatch = /^(\d{4})-(\d{2})$/.exec(code);
+  if (monthMatch) {
+    const py = Number(monthMatch[1]);
+    const pm = Number(monthMatch[2]) - 1;
+    if (pm >= 0 && pm <= 11 && py >= 2000 && py <= 2100) {
+      return { start: startOfMonth(py, pm), end: endOfMonth(py, pm) };
+    }
+  }
+  const yearMatch = /^(\d{4})$/.exec(code);
+  if (yearMatch) {
+    const py = Number(yearMatch[1]);
+    if (py >= 2000 && py <= 2100) {
+      return { start: new Date(py, 0, 1, 0, 0, 0), end: new Date(py, 11, 31, 23, 59, 59) };
+    }
+  }
+  return null;
+};
+
+const detectIntentWithContext = async (text, userNorm = null) => {
+  const fallbackIntent = detectIntentHeuristic(text);
+  if (!text || !openaiClient) return { intent: fallbackIntent };
+  // Se a heurística já identificou intenção específica e a mensagem não tem indício de período,
+  // economiza chamada à IA. Caso tenha indício de período, sempre passa pela IA para extrair.
+  const hasPeriodHint = /\b(mes|mês|ano|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro|janeiro|fevereiro|marco|março|passado|anterior|atual)\b/i.test(text);
+  if (fallbackIntent !== "desconhecido" && !hasPeriodHint) return { intent: fallbackIntent };
+  if (!checkOpenAIQuota(userNorm)) {
+    console.warn("[OpenAI] Quota por usuário excedida:", userNorm);
+    return { intent: fallbackIntent };
+  }
+  try {
+    const output = await callOpenAI({
+      model: OPENAI_INTENT_MODEL,
+      input: buildIntentWithContextPrompt(text),
+      temperature: 0,
+      maxOutputTokens: 80,
+    });
+    let parsed = null;
+    try {
+      const jsonStr = (output || "").trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      // Tentar extrair só a primeira palavra como slug puro (compatibilidade)
+      const fallbackSlug = normalizeIntent((output || "").trim().split(/\s|\n/)[0]);
+      if (fallbackSlug) return { intent: fallbackSlug };
+    }
+    if (parsed && parsed.intent && KNOWN_INTENTS.has(parsed.intent)) {
+      const period = parsed.period ? parsePeriodCode(parsed.period) : null;
+      return { intent: parsed.intent, period };
+    }
+  } catch (error) {
+    console.error("Falha ao consultar OpenAI para intenção+período:", error?.message || error);
+  }
+  return { intent: fallbackIntent };
+};
+
+// ============================
 // Webhook
 // ============================
 app.get("/webhook", (req, res) => {
@@ -6896,8 +7098,23 @@ async function handleNewCategoryFlow(fromRaw, userNorm, text) {
   const input = text.trim();
 
   if (state.awaiting === "name") {
+    // Detectar tentativa de criar várias categorias de uma vez (lista separada por vírgula)
+    const commaList = input.split(",").map((s) => s.trim()).filter((s) => s.length >= 2 && s.length <= 40);
+    if (commaList.length >= 2) {
+      await sendText(
+        fromRaw,
+        `Vi que você escreveu *${commaList.length} nomes*. Crio uma categoria por vez. 😊\n\n` +
+        `Quer começar com *${commaList[0]}*? Envie só esse nome — depois fazemos as outras.\n\n` +
+        `_Ou envie *cancelar* para sair._`
+      );
+      return true;
+    }
     if (!input || input.length < 2 || input.length > 40) {
-      await sendText(fromRaw, "Nome muito curto ou longo. Use entre 2 e 40 caracteres. Ou *cancelar* para sair.");
+      await sendText(
+        fromRaw,
+        `O nome precisa ter entre 2 e 40 caracteres. Ex: *Academia*, *Pets*, *Streaming*.\n\n` +
+        `_Envie *cancelar* para sair._`
+      );
       return true;
     }
     const slug = normalizeDiacritics(input)
@@ -6919,8 +7136,10 @@ async function handleNewCategoryFlow(fromRaw, userNorm, text) {
     sessionNewCategory.set(userNorm, { ...state, awaiting: "keywords", name: input, slug, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
     await sendText(
       fromRaw,
-      `Ótimo! Agora me diga as *palavras-chave* para reconhecer *${input}* automaticamente.\n\n` +
-      `Separe por vírgula:\n_Ex: academia, musculação, gym, crossfit_`
+      `*Etapa 2 de 3* ✏️\n\n` +
+      `Agora me diga as *palavras-chave* para reconhecer *${input}* automaticamente.\n\n` +
+      `Separe por vírgula:\n_Ex: academia, musculação, gym, crossfit_\n\n` +
+      `_Envie *cancelar* a qualquer momento para sair._`
     );
     return true;
   }
@@ -6928,20 +7147,34 @@ async function handleNewCategoryFlow(fromRaw, userNorm, text) {
   if (state.awaiting === "keywords") {
     const kwList = input.split(",").map((k) => k.trim()).filter((k) => k.length >= 2);
     if (!kwList.length) {
-      await sendText(fromRaw, "Adicione pelo menos uma palavra-chave com 2 ou mais letras. Ou *cancelar* para sair.");
+      await sendText(fromRaw, "Adicione pelo menos uma palavra-chave com 2 ou mais letras (separadas por vírgula). Ou *cancelar* para sair.");
       return true;
     }
     const keywords = kwList.slice(0, 20).join(",");
     sessionNewCategory.set(userNorm, { ...state, awaiting: "emoji", keywords, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
     await sendText(
       fromRaw,
-      `Quase pronto! Escolha um *emoji* para *${state.name}* (ou envie *pular* para usar 🏷️):`
+      `*Etapa 3 de 3* 🎨\n\n` +
+      `Escolha um *emoji* para *${state.name}*.\n\n` +
+      `_Ex: 🏋️, 💰, 🍕_\n\n` +
+      `_Envie *pular* para usar 🏷️ — ou *cancelar* para sair._`
     );
     return true;
   }
 
   if (state.awaiting === "emoji") {
-    const emojiMatch = [...input].find((c) => /\p{Emoji}/u.test(c) && c !== "*");
+    const inputClean = input.trim();
+    const skipRequest = /^(pular|skip|nenhum|nao|não)$/i.test(inputClean);
+    const emojiMatch = [...inputClean].find((c) => /\p{Emoji}/u.test(c) && c !== "*");
+    if (!skipRequest && !emojiMatch) {
+      await sendText(
+        fromRaw,
+        `Não vi nenhum emoji aí. 🤔\n\n` +
+        `Envie um *emoji* (ex: 🏋️, 💰, 🍕) ou *pular* para usar 🏷️.\n\n` +
+        `_Ou *cancelar* para sair._`
+      );
+      return true;
+    }
     const finalEmoji = emojiMatch || "🏷️";
     sessionNewCategory.delete(userNorm);
 
@@ -6975,7 +7208,7 @@ async function handleUserText(fromRaw, text) {
   // Iniciar persistLastInteraction e detectIntent em paralelo — economiza 2-5s por mensagem
   // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
   const persistPromise = persistLastInteraction(userNorm);
-  const intentPromise = detectIntent(trimmed, userNorm);
+  const intentPromise = detectIntentWithContext(trimmed, userNorm);
 
   await persistPromise;
   const interactionInfo = getLastInteractionInfo(userNorm);
@@ -7003,6 +7236,19 @@ async function handleUserText(fromRaw, text) {
       `Se preferir falar com alguém, mande um e-mail: suporte@finplanner.app`
     );
     lastMessagesHistory.delete(userNorm);
+    return;
+  }
+
+  if (trackMessageFlood(userNorm)) {
+    resetSession(userNorm);
+    await sendText(
+      fromRaw,
+      `Notei que estamos com dificuldade. 🙏\n\n` +
+      `Vou pausar aqui para te ajudar melhor:\n\n` +
+      `• Digite *menu* — opções com botões\n` +
+      `• Digite *ajuda* — exemplos de uso\n` +
+      `• Suporte: suporte@finplanner.app`
+    );
     return;
   }
 
@@ -7132,7 +7378,7 @@ async function handleUserText(fromRaw, text) {
 
   // 🔀 Pivot: lançamento financeiro cancela silenciosamente qualquer sessão em andamento
   if (hasActiveSession(userNorm)) {
-    const pivotIntent = await intentPromise;
+    const { intent: pivotIntent } = await intentPromise;
     if (pivotIntent === "registrar_pagamento" || pivotIntent === "registrar_recebimento") {
       console.log("[Pivot] Sessão cancelada para registrar lançamento:", { userNorm, pivotIntent });
       resetSession(userNorm);
@@ -7164,9 +7410,10 @@ async function handleUserText(fromRaw, text) {
     sessionNewCategory.set(userNorm, { awaiting: "name", expiresAt: Date.now() + SESSION_TIMEOUT_MS });
     await sendText(
       fromRaw,
-      `📂 Vamos criar uma nova categoria!\n\n` +
+      `📂 *Etapa 1 de 3* — Nova categoria!\n\n` +
       `Qual será o *nome* da categoria?\n` +
-      `_Ex: Academia, Pets, Filhos, Streaming_`
+      `_Ex: Academia, Pets, Filhos, Streaming_\n\n` +
+      `_Envie *cancelar* a qualquer momento para sair._`
     );
     return;
   }
@@ -7230,8 +7477,16 @@ async function handleUserText(fromRaw, text) {
     return;
   }
 
-  // Aguardar resultado do detectIntent que foi iniciado em paralelo no início da função
-  const intent = await intentPromise;
+  // Aguardar resultado do detectIntentWithContext que foi iniciado em paralelo no início da função
+  const { intent, period: intentPeriod } = await intentPromise;
+  // Helper para fallback ao mês atual quando IA não extraiu período
+  const defaultMonthRange = () => {
+    const now = new Date();
+    return {
+      start: startOfMonth(now.getFullYear(), now.getMonth()),
+      end: endOfMonth(now.getFullYear(), now.getMonth()),
+    };
+  };
   switch (intent) {
     case "boas_vindas":
       console.log("[handleUserText] Intent boas_vindas → sendWelcomeList:", { fromRaw, userNorm, trimmed });
@@ -7245,38 +7500,22 @@ async function handleUserText(fromRaw, text) {
       await sendRelatoriosButtons(fromRaw);
       break;
     case "relatorio_pagamentos_mes": {
-      const now = new Date();
-      const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
-      };
+      const range = intentPeriod || defaultMonthRange();
       await showReportByCategory(fromRaw, userNorm, "pag", range);
       break;
     }
     case "relatorio_recebimentos_mes": {
-      const now = new Date();
-      const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
-      };
+      const range = intentPeriod || defaultMonthRange();
       await showReportByCategory(fromRaw, userNorm, "rec", range);
       break;
     }
     case "relatorio_contas_pagar_mes": {
-      const now = new Date();
-      const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
-      };
+      const range = intentPeriod || defaultMonthRange();
       await showReportByCategory(fromRaw, userNorm, "cp", range);
       break;
     }
     case "relatorio_completo": {
-      const now = new Date();
-      const range = {
-        start: startOfMonth(now.getFullYear(), now.getMonth()),
-        end: endOfMonth(now.getFullYear(), now.getMonth()),
-      };
+      const range = intentPeriod || defaultMonthRange();
       await showReportByCategory(fromRaw, userNorm, "all", range);
       break;
     }
