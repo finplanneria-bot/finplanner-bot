@@ -6367,7 +6367,7 @@ const KNOWN_INTENTS = new Set([
 const detectIntentHeuristic = (text) => {
   const lower = (text || "").toLowerCase();
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  if (/(oi|ola|opa|bom dia|boa tarde|boa noite)/.test(normalized)) return "boas_vindas";
+  if (/\b(oi|ola|opa|bom dia|boa tarde|boa noite)\b/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
   // Parcelamento — resposta educativa
   if (/parcela(mento|s?)|prestac(ao|oes)|em\s+\d+\s+vezes?|parcelad/.test(normalized)) return "ajuda_parcelamento";
