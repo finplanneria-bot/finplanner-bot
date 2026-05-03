@@ -4491,10 +4491,14 @@ const parseRegisterText = (text) => {
     descricao = filtered.join(" ");
   }
 
+  // Remove leading punctuation that ficou após remover o valor (ex: ", injeção..." → "injeção...")
+  descricao = descricao.replace(/^[\s.,;:!?\-–—]+/, "").trim();
   // Remove leading prepositions/articles that ended up at the start after cleaning
   descricao = descricao.replace(/^(com|de|do|da|no|na|nos|nas|pro|pra|para|num|numa|o|a|os|as|um|uma)\s+/gi, "").trim();
   // Remove trailing loose punctuation
   descricao = descricao.replace(/[\s.,;!?]+$/, "").trim();
+  // Capitalizar primeira letra para apresentação mais limpa
+  if (descricao) descricao = descricao.charAt(0).toUpperCase() + descricao.slice(1);
 
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
 
