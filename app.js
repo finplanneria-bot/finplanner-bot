@@ -2862,6 +2862,13 @@ async function sendWA(payload, context = {}) {
   }
 }
 
+const sendTypingIndicator = (to) =>
+  axios.post(
+    WA_API,
+    { messaging_product: "whatsapp", recipient_type: "individual", to, type: "typing_indicator", typing_indicator: { type: "text" } },
+    { headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}`, "Content-Type": "application/json" }, timeout: 5000 }
+  ).catch(() => {});
+
 const buildReminderText = (name, {
   pagarVencidas = 0, pagarHoje = 0,
   receberVencidas = 0, receberHoje = 0,
@@ -6764,6 +6771,7 @@ app.get("/webhook", (req, res) => {
 async function handleInteractiveMessage(from, payload) {
   const { type } = payload;
   const userNorm = normalizeUser(from);
+  sendTypingIndicator(from);
   await persistLastInteraction(userNorm);
   const interactionInfo = getLastInteractionInfo(userNorm);
   console.log("📩 Inbound interactive:", {
@@ -7236,6 +7244,8 @@ async function handleUserText(fromRaw, text) {
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
+
+  sendTypingIndicator(fromRaw);
 
   // Iniciar persistLastInteraction e detectIntent em paralelo — economiza 2-5s por mensagem
   // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
