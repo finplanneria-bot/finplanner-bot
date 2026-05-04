@@ -6720,6 +6720,50 @@ const parsePeriodCode = (code) => {
   return null;
 };
 
+const MONTH_NAME_TO_INDEX = {
+  janeiro: 0, jan: 0,
+  fevereiro: 1, fev: 1,
+  marco: 2, mar: 2,
+  abril: 3, abr: 3,
+  maio: 4, mai: 4,
+  junho: 5, jun: 5,
+  julho: 6, jul: 6,
+  agosto: 7, ago: 7,
+  setembro: 8, set: 8,
+  outubro: 9, out: 9,
+  novembro: 10, nov: 10,
+  dezembro: 11, dez: 11,
+};
+
+const parseMonthNameInput = (text) => {
+  if (!text) return null;
+  const normalized = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  const nameMatch = /^([a-z]{3,9})(?:\s+(?:de\s+)?(\d{4}))?$/.exec(normalized);
+  if (nameMatch) {
+    const monthIdx = MONTH_NAME_TO_INDEX[nameMatch[1]];
+    if (monthIdx === undefined) return null;
+    const year = nameMatch[2] ? Number(nameMatch[2]) : new Date().getFullYear();
+    if (year < 2000 || year > 2100) return null;
+    return { start: startOfMonth(year, monthIdx), end: endOfMonth(year, monthIdx) };
+  }
+  const numericMatch = /^(\d{1,2})[\/\-](\d{2,4})$/.exec(normalized);
+  if (numericMatch) {
+    const monthIdx = Number(numericMatch[1]) - 1;
+    let year = Number(numericMatch[2]);
+    if (year < 100) year += 2000;
+    if (monthIdx < 0 || monthIdx > 11 || year < 2000 || year > 2100) return null;
+    return { start: startOfMonth(year, monthIdx), end: endOfMonth(year, monthIdx) };
+  }
+  const yearOnlyMatch = /^(\d{4})$/.exec(normalized);
+  if (yearOnlyMatch) {
+    const year = Number(yearOnlyMatch[1]);
+    if (year >= 2000 && year <= 2100) {
+      return { start: new Date(year, 0, 1, 0, 0, 0), end: new Date(year, 11, 31, 23, 59, 59) };
+    }
+  }
+  return null;
+};
+
 const detectIntentWithContext = async (text, userNorm = null) => {
   const fallbackIntent = detectIntentHeuristic(text);
   if (!text || !openaiClient) return { intent: fallbackIntent };
@@ -7532,6 +7576,14 @@ async function handleUserText(fromRaw, text, messageId) {
       end: endOfMonth(now.getFullYear(), now.getMonth()),
     };
   };
+  // Atalho: mensagem é só nome de mês ("Fevereiro", "fev", "Janeiro 2025", "02/2025", "2025")
+  // → relatório completo do período. Roda antes do switch para não depender de intent IA.
+  const monthOnlyRange = parseMonthNameInput(trimmed);
+  if (monthOnlyRange) {
+    console.log("[handleUserText] Mês solto detectado → relatório completo:", { fromRaw, userNorm, trimmed });
+    await showReportByCategory(fromRaw, userNorm, "all", monthOnlyRange);
+    return;
+  }
   switch (intent) {
     case "boas_vindas":
       console.log("[handleUserText] Intent boas_vindas → sendWelcomeList:", { fromRaw, userNorm, trimmed });
