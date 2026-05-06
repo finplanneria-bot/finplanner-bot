@@ -3451,6 +3451,7 @@ const checkAndSendBroadcast = async (fromRaw, userNorm) => {
     const bc = await getBroadcastConfig();
     if (!bc.id || !bc.text) return;
     if (broadcastReceivedInSession.has(userNorm)) return;
+    if (hasActiveSession(userNorm)) return; // não interrompe fluxo em andamento
     // Verificar no Sheets se já recebeu (persiste entre restarts)
     const sheet = await ensureSheetUsuarios();
     const rows = await withRetry(() => sheet.getRows(), "get-usuarios-broadcast-check");
@@ -4350,7 +4351,7 @@ const hasActiveSession = (userNorm) =>
   sessionDuplicateConfirm.has(userNorm) ||
   sessionNewCategory.has(userNorm);
 
-const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|inicio|início)$/i;
+const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|excluir|parar|pare|stop|inicio|início)$/i;
 const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
 
 const sendCancelMessage = async (to, { reason } = {}) => {
@@ -4609,13 +4610,17 @@ const parseRegisterText = (text) => {
     descricao = filtered.join(" ");
   }
 
-  // Remove leading punctuation that ficou após remover o valor (ex: ", injeção..." → "injeção...")
+  // Remove leading punctuation (ex: ", injeção..." → "injeção...")
   descricao = descricao.replace(/^[\s.,;:!?\-–—]+/, "").trim();
-  // Remove leading prepositions/articles that ended up at the start after cleaning
+  // Remove leading prepositions/articles
   descricao = descricao.replace(/^(com|de|do|da|no|na|nos|nas|pro|pra|para|num|numa|o|a|os|as|um|uma)\s+/gi, "").trim();
+  // Remove trailing prepositions (ex: "salário de" → "salário")
+  descricao = descricao.replace(/\s+(de|do|da|dos|das|para|em|no|na|nos|nas|com|por|pro|pra|ao|à)\s*$/gi, "").trim();
   // Remove trailing loose punctuation
-  descricao = descricao.replace(/[\s.,;!?]+$/, "").trim();
-  // Capitalizar primeira letra para apresentação mais limpa
+  descricao = descricao.replace(/[\s.,;:!?\-–—]+$/, "").trim();
+  // Segunda passada para leading — pode restar após remover trailing palavras
+  descricao = descricao.replace(/^[\s.,;:!?\-–—]+/, "").trim();
+  // Capitalizar primeira letra
   if (descricao) descricao = descricao.charAt(0).toUpperCase() + descricao.slice(1);
 
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
@@ -5076,7 +5081,7 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   if (deleteStateExpired(state)) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   if (!confirmed) {
     resetSession(userNorm);
@@ -5155,7 +5160,7 @@ async function handleEditFlow(fromRaw, userNorm, text) {
   if (state.expiresAt && Date.now() > state.expiresAt) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   if (state.awaiting === "index") {
     const indexes = resolveSelectionIndexes(text, state.rows || []);
@@ -5344,7 +5349,7 @@ async function handleFixedRegisterFlow(fromRaw, userNorm, text) {
   if (state.expiresAt && Date.now() > state.expiresAt) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   const trimmed = (text || "").trim();
   if (!trimmed) {
@@ -5403,7 +5408,7 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
   if (deleteStateExpired(state)) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   if (state.awaiting === "index") {
     const indexes = resolveSelectionIndexes(text, state.rows || []);
@@ -5797,7 +5802,7 @@ async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   if (statusStateExpired(state)) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
   if (!normalized) {
@@ -5823,7 +5828,7 @@ async function handlePaymentCodeFlow(fromRaw, userNorm, text) {
   if (paymentCodeStateExpired(state)) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   if (state.awaiting !== "input") return false;
   const code = text.trim();
@@ -5859,18 +5864,18 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   if (payStateExpired(state)) {
     resetSession(userNorm);
     await sendCancelMessage(fromRaw, { reason: "timeout" });
-    return true;
+    return false; // mensagem não consumida — processa como comando novo
   }
   const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
   if (state.awaiting === "index") {
-    if (/cancel/.test(normalizedText)) {
+    if (ESCAPE_REGEX.test(text.trim())) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
     }
     const indexes = resolveSelectionIndexes(text, state.rows || []);
     if (!indexes.length) {
-      await sendText(fromRaw, "Não entendi quais contas deseja confirmar. Informe os números.");
+      await sendText(fromRaw, "Não entendi quais contas deseja confirmar. Informe os números separados por vírgula.\n\n_Digite *cancelar* para sair._");
       return true;
     }
     const selections = indexes
@@ -5904,7 +5909,7 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
       await markPaymentAsPaid(fromRaw, userNorm, current.row);
       return true;
     }
-    if (/cancel/.test(normalizedText)) {
+    if (ESCAPE_REGEX.test(text.trim())) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
@@ -6383,6 +6388,8 @@ const detectIntentHeuristic = (text) => {
   if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
   // Relatório completo / saldo / balanço
   if (/\bsaldo\b|\bbalanco\b|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes/.test(normalized)) return "relatorio_completo";
+  // "despesas e recebimentos" (qualquer ordem) → completo, antes dos checks individuais
+  if (/despesas?.*(recebimentos?|entradas?)|recebimentos?.*(despesas?|saidas?)|tudo.*mes|tudo.*periodo/.test(normalized)) return "relatorio_completo";
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
     return "relatorio_pagamentos_mes";
   }
