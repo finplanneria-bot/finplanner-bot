@@ -4622,6 +4622,8 @@ const parseRegisterText = (text) => {
   descricao = descricao.replace(/^[\s.,;:!?\-–—]+/, "").trim();
   // Capitalizar primeira letra
   if (descricao) descricao = descricao.charAt(0).toUpperCase() + descricao.slice(1);
+  // Limitar tamanho (evita frases inteiras como descrição)
+  if (descricao.length > 80) descricao = descricao.slice(0, 80).replace(/\s\S*$/, "").trim();
 
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
 
@@ -4838,7 +4840,7 @@ async function listPendingPayments(fromRaw, userNorm) {
   const totalLine = total > 0 ? `\n💸 *Total: ${formatCurrencyBR(total)}*` : "";
   const message =
     `📋 *Contas a pagar pendentes* (${pending.length})${totalLine}\n\n${blocks.join("\n\n")}` +
-    `\n\n✅ Digite o número para confirmar. Ex: *1* ou *1,2,3*`;
+    `\n\n✅ Digite o número para confirmar. Ex: *1* ou *1,2,3*\n🗑️ Para excluir: *excluir [número]*. Ex: excluir 1`;
   sessionPayConfirm.delete(userNorm);
   setPayState(userNorm, {
     awaiting: "index",
@@ -4868,7 +4870,7 @@ async function listPendingReceipts(fromRaw, userNorm) {
   const totalLine = total > 0 ? `\n💵 *Total: ${formatCurrencyBR(total)}*` : "";
   const message =
     `📋 *Contas a receber pendentes* (${pending.length})${totalLine}\n\n${blocks.join("\n\n")}` +
-    `\n\n✅ Digite o número para confirmar. Ex: *1* ou *1,2,3*`;
+    `\n\n✅ Digite o número para confirmar. Ex: *1* ou *1,2,3*\n🗑️ Para excluir: *excluir [número]*. Ex: excluir 1`;
   sessionPayConfirm.delete(userNorm);
   setPayState(userNorm, {
     awaiting: "index",
@@ -5868,7 +5870,33 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
   }
   const normalizedText = normalizeDiacritics(text).toLowerCase().trim();
   if (state.awaiting === "index") {
+    // Camada 1: escape exato
     if (ESCAPE_REGEX.test(text.trim())) {
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
+      return true;
+    }
+    // Camada 2: intenção de exclusão ("excluir 1", "quero excluir", "apagar")
+    if (/\b(excluir|apagar|deletar|remover)\b/.test(normalizedText)) {
+      const numMatch = normalizedText.match(/\b(\d+)\b/);
+      if (numMatch) {
+        const idx = Number(numMatch[1]) - 1;
+        const row = state.rows?.[idx];
+        if (!row) {
+          await sendText(fromRaw, `Não encontrei a conta número ${numMatch[1]}.\nDigite o número correto ou *cancelar* para sair.`);
+          return true;
+        }
+        await deleteRow(row);
+        resetSession(userNorm);
+        await sendText(fromRaw, "🗑️ Conta excluída com sucesso.");
+        await sendMainMenu(fromRaw);
+        return true;
+      }
+      await sendText(fromRaw, `Para excluir, informe o número da conta:\n_Ex: excluir 1_\n\n_Ou *cancelar* para sair._`);
+      return true;
+    }
+    // Camada 3: escape parcial ("quero cancelar", "quero sair", "quero voltar")
+    if (/\b(cancelar|cancel|sair|voltar|parar|pare|stop|menu)\b/.test(normalizedText)) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
@@ -5909,7 +5937,7 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
       await markPaymentAsPaid(fromRaw, userNorm, current.row);
       return true;
     }
-    if (ESCAPE_REGEX.test(text.trim())) {
+    if (ESCAPE_REGEX.test(text.trim()) || /\b(cancelar|cancel|sair|voltar|parar|pare|stop|menu|excluir)\b/.test(normalizedText)) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
