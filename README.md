@@ -1,8 +1,8 @@
 # 💼 FinPlanner IA  
-**Assistente financeira inteligente no WhatsApp**
+**Assistente financeiro inteligente no WhatsApp**
 
-A **FinPlanner IA** é uma automação financeira conectada ao **WhatsApp Cloud API**, com integração ao **Google Sheets**.  
-Ela organiza seus **pagamentos, recebimentos e relatórios financeiros** de forma automática e simples, respondendo mensagens em linguagem natural.
+O **FinPlanner IA** é uma automação financeira conectada ao **WhatsApp Cloud API**, com integração ao **Google Sheets**.  
+Ele organiza seus **pagamentos, recebimentos e relatórios financeiros** de forma automática e simples, respondendo mensagens em linguagem natural.
 
 ---
 
