@@ -4019,7 +4019,7 @@ const MAIN_MENU_SECTIONS = [
     rows: [
       { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
       { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
-      { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar a FinPlanner IA." },
+      { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar o FinPlanner IA." },
     ],
   },
 ];
@@ -4033,9 +4033,9 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `Olá! Bem-vindo à FinPlanner IA 💰
+          ? `Olá! Bem-vindo ao FinPlanner IA 💰
 
-Sou sua assistente financeira no WhatsApp. Basta me mandar uma mensagem normal:
+Sou seu assistente financeiro no WhatsApp. Basta me mandar uma mensagem normal:
 
 ✍️ *Exemplos que funcionam:*
 • _"Paguei R$89,90 de mercado"_
@@ -4538,7 +4538,7 @@ const parseRegisterText = (text) => {
   let statusDetected = false;
   const receivedRegex = /\b(recebid[oa]?|recebi|recebemos|creditad[oa]|caiu|confirmad[oa])\b/;
   const pendingRegex = /\b(pendente|a pagar|pagar|a receber|aguardando|em aberto)\b/;
-  const paidRegex = /\b(pag[ouei]|paguei|quitad[oa]|liquidad[oa]|transferi|transferido|pix)\b/;
+  const paidRegex = /\b(pag[ouei]|paguei|quitad[oa]|liquidad[oa]|transferi|transferido|pix|almocei|jantei|lanchei|comprei|gastei|botei|coloquei|usei|peguei|tomei|comi|assinei|mandei|depositei|fiz)\b/;
   if (receivedRegex.test(normalized)) {
     status = "recebido";
     statusDetected = true;
@@ -4575,6 +4575,14 @@ const parseRegisterText = (text) => {
     }
   }
 
+  if (!data) {
+    const dayPhraseMatch = original.match(/\b(?:vencimento|vence(?:ndo|mento)?|venc[eo]|dia)\s+(\d{1,2})\b/i);
+    if (dayPhraseMatch) {
+      const day = Number(dayPhraseMatch[1]);
+      if (day >= 1 && day <= 31) data = parseDateToken(String(day));
+    }
+  }
+
   let descricao = original;
   if (amountInfo.raw) {
     const rawEscaped = escapeRegex(amountInfo.raw);
@@ -4583,6 +4591,9 @@ const parseRegisterText = (text) => {
   descricao = descricao
     .replace(/daqui\s+a?\s*\d+\s*dias?/gi, "")
     .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
+    .replace(/\b(?:vencimento|vence(?:ndo|mento)?|venc[eo])\s+(?:dia\s+)?\d{1,2}\b/gi, "")
+    .replace(/\bdia\s+\d{1,2}\b/gi, "")
+    .replace(/\b(?:vencimento|vencendo|vence|venceu)\b/gi, "")
     .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
     .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
     .replace(/\b(recebimento|receber|recebido|recebi|recebemos|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
@@ -5101,6 +5112,7 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
   // Tenta excluir com tratamento de erro
   try {
     await deleteRow(currentItem.row);
+    sessionLastRegistered.delete(userNorm);
 
     // Mensagem de sucesso
     const totalQueue = state.queue?.length || 0;
@@ -6431,6 +6443,11 @@ const detectIntentHeuristic = (text) => {
   if (/\brelat[óo]rios\b/.test(lower)) return "relatorios_menu";
   if (/\brelat[óo]rio\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|\bextrato\b/.test(lower)) return "listar_lancamentos";
+  // Guarda: mensagem com valor monetário (≥2 dígitos) + indicador de pendência futura
+  // → registro de pendente com vencimento, não listagem
+  if (/\d{2,}/.test(normalized) && /\bvenc(e|er|imento|imentos)\b|\ba\s+pagar\b/.test(normalized)) {
+    return "registrar_pagamento";
+  }
   if (/contas?\s+a\s+pagar|\bpendentes?\b|a pagar/.test(lower)) return "listar_pendentes";
   // Vencimentos próximos
   if (/\bvenc(e|er|imento|imentos)\b|o que (devo|falta pagar)|proximas? contas?/.test(normalized)) return "listar_pendentes";
@@ -6614,13 +6631,13 @@ const buildInactiveUserResponse = (classification, nome) => {
 
   if (classification === "quer_assinar") {
     return (
-      `${saudacao} Para acessar todos os recursos da FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}`
+      `${saudacao} Para acessar todos os recursos do FinPlanner IA, conheça nossos planos e assine em:\n👉 ${site}`
     );
   }
 
   // "outro" — mensagem padrão
   return (
-    `${saudacao} Eu sou a FinPlanner IA. Para usar os recursos, você precisa de um plano ativo.\n\n` +
+    `${saudacao} Eu sou o FinPlanner IA. Para usar os recursos, você precisa de um plano ativo.\n\n` +
     `Conheça e contrate em:\n👉 ${site}`
   );
 };
@@ -6965,15 +6982,7 @@ async function handleInteractiveMessage(from, payload, messageId) {
         await sendText(from, "Não encontrei o lançamento para excluir.");
         return;
       }
-      try {
-        await deleteRow(row);
-        sessionLastRegistered.delete(userNorm);
-        await sendText(from, "🗑️ Lançamento excluído com sucesso.");
-        await sendMainMenu(from);
-      } catch (err) {
-        console.error("[REG:DELETE] Erro:", err.message);
-        await sendText(from, "Não consegui excluir agora. Tente novamente.");
-      }
+      await confirmDeleteRows(from, userNorm, [{ row, displayIndex: 1 }]);
       return;
     }
     if (id.startsWith("CORR:")) {
@@ -7154,7 +7163,7 @@ async function handleInteractiveMessage(from, payload, messageId) {
       sessionRegister.set(userNorm, { tipo: "conta_pagar" });
       await sendText(
         from,
-        `💰 Novo lançamento de pagamento ou gasto\n\nInforme os detalhes abaixo para registrar corretamente:\n\n📝 Descrição: O que foi pago?\n(ex: Conta de luz, Internet, Academia)\n\n💰 Valor: Quanto custou?\n(ex: 120,00)\n\n📅 Data: Quando foi pago ou deve ser pago?\n(ex: hoje, amanhã ou 25/10/2025)\n\n🏷 Status: Já foi pago ou ainda está pendente?\n(ex: pago / pendente)\n\n📂 Categoria: (opcional)\nA FinPlanner identifica automaticamente, mas você pode informar (ex: Internet, Energia, Alimentação).\n\n💡 Dica: Você também pode escrever tudo em uma linha!\nExemplo:\n➡ Pagar internet 120 amanhã\n➡ Academia 80,00 pago hoje`
+        `💰 Novo lançamento de pagamento ou gasto\n\nInforme os detalhes abaixo para registrar corretamente:\n\n📝 Descrição: O que foi pago?\n(ex: Conta de luz, Internet, Academia)\n\n💰 Valor: Quanto custou?\n(ex: 120,00)\n\n📅 Data: Quando foi pago ou deve ser pago?\n(ex: hoje, amanhã ou 25/10/2025)\n\n🏷 Status: Já foi pago ou ainda está pendente?\n(ex: pago / pendente)\n\n📂 Categoria: (opcional)\nO FinPlanner identifica automaticamente, mas você pode informar (ex: Internet, Energia, Alimentação).\n\n💡 Dica: Você também pode escrever tudo em uma linha!\nExemplo:\n➡ Pagar internet 120 amanhã\n➡ Academia 80,00 pago hoje`
       );
       return;
     }
@@ -7162,7 +7171,7 @@ async function handleInteractiveMessage(from, payload, messageId) {
       sessionRegister.set(userNorm, { tipo: "conta_receber" });
       await sendText(
         from,
-        `💵 Novo lançamento de recebimento\n\nInforme os detalhes abaixo para registrar sua entrada de dinheiro:\n\n📝 Descrição: O que você recebeu?\n(ex: Venda de peças, Salário, Reembolso)\n\n💰 Valor: Quanto foi recebido?\n(ex: 300,00)\n\n📅 Data: Quando foi ou será recebido?\n(ex: hoje, amanhã ou 30/10/2025)\n\n🏷 Status: Já recebeu ou ainda está pendente?\n(ex: recebido / pendente)\n\n📂 Categoria: (opcional)\nA FinPlanner identifica automaticamente (ex: Venda, Salário, Transferência).\n\n💡 Dica: Você pode enviar tudo de uma vez!\nExemplo:\n➡ Receber venda 300 amanhã\n➡ Pix recebido cliente 150 hoje`
+        `💵 Novo lançamento de recebimento\n\nInforme os detalhes abaixo para registrar sua entrada de dinheiro:\n\n📝 Descrição: O que você recebeu?\n(ex: Venda de peças, Salário, Reembolso)\n\n💰 Valor: Quanto foi recebido?\n(ex: 300,00)\n\n📅 Data: Quando foi ou será recebido?\n(ex: hoje, amanhã ou 30/10/2025)\n\n🏷 Status: Já recebeu ou ainda está pendente?\n(ex: recebido / pendente)\n\n📂 Categoria: (opcional)\nO FinPlanner identifica automaticamente (ex: Venda, Salário, Transferência).\n\n💡 Dica: Você pode enviar tudo de uma vez!\nExemplo:\n➡ Receber venda 300 amanhã\n➡ Pix recebido cliente 150 hoje`
       );
       return;
     }
