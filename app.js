@@ -6421,14 +6421,15 @@ const detectIntentHeuristic = (text) => {
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
     return "relatorio_pagamentos_mes";
   }
-  if (/quanto eu recebi|quanto recebi|recebimentos? desse mes|recebimentos? do mes/.test(normalized)) {
+  if (/quanto eu recebi|quanto recebi|recebimentos? desse mes|recebimentos? do mes|\brecebimentos?\b|\bentradas?\b|\breceitas?\b|\brendimentos?\b/.test(normalized)) {
     return "relatorio_recebimentos_mes";
   }
   if (/contas?\s+a\s+pagar.*mes|pendentes? desse mes|pendentes? do mes/.test(normalized)) {
     return "relatorio_contas_pagar_mes";
   }
-  if (/\brelat[óo]rios?\b/.test(lower)) return "relatorios_menu";
   if (/\brelat[óo]rio\s+completo\b/.test(lower) || /\bcompleto\b/.test(lower)) return "relatorio_completo";
+  if (/\brelat[óo]rios\b/.test(lower)) return "relatorios_menu";
+  if (/\brelat[óo]rio\b/.test(lower)) return "relatorio_completo";
   if (/\blan[cç]amentos\b|\bextrato\b/.test(lower)) return "listar_lancamentos";
   if (/contas?\s+a\s+pagar|\bpendentes?\b|a pagar/.test(lower)) return "listar_pendentes";
   // Vencimentos próximos
@@ -6681,14 +6682,16 @@ const buildIntentWithContextPrompt = (text) => [
         type: "input_text",
         text: `Você é um assistente especializado em intenções financeiras no WhatsApp.
 
+📅 DATA DE HOJE: ${new Date().toISOString().slice(0, 10)} (use SEMPRE esta data como referência ao inferir períodos como "abril", "janeiro", "mês passado", etc.)
+
 RESPONDA SEMPRE com JSON válido, sem markdown:
 {"intent":"slug"} — para qualquer intenção
 {"intent":"slug","period":"codigo"} — quando há período mencionado
 
 PERÍODOS VÁLIDOS (use exatamente assim):
 "mes_atual" | "mes_passado" | "ano_atual" | "ano_passado"
-"YYYY-MM" (ex: "2026-04" para abril de 2026)
-"YYYY" (ex: "2025" para o ano inteiro)
+"YYYY-MM" (use o ano CORRETO baseado na data de hoje acima)
+"YYYY" (use o ano CORRETO baseado na data de hoje acima)
 
 INTENÇÕES VÁLIDAS:
 ${Array.from(KNOWN_INTENTS).join(", ")}
@@ -6696,7 +6699,7 @@ ${Array.from(KNOWN_INTENTS).join(", ")}
 REGRAS:
 - Seja MUITO tolerante com erros de ortografia, abreviações e linguagem natural ("kuanto gastei mes pasado" → entenda)
 - Para perguntas sobre quantos/quanto/qual gastei/recebi/devo, use intenções de relatório (relatorio_pagamentos_mes, relatorio_recebimentos_mes, relatorio_contas_pagar_mes, relatorio_completo)
-- "quanto gastei em abril" → {"intent":"relatorio_pagamentos_mes","period":"2026-04"}
+- Ao mencionar mês sem ano (ex: "janeiro", "abril"), use o ano corrente da data de hoje. Se o mês ainda não chegou neste ano, use o ano anterior.
 - "meus gastos mês passado" → {"intent":"relatorio_pagamentos_mes","period":"mes_passado"}
 - "saldo do ano passado" → {"intent":"relatorio_completo","period":"ano_passado"}
 - "paguei 50 mercado" → {"intent":"registrar_pagamento"}
