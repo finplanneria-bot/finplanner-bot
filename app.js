@@ -1275,6 +1275,16 @@ const parseDateToken = (token) => {
     return d;
   }
 
+  // Normalizado sem acentos para comparações simples
+  const norm = token.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+
+  // "depois de amanhã" / "depois amanhã"
+  if (/depois\s+de?\s+amanha?/.test(norm)) {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    return d;
+  }
+
   // Dias da semana → próxima ocorrência (nunca hoje)
   const WEEKDAY_MAP = {
     "segunda": 1, "segunda-feira": 1, "seg": 1,
@@ -1285,6 +1295,65 @@ const parseDateToken = (token) => {
     "sabado": 6, "sabado-feira": 6, "sab": 6,
     "domingo": 0, "dom": 0,
   };
+
+  // "semana que vem" / "próxima semana" → +7 dias
+  if (/semana\s+que\s+vem|proxima\s+semana|semana\s+proxima/.test(norm)) {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    return d;
+  }
+
+  // "fim do mês" / "fim de mês" → último dia do mês corrente
+  if (/fim\s+d[oe]\s+mes/.test(norm)) {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  }
+
+  // "dia X do mês que vem" / "dia X do próximo mês"
+  const nextMonthDayMatch = norm.match(/dia\s+(\d{1,2})\s+(?:d[oe]\s+)?(?:mes\s+que\s+vem|proximo\s+mes)/);
+  if (nextMonthDayMatch) {
+    const day = Number(nextMonthDayMatch[1]);
+    if (day >= 1 && day <= 31) {
+      const now = new Date();
+      return new Date(now.getFullYear(), now.getMonth() + 1, day);
+    }
+  }
+
+  // "X de [mês]" / "X de [mês] de [ano]" — ex: "20 de maio", "5 de junho de 2026"
+  const MONTH_MAP = {
+    "janeiro": 0, "jan": 0, "fevereiro": 1, "fev": 1, "marco": 2, "mar": 2,
+    "abril": 3, "abr": 3, "maio": 4, "mai": 4, "junho": 5, "jun": 5,
+    "julho": 6, "jul": 6, "agosto": 7, "ago": 7, "setembro": 8, "set": 8,
+    "outubro": 9, "out": 9, "novembro": 10, "nov": 10, "dezembro": 11, "dez": 11,
+  };
+  const monthNameMatch = norm.match(/(\d{1,2})\s+de\s+(\w+)(?:\s+de\s+(\d{2,4}))?/);
+  if (monthNameMatch) {
+    const day = Number(monthNameMatch[1]);
+    const monthStr = monthNameMatch[2];
+    const monthIdx = MONTH_MAP[monthStr];
+    if (monthIdx !== undefined && day >= 1 && day <= 31) {
+      const now = new Date();
+      let year = monthNameMatch[3] ? Number(monthNameMatch[3]) : now.getFullYear();
+      if (year < 100) year += 2000;
+      const d = new Date(year, monthIdx, day);
+      if (!monthNameMatch[3] && d < startOfDay(now)) d.setFullYear(d.getFullYear() + 1);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
+
+  // "próxima segunda", "sexta que vem", etc.
+  if (/proxim[ao]|que\s+vem/.test(norm)) {
+    for (const [name, wd] of Object.entries(WEEKDAY_MAP)) {
+      if (norm.includes(name)) {
+        const today = new Date();
+        const diff = ((wd - today.getDay() + 7) % 7) || 7;
+        const d = new Date(today);
+        d.setDate(today.getDate() + diff);
+        return d;
+      }
+    }
+  }
+
   const tokenNorm = (token || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
   if (Object.prototype.hasOwnProperty.call(WEEKDAY_MAP, tokenNorm)) {
     const wd = WEEKDAY_MAP[tokenNorm];
@@ -4556,8 +4625,11 @@ const parseRegisterText = (text) => {
   const valor = amountInfo.amount || 0;
 
   let data = null;
-  const dateMatch = original.match(new RegExp(`(daqui\\s+a?\\s*\\d+\\s*dias?|hoje|amanh[ãa]|ontem|${DATE_TOKEN_PATTERN})`, "i"));
-  if (dateMatch) data = parseDateToken(dateMatch[1]);
+  // Captura frases de data em ordem de especificidade (mais longa primeiro)
+  const dateMatch = original.match(
+    /depois\s+de?\s+amanhã?|depois\s+de?\s+amanha|semana\s+que\s+vem|próxima\s+semana|proxima\s+semana|fim\s+d[oe]\s+m[êe]s|dia\s+\d{1,2}\s+d[oe]\s+(?:m[êe]s\s+que\s+vem|pr[oó]ximo\s+m[êe]s)|(?:próxim[ao]|proxim[ao])\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?|\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+\d{2,4})?|(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?\s+que\s+vem|daqui\s+a?\s*\d+\s*dias?|hoje|amanhã|amanh[aã]|ontem|\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/i
+  );
+  if (dateMatch) data = parseDateToken(dateMatch[0]);
 
   if (!data) {
     const valueDateMatch = original.match(/(\d{3,})[\/-](\d{1,2})(?:\b|$)/);
@@ -4590,7 +4662,14 @@ const parseRegisterText = (text) => {
   }
   descricao = descricao
     .replace(/daqui\s+a?\s*\d+\s*dias?/gi, "")
-    .replace(/(hoje|amanh[ãa]|ontem)/gi, "")
+    .replace(/depois\s+de?\s+amanhã?/gi, "")
+    .replace(/semana\s+que\s+vem|próxima\s+semana|proxima\s+semana/gi, "")
+    .replace(/fim\s+d[oe]\s+m[êe]s/gi, "")
+    .replace(/dia\s+\d{1,2}\s+d[oe]\s+(?:m[êe]s\s+que\s+vem|pr[oó]ximo\s+m[êe]s)/gi, "")
+    .replace(/\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+\d{2,4})?/gi, "")
+    .replace(/(?:próxim[ao]|proxim[ao])\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?/gi, "")
+    .replace(/(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?\s+que\s+vem/gi, "")
+    .replace(/(hoje|amanhã|amanh[aã]|ontem)/gi, "")
     .replace(/\b(?:vencimento|vence(?:ndo|mento)?|venc[eo])\s+(?:dia\s+)?\d{1,2}\b/gi, "")
     .replace(/\bdia\s+\d{1,2}\b/gi, "")
     .replace(/\b(?:vencimento|vencendo|vence|venceu)\b/gi, "")
@@ -5056,6 +5135,20 @@ async function promptNextDeleteConfirmation(to, userNorm) {
     return;
   }
   const summary = formatEntrySummary(currentItem.row, { headerLabel: "🧾 Lançamento selecionado:" });
+  const entryValue = toNumber(getVal(currentItem.row, "valor"));
+  const HIGH_VALUE_THRESHOLD = 500;
+
+  // Valores altos (≥ R$500): exige digitar o valor para confirmar
+  if (entryValue >= HIGH_VALUE_THRESHOLD) {
+    const nextState = resetDeleteTimeout({ ...state, awaiting: "confirm_typed", currentIndex, expectedValue: entryValue });
+    sessionDelete.set(userNorm, nextState);
+    await sendText(
+      to,
+      `⚠️ *Atenção — exclusão de alto valor*\n\n${summary}\n\nPara confirmar a exclusão de *${formatCurrencyBR(entryValue)}*, digite o valor exato (ex: _${entryValue.toFixed(2).replace(".", ",")}_ ).\n\nOu *cancelar* para desistir.`
+    );
+    return;
+  }
+
   const body = `⚠ Confirmar exclusão do lançamento:\n\n${summary}\n\nDeseja realmente excluir este lançamento?`;
   const nextState = resetDeleteTimeout({ ...state, awaiting: "confirm", currentIndex });
   sessionDelete.set(userNorm, nextState);
@@ -5157,8 +5250,24 @@ async function finalizeDeleteConfirmation(fromRaw, userNorm, confirmed) {
 }
 
 async function handleDeleteConfirmation(fromRaw, userNorm, text) {
+  const state = sessionDelete.get(userNorm);
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
   if (!normalized) return false;
+
+  // Fluxo de confirmação por digitação (valores altos)
+  if (state?.awaiting === "confirm_typed") {
+    if (/\b(cancel|sair|voltar|nao|não)\b/.test(normalized)) {
+      return finalizeDeleteConfirmation(fromRaw, userNorm, false);
+    }
+    const typedValue = toNumber(text);
+    const expected = state.expectedValue || 0;
+    if (Math.abs(typedValue - expected) < 0.01) {
+      return finalizeDeleteConfirmation(fromRaw, userNorm, true);
+    }
+    await sendText(fromRaw, `Valor não confere. O lançamento é de *${formatCurrencyBR(expected)}*.\nDigite o valor correto para confirmar ou *cancelar* para desistir.`);
+    return true;
+  }
+
   if (/^(s|sim)(\b|\s)/.test(normalized) || /excluir/.test(normalized) || /confirm/.test(normalized)) {
     return finalizeDeleteConfirmation(fromRaw, userNorm, true);
   }
@@ -5912,6 +6021,15 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
       resetSession(userNorm);
       await sendCancelMessage(fromRaw);
       return true;
+    }
+    // Camada 4: auto-escape quando a mensagem é claramente uma nova intenção financeira
+    // (verbo de ação + valor, ou keyword de consulta). Solta para reprocessamento.
+    const hasActionVerb = /\b(paguei|recebi|comprei|almocei|jantei|gastei|fiz|botei|transferi|mandei|depositei)\b/.test(normalizedText);
+    const hasMonetaryValue = /\b\d{2,}(?:[.,]\d+)?\b/.test(normalizedText);
+    const hasQueryKeyword = /\b(saldo|extrato|relat[oó]rio|quanto\s+(gastei|recebi|tenho|ganhei)|pendentes|contas\s+a\s+pagar)\b/.test(normalizedText);
+    if ((hasActionVerb && hasMonetaryValue) || hasQueryKeyword) {
+      resetSession(userNorm);
+      return false; // não consumida → processada como nova intenção
     }
     const indexes = resolveSelectionIndexes(text, state.rows || []);
     if (!indexes.length) {
@@ -7447,28 +7565,50 @@ async function handleUserText(fromRaw, text, messageId) {
     }
   }
 
-  // Correção rápida: "errado", "incorreto" etc logo após um registro
-  const correctionRegex = /^(errad[oa]|incorret[oa]|errei|tá errad[oa]|ta errad[oa]|não é isso|nao e isso|ops?|opa|me enganei|lancei errado|registrei errado)\b/i;
+  // Correção rápida — detecta padrões naturais de correção logo após um registro
+  const correctionRegex = /\b(errad[oa]|incorret[oa]|errei|tá errad[oa]|ta errad[oa]|não é isso|nao e isso|ops?|opa|me enganei|lancei errado|registrei errado)\b|era\s+[\d,\.]+\s+(?:e\s+)?n[aã]o\b|\bn[aã]o\s+era\b|\bna\s+verdade\b|\bcorrig[ei]\b|\beschece\s+o\s+[uú]ltim|\btava\s+errad|\bfoi\s+errad|\bvalor\s+errad/i;
   if (correctionRegex.test(normalizedMessage)) {
     const last = sessionLastRegistered.get(userNorm);
     if (last && last.expiresAt > Date.now()) {
-      await sendWA({
-        messaging_product: "whatsapp",
-        to: fromRaw,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: "O que deseja corrigir no último lançamento?" },
-          action: {
-            buttons: [
-              { type: "reply", reply: { id: `CORR:VALOR:${last.rowId}`, title: "✏️ Editar valor" } },
-              { type: "reply", reply: { id: `CORR:DESC:${last.rowId}`, title: "📝 Editar descrição" } },
-              { type: "reply", reply: { id: `CORR:DELETE:${last.rowId}`, title: "🗑️ Excluir e refazer" } },
-            ],
+      const row = await findRowById(userNorm, last.rowId);
+      if (row) {
+        // Tenta extrair novo valor direto da mensagem: "era 60 não 80", "na verdade era 60"
+        const newValMatch =
+          normalizedMessage.match(/era\s+([\d,\.]+)\s+(?:e\s+)?n[aã]o/i) ||
+          normalizedMessage.match(/na\s+verdade\s+(?:era|[eé])\s+([\d,\.]+)/i) ||
+          normalizedMessage.match(/corrig[ei].*?(?:pra|para|pro|:)\s*([\d,\.]+)/i);
+        if (newValMatch) {
+          const newValue = toNumber(newValMatch[1]);
+          if (newValue > 0) {
+            const oldValue = toNumber(getVal(row, "valor"));
+            setVal(row, "valor", newValue);
+            await saveRow(row);
+            sessionLastRegistered.set(userNorm, { ...last, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+            const desc = getVal(row, "descricao") || getVal(row, "conta") || "Lançamento";
+            await sendText(fromRaw, `✅ Valor corrigido!\n\n_${desc}_\n${formatCurrencyBR(oldValue)} → *${formatCurrencyBR(newValue)}*`);
+            await sendMainMenu(fromRaw);
+            return;
+          }
+        }
+        // Sem valor específico detectado → mostra menu de edição
+        await sendWA({
+          messaging_product: "whatsapp",
+          to: fromRaw,
+          type: "interactive",
+          interactive: {
+            type: "button",
+            body: { text: "O que deseja corrigir no último lançamento?" },
+            action: {
+              buttons: [
+                { type: "reply", reply: { id: `CORR:VALOR:${last.rowId}`, title: "✏️ Editar valor" } },
+                { type: "reply", reply: { id: `CORR:DESC:${last.rowId}`, title: "📝 Editar descrição" } },
+                { type: "reply", reply: { id: `CORR:DELETE:${last.rowId}`, title: "🗑️ Excluir e refazer" } },
+              ],
+            },
           },
-        },
-      });
-      return;
+        });
+        return;
+      }
     }
   }
 
