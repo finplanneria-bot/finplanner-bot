@@ -4741,7 +4741,38 @@ const parseRegisterText = (text) => {
 // ============================
 // Fluxos de mensagens
 // ============================
-async function showReportByCategory(fromRaw, userNorm, category, range) {
+
+// Detecta categoria implícita em perguntas de consulta ("quanto gastei com comida")
+const CATEGORY_QUERY_MAP = {
+  comida: "alimentacao", alimentacao: "alimentacao", refeicao: "alimentacao",
+  restaurante: "alimentacao", almoco: "alimentacao", jantar: "alimentacao",
+  lanche: "alimentacao", cafe: "alimentacao", pizza: "alimentacao", delivery: "alimentacao",
+  ifood: "alimentacao", rappi: "alimentacao",
+  mercado: "mercado", supermercado: "mercado", feira: "mercado",
+  uber: "transporte", taxi: "transporte", onibus: "transporte", metro: "transporte",
+  gasolina: "transporte", combustivel: "transporte", transporte: "transporte",
+  estacionamento: "transporte", pedagio: "transporte", carro: "transporte",
+  aluguel: "moradia", condominio: "moradia", moradia: "moradia",
+  luz: "moradia", energia: "moradia", agua: "moradia", gas: "moradia",
+  saude: "saude", medico: "saude", farmacia: "saude", remedio: "saude", plano: "saude",
+  academia: "saude", dentista: "saude",
+  lazer: "lazer", cinema: "lazer", entretenimento: "lazer", viagem: "lazer",
+  internet: "internet_telefonia", telefone: "internet_telefonia", celular: "internet_telefonia",
+  educacao: "educacao", escola: "educacao", faculdade: "educacao", curso: "educacao",
+  roupa: "roupas", roupas: "roupas", calçado: "roupas", tenis: "roupas",
+  pet: "pets", veterinario: "pets", racao: "pets",
+  presente: "presentes", presente: "presentes",
+};
+
+const detectCategoryFromQuery = (text) => {
+  const norm = normalizeDiacritics(text).toLowerCase();
+  for (const [keyword, slug] of Object.entries(CATEGORY_QUERY_MAP)) {
+    if (new RegExp(`\\b${keyword}\\b`).test(norm)) return slug;
+  }
+  return null;
+};
+
+async function showReportByCategory(fromRaw, userNorm, category, range, categoryFilter = null) {
   const rows = await allRowsForUser(userNorm);
   const { start, end } = range;
   const inRange = withinPeriod(rows, start, end);
@@ -4756,6 +4787,33 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
 
   const DIV = "━━━━━━━━━━━━";
 
+  // ── Filtro por categoria específica (ex: "quanto gastei com comida") ──
+  if (categoryFilter) {
+    const catDef = getCategoryDefinition(categoryFilter) || { slug: categoryFilter, label: categoryFilter, emoji: "📂" };
+    const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
+    const filtered = expenses.filter((row) => {
+      let slug = (getVal(row, "categoria") || "").toString();
+      if (!slug) slug = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo")).slug;
+      return slug === categoryFilter;
+    });
+    const catLabel = catDef.emoji ? `${catDef.emoji} *${catDef.label}*` : `*${catDef.label}*`;
+    if (!filtered.length) {
+      await sendText(fromRaw, `${catLabel}\n📅 _${periodLabel}_\n\n✅ Nenhum gasto nesta categoria no período.`);
+      return;
+    }
+    const total = sumValues(filtered);
+    const totalAll = sumValues(expenses);
+    const pct = totalAll > 0 ? Math.round((total / totalAll) * 100) : 0;
+    const blocks = filtered.map((r) => formatEntryBlock(r)).join("\n\n");
+    const message =
+      `${catLabel}\n📅 _${periodLabel}_\n\n` +
+      `💰 *Total: ${formatCurrencyBR(total)}* (${pct}% dos gastos)\n` +
+      `📊 ${filtered.length} lançamento${filtered.length !== 1 ? "s" : ""}\n\n` +
+      `${DIV}\n${blocks}`;
+    await sendText(fromRaw, message);
+    return;
+  }
+
   if (category === "cp") {
     const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
     const pending = expenses.filter((row) => !isPaid(row));
@@ -4768,18 +4826,17 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     if (!expenses.length) {
       message += "\n\n✅ Nenhuma conta encontrada para o período selecionado.";
     } else {
+      // Totais primeiro
+      message += `\n\n💰 *Total: ${formatCurrencyBR(totalExpenses)}*`;
+      message += `\n⏳ Pendente: ${formatCurrencyBR(totalPending)}  |  ✅ Pago: ${formatCurrencyBR(totalPaid)}`;
       if (pending.length) {
         const blocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
-        message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
+        message += `\n\n${DIV}\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
       }
       if (paid.length) {
         const blocks = paid.map((row) => formatEntryBlock(row)).join("\n\n");
-        message += `\n\n✅ *Pagas* (${paid.length})\n\n${blocks}`;
+        message += `\n\n${DIV}\n✅ *Pagas* (${paid.length})\n\n${blocks}`;
       }
-      message += `\n\n${DIV}`;
-      message += `\n⏳ Pendente:     ${formatCurrencyBR(totalPending)}`;
-      message += `\n✅ Pago:         ${formatCurrencyBR(totalPaid)}`;
-      message += `\n💰 *Total geral: ${formatCurrencyBR(totalExpenses)}*`;
     }
     await sendText(fromRaw, message);
     return;
@@ -4797,18 +4854,17 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     if (!receipts.length) {
       message += "\n\n✅ Nenhum recebimento encontrado para o período selecionado.";
     } else {
+      // Totais primeiro
+      message += `\n\n💰 *Total: ${formatCurrencyBR(totalReceipts)}*`;
+      message += `\n✅ Recebido: ${formatCurrencyBR(totalReceived)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPending)}`;
       if (pending.length) {
         const blocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
-        message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
+        message += `\n\n${DIV}\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
       }
       if (confirmed.length) {
         const blocks = confirmed.map((row) => formatEntryBlock(row)).join("\n\n");
-        message += `\n\n✅ *Recebidos* (${confirmed.length})\n\n${blocks}`;
+        message += `\n\n${DIV}\n✅ *Recebidos* (${confirmed.length})\n\n${blocks}`;
       }
-      message += `\n\n${DIV}`;
-      message += `\n✅ Recebido:     ${formatCurrencyBR(totalReceived)}`;
-      message += `\n⏳ Pendente:     ${formatCurrencyBR(totalPending)}`;
-      message += `\n💰 *Total geral: ${formatCurrencyBR(totalReceipts)}*`;
     }
     await sendText(fromRaw, message);
     return;
@@ -4822,29 +4878,23 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     const totalPending = sumValues(pending);
 
     let message = `📊 *Pagamentos*\n📅 _${periodLabel}_`;
-    if (!paid.length) {
-      message += "\n\n✅ Nenhum pagamento confirmado no período.";
-      if (pending.length) {
-        const blocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
-        message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${blocks}`;
-        message += `\n\n${DIV}`;
-        message += `\n⏳ Pendente: ${formatCurrencyBR(totalPending)}`;
-      }
+    if (!paid.length && !pending.length) {
+      message += "\n\n✅ Nenhum pagamento encontrado no período.";
       await sendText(fromRaw, message);
       return;
     }
-    const paidBlocks = paid.map((row) => formatEntryBlock(row)).join("\n\n");
-    message += `\n\n✅ *Pagas* (${paid.length})\n\n${paidBlocks}`;
+    // Totais primeiro
+    message += `\n\n💰 *Total: ${formatCurrencyBR(totalPaid + totalPending)}*`;
+    message += `\n✅ Pago: ${formatCurrencyBR(totalPaid)}`;
+    if (pending.length) message += `  |  ⏳ Pendente: ${formatCurrencyBR(totalPending)}`;
+    if (paid.length) {
+      const paidBlocks = paid.map((row) => formatEntryBlock(row)).join("\n\n");
+      message += `\n\n${DIV}\n✅ *Pagas* (${paid.length})\n\n${paidBlocks}`;
+    }
     if (pending.length) {
       const pendingBlocks = pending.map((row) => formatEntryBlock(row)).join("\n\n");
-      message += `\n\n⏳ *Pendentes* (${pending.length})\n\n${pendingBlocks}`;
+      message += `\n\n${DIV}\n⏳ *Pendentes* (${pending.length})\n\n${pendingBlocks}`;
     }
-    message += `\n\n${DIV}`;
-    message += `\n✅ Pago:         ${formatCurrencyBR(totalPaid)}`;
-    if (pending.length) {
-      message += `\n⏳ Pendente:     ${formatCurrencyBR(totalPending)}`;
-    }
-    message += `\n💰 *Total geral: ${formatCurrencyBR(totalPaid + totalPending)}*`;
     await sendText(fromRaw, message);
     return;
   }
@@ -4863,27 +4913,28 @@ async function showReportByCategory(fromRaw, userNorm, category, range) {
     const totalPendingExpenses = sumValues(pendingExpenses);
     const totalExpenses = sumValues(expenses);
 
-    let message = `📊 *Relatório Completo*\n📅 _${periodLabel}_`;
+    let message = `📊 *Resumo*\n📅 _${periodLabel}_`;
     if (!receipts.length && !expenses.length) {
       message += "\n\n✅ Nenhum lançamento encontrado para o período selecionado.";
     } else {
-      if (receipts.length) {
-        message += `\n\n${DIV}`;
-        message += `\n💵 *Recebimentos* (${receipts.length} lançamento${receipts.length > 1 ? "s" : ""})`;
-        message += `\n${formatCategoryLinesWithDescriptions(receipts)}`;
-        message += `\n💵 Recebido: ${formatCurrencyBR(totalReceived)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
-      }
+      // ── Resumo geral no topo ──────────────────────────────────────
+      message += `\n\n${DIV}`;
+      message += `\n💵 Entradas: *${formatCurrencyBR(totalReceipts)}*`;
+      message += `\n💸 Saídas:   *${formatCurrencyBR(totalExpenses)}*`;
+      message += `\n${formatSaldoLine(totalReceived, totalPaid)}`;
+      // ── Detalhes por categoria ────────────────────────────────────
       if (expenses.length) {
         message += `\n\n${DIV}`;
-        message += `\n💸 *Contas a Pagar* (${expenses.length} lançamento${expenses.length > 1 ? "s" : ""})`;
+        message += `\n💸 *Saídas* (${expenses.length} lançamento${expenses.length > 1 ? "s" : ""})`;
         message += `\n${formatCategoryLinesWithDescriptions(expenses)}`;
         message += `\n✅ Pago: ${formatCurrencyBR(totalPaid)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingExpenses)}`;
       }
-      message += `\n\n${DIV}`;
-      message += `\n📈 *Resumo*`;
-      message += `\n💵 Entradas: ${formatCurrencyBR(totalReceipts)}`;
-      message += `\n💸 Saídas:   ${formatCurrencyBR(totalExpenses)}`;
-      message += `\n${formatSaldoLine(totalReceived, totalPaid)}`;
+      if (receipts.length) {
+        message += `\n\n${DIV}`;
+        message += `\n💵 *Entradas* (${receipts.length} lançamento${receipts.length > 1 ? "s" : ""})`;
+        message += `\n${formatCategoryLinesWithDescriptions(receipts)}`;
+        message += `\n💵 Recebido: ${formatCurrencyBR(totalReceived)}  |  ⏳ Pendente: ${formatCurrencyBR(totalPendingReceipts)}`;
+      }
     }
     await sendText(fromRaw, message);
   }
@@ -7785,7 +7836,8 @@ async function handleUserText(fromRaw, text, messageId) {
       break;
     case "relatorio_pagamentos_mes": {
       const range = intentPeriod || defaultMonthRange();
-      await showReportByCategory(fromRaw, userNorm, "pag", range);
+      const catFilter = detectCategoryFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "pag", range, catFilter);
       break;
     }
     case "relatorio_recebimentos_mes": {
@@ -7800,7 +7852,8 @@ async function handleUserText(fromRaw, text, messageId) {
     }
     case "relatorio_completo": {
       const range = intentPeriod || defaultMonthRange();
-      await showReportByCategory(fromRaw, userNorm, "all", range);
+      const catFilter = detectCategoryFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "all", range, catFilter);
       break;
     }
     case "listar_lancamentos":
