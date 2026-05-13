@@ -1341,6 +1341,22 @@ const parseDateToken = (token) => {
     }
   }
 
+  // "20 maio", "5 junho" (sem "de")
+  const monthNoDeMatch = norm.match(/^(\d{1,2})\s+(\w{3,})(?:\s+(?:de\s+)?(\d{2,4}))?$/);
+  if (monthNoDeMatch && !monthNameMatch) {
+    const day = Number(monthNoDeMatch[1]);
+    const monthStr = monthNoDeMatch[2];
+    const monthIdx = MONTH_MAP[monthStr];
+    if (monthIdx !== undefined && day >= 1 && day <= 31) {
+      const now = new Date();
+      let year = monthNoDeMatch[3] ? Number(monthNoDeMatch[3]) : now.getFullYear();
+      if (year < 100) year += 2000;
+      const d = new Date(year, monthIdx, day);
+      if (!monthNoDeMatch[3] && d < startOfDay(now)) d.setFullYear(d.getFullYear() + 1);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
+
   // "próxima segunda", "sexta que vem", etc.
   if (/proxim[ao]|que\s+vem/.test(norm)) {
     for (const [name, wd] of Object.entries(WEEKDAY_MAP)) {
@@ -4627,7 +4643,7 @@ const parseRegisterText = (text) => {
   let data = null;
   // Captura frases de data em ordem de especificidade (mais longa primeiro)
   const dateMatch = original.match(
-    /depois\s+de?\s+amanhã?|depois\s+de?\s+amanha|semana\s+que\s+vem|próxima\s+semana|proxima\s+semana|fim\s+d[oe]\s+m[êe]s|dia\s+\d{1,2}\s+d[oe]\s+(?:m[êe]s\s+que\s+vem|pr[oó]ximo\s+m[êe]s)|(?:próxim[ao]|proxim[ao])\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?|\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+\d{2,4})?|(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?\s+que\s+vem|daqui\s+a?\s*\d+\s*dias?|hoje|amanhã|amanh[aã]|ontem|\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/i
+    /depois\s+de?\s+amanhã?|depois\s+de?\s+amanha|semana\s+que\s+vem|próxima\s+semana|proxima\s+semana|fim\s+d[oe]\s+m[êe]s|dia\s+\d{1,2}\s+d[oe]\s+(?:m[êe]s\s+que\s+vem|pr[oó]ximo\s+m[êe]s)|(?:próxim[ao]|proxim[ao])\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?|\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+\d{2,4})?|\d{1,2}\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+(?:de\s+)?\d{2,4})?|(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?\s+que\s+vem|daqui\s+a?\s*\d+\s*dias?|hoje|amanhã|amanh[aã]|ontem|\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/i
   );
   if (dateMatch) data = parseDateToken(dateMatch[0]);
 
@@ -4667,6 +4683,7 @@ const parseRegisterText = (text) => {
     .replace(/fim\s+d[oe]\s+m[êe]s/gi, "")
     .replace(/dia\s+\d{1,2}\s+d[oe]\s+(?:m[êe]s\s+que\s+vem|pr[oó]ximo\s+m[êe]s)/gi, "")
     .replace(/\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+\d{2,4})?/gi, "")
+    .replace(/\d{1,2}\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+(?:de\s+)?\d{2,4})?/gi, "")
     .replace(/(?:próxim[ao]|proxim[ao])\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?/gi, "")
     .replace(/(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?\s+que\s+vem/gi, "")
     .replace(/(hoje|amanhã|amanh[aã]|ontem)/gi, "")
@@ -4676,7 +4693,7 @@ const parseRegisterText = (text) => {
     .replace(new RegExp(DATE_TOKEN_PATTERN, "gi"), "")
     .replace(/[-\/]\s*\d{1,2}(?:\b|$)/g, "")
     .replace(/\b(recebimento|receber|recebido|recebi|recebemos|pagamento|pagar|pago|paguei|pendente|quitad[oa]|liquidad[oa]|entrada|receita)\b/gi, "")
-    .replace(/\b(gastei|comprei|ganhei|vendi|transferi|mandei|depositei|pix(?:ei)?)\b/gi, "")
+    .replace(/\b(gastei|comprei|ganhei|vendi|transferi|mandei|depositei|pix(?:ei)?|almocei|jantei|lanchei|tomei|comi|botei|coloquei|usei|peguei|assinei|fiz|fui|vou)\b/gi, "")
     .replace(/\b(dia|data)\b/gi, "")
     .replace(/\b(valor|lançamento|lancamento|novo|registrar|registro)\b/gi, "")
     .replace(/r\$/gi, "")
@@ -4687,6 +4704,8 @@ const parseRegisterText = (text) => {
   descricao = descricao.replace(/^(oi|ei|opa|olá|ola|ah|eh|bom|bem|então|entao|ok|oi,|ei,|opa,)\s+/gi, "").trim();
   // Remove subject pronouns from the start
   descricao = descricao.replace(/^(eu|vc|voce|você)\s+/gi, "").trim();
+  // Remove leading modal/future phrases: "vou de uber" → "uber", "fui ao mercado" → "mercado"
+  descricao = descricao.replace(/^(vou|fui)\s+(?:de\s+|ao?\s+|na?\s+|para?\s+|no?\s+)?/gi, "").trim();
 
   if (descricao) {
     const tokens = descricao.split(/\s+/);
@@ -4712,8 +4731,8 @@ const parseRegisterText = (text) => {
   descricao = descricao.replace(/^[\s.,;:!?\-–—]+/, "").trim();
   // Capitalizar primeira letra
   if (descricao) descricao = descricao.charAt(0).toUpperCase() + descricao.slice(1);
-  // Limitar tamanho (evita frases inteiras como descrição)
-  if (descricao.length > 80) descricao = descricao.slice(0, 80).replace(/\s\S*$/, "").trim();
+  // Limitar tamanho (evita frases inteiras como descrição) — 30 chars sem cortar palavra
+  if (descricao.length > 30) descricao = descricao.slice(0, 30).replace(/\s\S*$/, "").trim();
 
   if (!descricao) descricao = tipo === "conta_receber" ? "Recebimento" : "Pagamento";
 
