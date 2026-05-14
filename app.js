@@ -4233,20 +4233,9 @@ Sou seu assistente financeiro no WhatsApp. Basta me mandar uma mensagem normal:
 • Digite *menu* para ver todas as opções
 
 🚀 Pode começar digitando um gasto ou recebimento!`
-          : `📋 *Menu principal*
+          : `Toque em *Abrir menu* ou me diga o que deseja fazer.
 
-💰 Registrar pagamento
-💵 Registrar recebimento
-📅 Contas a pagar
-💵 Contas a receber
-♻️ Contas fixas
-📊 Relatórios
-🧾 Meus lançamentos
-✏️ Editar lançamentos
-🗑️ Excluir lançamento
-⚙️ Ajuda e exemplos
-
-Digite o que deseja (ex: *saldo*, *pendentes*, *relatório*) ou toque em *Abrir menu* para selecionar.`,
+💡 _Ex: "Paguei R$50 mercado", "saldo", "pendentes"._`,
       },
       action: {
         button: "Abrir menu",
@@ -4464,21 +4453,63 @@ async function sendExcluirContaFixaMessage(to, userNorm) {
 // ============================
 // Sessões (estado do usuário)
 // ============================
-const sessionPeriod = new Map();
-const sessionEdit = new Map();
-const sessionDelete = new Map();
-const sessionRegister = new Map();
-const sessionFixedRegister = new Map();
-const sessionFixedDelete = new Map();
-const sessionStatusConfirm = new Map();
-const sessionPaymentCode = new Map();
-const sessionPayConfirm = new Map();
-const sessionLastRegistered = new Map(); // rowId do último lançamento registrado (para correção rápida)
-const sessionDuplicateConfirm = new Map(); // payload aguardando confirmação de duplicado
-const sessionNewCategory = new Map(); // estado do fluxo guiado de criação de categoria
-const sessionPendingAmount = new Map(); // registro sem valor aguardando confirmação de sugestão
-const sessionHighValue = new Map(); // confirmação de valor alto (>R$10k) antes de registrar
-const sessionPendingDesc = new Map(); // registro sem descrição aguardando "em quê?"
+// Estado unificado: 1 fluxo ativo por usuário por vez.
+// O Map central armazena { flow, data }. Os "session*" abaixo são adapters que
+// mantêm a API antiga (.set/.get/.has/.delete) mas internamente compartilham o
+// mesmo Map. Setar um fluxo novo limpa o anterior — elimina colisão por construção.
+const conversationState = new Map();
+
+function getFlow(userNorm) {
+  return conversationState.get(userNorm) || null;
+}
+
+function setFlow(userNorm, flowName, data) {
+  conversationState.set(userNorm, { flow: flowName, data: data || {} });
+}
+
+function clearFlowIf(userNorm, flowName) {
+  const s = conversationState.get(userNorm);
+  if (s && s.flow === flowName) conversationState.delete(userNorm);
+}
+
+function makeFlowAdapter(flowName) {
+  return {
+    set(userNorm, data) {
+      setFlow(userNorm, flowName, data);
+    },
+    get(userNorm) {
+      const s = getFlow(userNorm);
+      return s && s.flow === flowName ? s.data : undefined;
+    },
+    has(userNorm) {
+      const s = getFlow(userNorm);
+      return !!(s && s.flow === flowName);
+    },
+    delete(userNorm) {
+      clearFlowIf(userNorm, flowName);
+    },
+  };
+}
+
+const sessionPeriod = makeFlowAdapter("period");
+const sessionEdit = makeFlowAdapter("edit");
+const sessionDelete = makeFlowAdapter("delete");
+const sessionRegister = makeFlowAdapter("register");
+const sessionFixedRegister = makeFlowAdapter("fixed_register");
+const sessionFixedDelete = makeFlowAdapter("fixed_delete");
+const sessionStatusConfirm = makeFlowAdapter("status_confirm");
+const sessionPaymentCode = makeFlowAdapter("payment_code");
+const sessionPayConfirm = makeFlowAdapter("pay_confirm");
+const sessionDuplicateConfirm = makeFlowAdapter("duplicate_confirm");
+const sessionNewCategory = makeFlowAdapter("new_category");
+const sessionPendingAmount = makeFlowAdapter("pending_amount");
+const sessionHighValue = makeFlowAdapter("high_value");
+const sessionPendingDesc = makeFlowAdapter("pending_desc");
+
+// sessionLastRegistered não é fluxo: armazena o último rowId do usuário para
+// correção rápida. Mantido como Map separado.
+const sessionLastRegistered = new Map();
+
 const HIGH_VALUE_THRESHOLD = 10000;
 const lastMessagesHistory = new Map(); // userNorm → [últimas 5 mensagens normalizadas]
 
@@ -4523,38 +4554,11 @@ const startReportCategoryFlow = async (to, userNorm, category) => {
 };
 
 const resetSession = (userNorm) => {
-  sessionPeriod.delete(userNorm);
-  sessionEdit.delete(userNorm);
-  sessionDelete.delete(userNorm);
-  sessionRegister.delete(userNorm);
-  sessionFixedRegister.delete(userNorm);
-  sessionFixedDelete.delete(userNorm);
-  sessionStatusConfirm.delete(userNorm);
-  sessionPaymentCode.delete(userNorm);
-  sessionPayConfirm.delete(userNorm);
+  conversationState.delete(userNorm);
   sessionLastRegistered.delete(userNorm);
-  sessionDuplicateConfirm.delete(userNorm);
-  sessionNewCategory.delete(userNorm);
-  sessionPendingAmount.delete(userNorm);
-  sessionHighValue.delete(userNorm);
-  sessionPendingDesc.delete(userNorm);
 };
 
-const hasActiveSession = (userNorm) =>
-  sessionPaymentCode.has(userNorm) ||
-  sessionStatusConfirm.has(userNorm) ||
-  sessionPayConfirm.has(userNorm) ||
-  sessionFixedDelete.has(userNorm) ||
-  sessionFixedRegister.has(userNorm) ||
-  sessionEdit.has(userNorm) ||
-  sessionDelete.has(userNorm) ||
-  sessionRegister.has(userNorm) ||
-  sessionPeriod.has(userNorm) ||
-  sessionDuplicateConfirm.has(userNorm) ||
-  sessionNewCategory.has(userNorm) ||
-  sessionPendingAmount.has(userNorm) ||
-  sessionHighValue.has(userNorm) ||
-  sessionPendingDesc.has(userNorm);
+const hasActiveSession = (userNorm) => conversationState.has(userNorm);
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|excluir|parar|pare|stop|inicio|início)$/i;
 const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
@@ -6219,12 +6223,20 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
     }
   }
 
+  // BUG 5: normalização defensiva — recebimento não pode ficar com status "pago"
+  if (entry.tipo === "conta_receber" && entry.status === "pago") {
+    entry.status = "recebido";
+  }
+
   await createRow(entry);
   const resumo = formatEntrySummary(entry);
   const statusLabel = statusIconLabel(entry.status);
   if (entry.tipo === "conta_receber") {
     const categoryInfo = getCategoryInfo(entry.categoria);
-    let message = `💵 *Recebimento Registrado!*
+    const isReceived = entry.status === "recebido";
+    const header = isReceived ? "💵 *Recebimento Registrado!*" : "📅 *Recebimento Agendado!*";
+    const dateLabel = isReceived ? "📅 *Data*" : "📅 *Previsão*";
+    let message = `${header}
 
 💰 *Valor*: ${formatCurrencyBR(entry.valor)}
 
@@ -6232,16 +6244,18 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
 🏷️ *Descrição*: ${entry.descricao}
 
-📅 *Data*: ${formatBRDate(entry.vencimento_iso)}
+${dateLabel}: ${formatBRDate(entry.vencimento_iso)}
 
-${entry.status === "recebido" ? "✓" : "⏳"} *Status*: ${statusLabel}
+${isReceived ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    // Removido: status será informado apenas em sendRegistrationEditPrompt para evitar duplicação
     await sendText(fromRaw, message);
   } else {
     const categoryInfo = getCategoryInfo(entry.categoria);
-    let message = `✅ *Pagamento Registrado!*
+    const isPaid = entry.status === "pago";
+    const header = isPaid ? "✅ *Pagamento Registrado!*" : "📅 *Conta a Pagar Registrada!*";
+    const dateLabel = isPaid ? "📅 *Data*" : "📅 *Vencimento*";
+    let message = `${header}
 
 💸 *Valor*: ${formatCurrencyBR(entry.valor)}
 
@@ -6249,12 +6263,11 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 
 🏷️ *Descrição*: ${entry.descricao}
 
-📅 *Vencimento*: ${formatBRDate(entry.vencimento_iso)}
+${dateLabel}: ${formatBRDate(entry.vencimento_iso)}
 
-${entry.status === "pago" ? "✓" : "⏳"} *Status*: ${statusLabel}
+${isPaid ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    // Removido: status será informado apenas em sendRegistrationEditPrompt para evitar duplicação
     await sendText(fromRaw, message);
   }
 
