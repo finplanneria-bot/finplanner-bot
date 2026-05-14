@@ -5013,6 +5013,115 @@ async function showLancamentos(fromRaw, userNorm, range) {
   await sendText(fromRaw, message);
 }
 
+async function showCategoryBreakdown(fromRaw, userNorm, range) {
+  const rows = await allRowsForUser(userNorm);
+  const expenses = withinPeriod(rows, range.start, range.end)
+    .filter((row) => getVal(row, "tipo") === "conta_pagar" && toNumber(getVal(row, "valor")) > 0);
+  if (!expenses.length) {
+    await sendText(fromRaw, "📊 Nenhum gasto registrado no período selecionado.");
+    return;
+  }
+  const groups = new Map();
+  for (const row of expenses) {
+    const amount = toNumber(getVal(row, "valor"));
+    let slug = (getVal(row, "categoria") || "").toString();
+    let emoji = getVal(row, "categoria_emoji");
+    if (!slug) {
+      const fallback = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo"));
+      slug = fallback.slug;
+      emoji = emoji || fallback.emoji;
+    }
+    const def = getCategoryDefinition(slug) || getCategoryDefinition("outros");
+    const key = def?.slug || slug || "outros";
+    const label = def?.label || key;
+    const finalEmoji = emoji || def?.emoji || "🏷";
+    const entry = groups.get(key) || { label, emoji: finalEmoji, total: 0, count: 0 };
+    entry.total += amount;
+    entry.count += 1;
+    groups.set(key, entry);
+  }
+  const total = Array.from(groups.values()).reduce((acc, g) => acc + g.total, 0);
+  const sorted = Array.from(groups.values()).sort((a, b) => b.total - a.total);
+  const BAR_WIDTH = 12;
+  const lines = sorted.map((g) => {
+    const pct = total > 0 ? Math.round((g.total / total) * 100) : 0;
+    const filled = Math.max(1, Math.round((g.total / total) * BAR_WIDTH));
+    const bar = "█".repeat(filled) + "░".repeat(Math.max(0, BAR_WIDTH - filled));
+    return `${g.emoji} *${g.label}*\n${bar} ${formatCurrencyBR(g.total)} (${pct}%)`;
+  });
+  const periodLabel = buildPeriodLabel(range.start, range.end);
+  const message =
+    `📊 *Gastos por categoria*${periodLabel ? `\n📅 _${periodLabel}_` : ""}\n\n${lines.join("\n\n")}\n\n💰 *Total: ${formatCurrencyBR(total)}*`;
+  await sendText(fromRaw, message);
+}
+
+async function getMostRecentEntry(userNorm) {
+  const lastReg = sessionLastRegistered.get(userNorm);
+  if (lastReg && lastReg.expiresAt > Date.now()) {
+    const row = await findRowById(userNorm, lastReg.rowId);
+    if (row) return row;
+  }
+  const rows = await allRowsForUser(userNorm);
+  if (!rows.length) return null;
+  const sorted = rows
+    .filter((row) => toNumber(getVal(row, "valor")) > 0)
+    .sort((a, b) => {
+      const aTs = new Date(getVal(a, "timestamp") || 0).getTime() || 0;
+      const bTs = new Date(getVal(b, "timestamp") || 0).getTime() || 0;
+      return bTs - aTs;
+    });
+  return sorted[0] || null;
+}
+
+async function handleQuickUndo(fromRaw, userNorm) {
+  const row = await getMostRecentEntry(userNorm);
+  if (!row) {
+    await sendText(fromRaw, "🤔 Não encontrei nenhum lançamento para desfazer.");
+    return;
+  }
+  await confirmDeleteRows(fromRaw, userNorm, [{ row, displayIndex: 1 }]);
+}
+
+async function handleQuickLast(fromRaw, userNorm) {
+  const row = await getMostRecentEntry(userNorm);
+  if (!row) {
+    await sendText(fromRaw, "🤔 Você ainda não tem lançamentos registrados.");
+    return;
+  }
+  const summary = formatEntryBlock(row, { headerLabel: "🕐 *Último lançamento*" });
+  await sendText(fromRaw, summary);
+}
+
+async function handleQuickToday(fromRaw, userNorm) {
+  const rows = await allRowsForUser(userNorm);
+  const todayStart = startOfDay(new Date());
+  const todayEnd = endOfDay(new Date());
+  const filtered = rows
+    .filter((row) => toNumber(getVal(row, "valor")) > 0)
+    .filter((row) => {
+      const date = getEffectiveDate(row);
+      return date && date >= todayStart && date <= todayEnd;
+    })
+    .sort((a, b) => (getEffectiveDate(a)?.getTime() || 0) - (getEffectiveDate(b)?.getTime() || 0));
+  if (!filtered.length) {
+    await sendText(fromRaw, "📅 Nenhum lançamento registrado para hoje.");
+    return;
+  }
+  const blocks = filtered.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  const total = filtered.reduce((acc, row) => {
+    const tipo = getVal(row, "tipo");
+    const val = toNumber(getVal(row, "valor"));
+    return tipo === "conta_pagar" ? acc + val : acc - val;
+  }, 0);
+  const totalLabel = total > 0
+    ? `\n💸 *Saídas hoje: ${formatCurrencyBR(total)}*`
+    : total < 0
+      ? `\n💵 *Entradas hoje: ${formatCurrencyBR(-total)}*`
+      : "";
+  const message = `📅 *Lançamentos de hoje* (${filtered.length})${totalLabel}\n\n${blocks.join("\n\n")}`;
+  await sendText(fromRaw, message);
+}
+
 async function sendReceberHint(fromRaw, userNorm) {
   const rows = await allRowsForUser(userNorm);
   const count = rows.filter(
@@ -6704,8 +6813,23 @@ const KNOWN_INTENTS = new Set([
 const detectIntentHeuristic = (text) => {
   const lower = (text || "").toLowerCase();
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const trimmedNorm = normalized.replace(/\s+/g, " ").trim();
   if (/\b(oi|ola|opa|bom dia|boa tarde|boa noite)\b/.test(normalized)) return "boas_vindas";
-  if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
+  if (/^(abrir\s+)?menu$/.test(trimmedNorm)) return "mostrar_menu";
+  // Comandos r\u00e1pidos (Sess\u00e3o 6B)
+  if (/^(desfazer|desfaz|cancela(?:r)?\s+(?:o\s+)?ultim[oa]|exclui(?:r)?\s+(?:o\s+)?ultim[oa]|apaga(?:r)?\s+(?:o\s+)?ultim[oa]|remove(?:r)?\s+(?:o\s+)?ultim[oa])$/.test(trimmedNorm)) {
+    return "desfazer_ultimo";
+  }
+  if (/^(ultim[oa]|meu\s+ultim[oa]|qual\s+(?:foi\s+)?(?:o\s+|meu\s+)?ultim[oa](?:\s+lan[c\u00e7]amento)?|mostra(?:r)?\s+(?:o\s+)?ultim[oa]|ver\s+(?:o\s+)?ultim[oa])$/.test(trimmedNorm)) {
+    return "mostrar_ultimo";
+  }
+  if (/^(hoje|lan[c\u00e7]amentos?\s+de\s+hoje|gastos?\s+de\s+hoje|o\s+que\s+(?:eu\s+)?gastei\s+hoje|gastei\s+hoje)$/.test(trimmedNorm)) {
+    return "lancamentos_hoje";
+  }
+  // Relat\u00f3rio gr\u00e1fico por categoria (Sess\u00e3o 6A)
+  if (/\bgastos?\s+por\s+categoria|\bcategorias?\s+do\s+m[e\u00ea]s|\bmeus\s+gastos?\s+por\s+categori|gr[a\u00e1]fico\s+(?:de\s+)?(?:gastos?|categori)|\bpor\s+categoria/.test(normalized)) {
+    return "gastos_por_categoria";
+  }
   // Parcelamento — resposta educativa
   if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
   // Relatório completo / saldo / balanço
@@ -6816,6 +6940,12 @@ const buildIntentPrompt = (text) => {
    • excluir: "excluir lançamento", "apagar registro"
    • contas_fixas: "contas fixas", "cadastrar conta fixa"
    • ajuda_parcelamento: "como parcelar", "lançar em parcelas", "em X vezes", "como funciona parcelamento"
+
+🔹 COMANDOS RÁPIDOS:
+   • desfazer_ultimo: "desfazer", "cancela último", "exclui o último", "apaga último"
+   • mostrar_ultimo: "último", "qual foi o último", "mostra o último"
+   • lancamentos_hoje: "hoje", "lançamentos de hoje", "gastos de hoje"
+   • gastos_por_categoria: "gastos por categoria", "ver por categoria", "gráfico de gastos"
 
 🔹 RELATÓRIO COMPLETO / SALDO:
    • relatorio_completo: "saldo", "balanço", "quanto tenho", "quanto sobrou", "resumo", "situação financeira"
@@ -8048,6 +8178,20 @@ async function handleUserText(fromRaw, text, messageId) {
       await showReportByCategory(fromRaw, userNorm, "all", range, catFilter);
       break;
     }
+    case "gastos_por_categoria": {
+      const range = intentPeriod || defaultMonthRange();
+      await showCategoryBreakdown(fromRaw, userNorm, range);
+      break;
+    }
+    case "desfazer_ultimo":
+      await handleQuickUndo(fromRaw, userNorm);
+      break;
+    case "mostrar_ultimo":
+      await handleQuickLast(fromRaw, userNorm);
+      break;
+    case "lancamentos_hoje":
+      await handleQuickToday(fromRaw, userNorm);
+      break;
     case "listar_lancamentos":
       await sendLancPeriodoButtons(fromRaw);
       break;
