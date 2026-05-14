@@ -3127,6 +3127,42 @@ const sendText = async (to, body, options = {}) => {
   return { ok: allDelivered, skipped: false };
 };
 
+const WA_MEDIA_API = `https://graph.facebook.com/${WA_API_VERSION}/${WA_PHONE_NUMBER_ID}/media`;
+
+const uploadDocumentToWA = async (buffer, filename, mimeType) => {
+  const formData = new FormData();
+  formData.append("messaging_product", "whatsapp");
+  formData.append("type", mimeType);
+  formData.append("file", new Blob([buffer], { type: mimeType }), filename);
+  try {
+    const response = await axios.post(WA_MEDIA_API, formData, {
+      headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` },
+      timeout: 15000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+    return response.data?.id || null;
+  } catch (error) {
+    console.error("[WA] media upload failed:", error.response?.data?.error?.message || error.message);
+    return null;
+  }
+};
+
+const sendDocument = (to, mediaId, filename, caption = "") =>
+  sendWA(
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "document",
+      document: {
+        id: mediaId,
+        filename,
+        ...(caption ? { caption } : {}),
+      },
+    },
+    { kind: "document" }
+  );
+
 const sendCopyButton = (to, title, code, btnTitle) => {
   if (!code) return;
   const safeTitle = btnTitle.length > 20 ? `${btnTitle.slice(0, 17)}...` : btnTitle;
@@ -5068,6 +5104,60 @@ async function showLancamentos(fromRaw, userNorm, range) {
   await sendText(fromRaw, message);
 }
 
+const csvEscape = (value) => {
+  const str = (value ?? "").toString();
+  if (/[";\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+};
+
+const buildEntriesCsv = (rows) => {
+  const header = ["Data", "Tipo", "Descrição", "Categoria", "Status", "Valor", "Tags"];
+  const sorted = [...rows].sort(
+    (a, b) => (getEffectiveDate(a)?.getTime() || 0) - (getEffectiveDate(b)?.getTime() || 0)
+  );
+  const lines = sorted.map((row) => {
+    const tipoRaw = (getVal(row, "tipo") || "").toString();
+    const tipoLabel = tipoRaw === "conta_receber" ? "Recebimento" : "Pagamento";
+    const desc = (getVal(row, "descricao") || getVal(row, "conta") || "").toString();
+    const catSlug = (getVal(row, "categoria") || "").toString();
+    const catDef = catSlug ? getCategoryDefinition(catSlug) : null;
+    const catLabel = catDef?.label || catSlug || "—";
+    const status = (getVal(row, "status") || "").toString();
+    const valor = toNumber(getVal(row, "valor")).toFixed(2).replace(".", ",");
+    const tags = (getVal(row, "tags") || "").toString();
+    const date = getEffectiveDate(row);
+    const dateBr = date ? formatBRDate(date) : (getVal(row, "vencimento_br") || "");
+    return [dateBr, tipoLabel, desc, catLabel, status, valor, tags].map(csvEscape).join(";");
+  });
+  return "﻿" + [header.join(";"), ...lines].join("\r\n");
+};
+
+async function exportEntriesToCsv(fromRaw, userNorm, range) {
+  const rows = await allRowsForUser(userNorm);
+  const filtered = withinPeriod(rows, range.start, range.end).filter(
+    (row) => toNumber(getVal(row, "valor")) > 0
+  );
+  if (!filtered.length) {
+    await sendText(fromRaw, "📭 Nenhum lançamento para exportar no período selecionado.");
+    return;
+  }
+  const csv = buildEntriesCsv(filtered);
+  const buffer = Buffer.from(csv, "utf-8");
+  const periodLabel = buildPeriodLabel(range.start, range.end);
+  const safeLabel = (periodLabel || "periodo").replace(/[^\w\-]+/g, "_");
+  const filename = `finplanner_${safeLabel}.csv`;
+  const mediaId = await uploadDocumentToWA(buffer, filename, "text/csv");
+  if (!mediaId) {
+    await sendText(fromRaw, "⚠️ Falha ao gerar o arquivo. Tente novamente em instantes.");
+    return;
+  }
+  const caption = `📎 Extrato — ${periodLabel}\n${filtered.length} lançamento${filtered.length === 1 ? "" : "s"}`;
+  const ok = await sendDocument(fromRaw, mediaId, filename, caption);
+  if (!ok) {
+    await sendText(fromRaw, "⚠️ O arquivo foi gerado mas não pude enviar. Tente novamente.");
+  }
+}
+
 async function showCategoryBreakdown(fromRaw, userNorm, range) {
   const rows = await allRowsForUser(userNorm);
   const expenses = withinPeriod(rows, range.start, range.end)
@@ -6886,6 +6976,10 @@ const detectIntentHeuristic = (text) => {
   if (/\bgastos?\s+por\s+categoria|\bcategorias?\s+do\s+m[e\u00ea]s|\bmeus\s+gastos?\s+por\s+categori|gr[a\u00e1]fico\s+(?:de\s+)?(?:gastos?|categori)|\bpor\s+categoria/.test(normalized)) {
     return "gastos_por_categoria";
   }
+  // Exportar CSV (Sess\u00e3o 9A)
+  if (/\b(export(?:ar|a)|baixar|baixa|gerar?\s+csv|csv|planilha\s+do\s+m[e\u00ea]s|extrato\s+(?:do\s+m[e\u00ea]s|em\s+csv))\b/.test(normalized)) {
+    return "exportar_csv";
+  }
   // Filtro por tag livre (Sess\u00e3o 8B): mensagem s\u00f3 com #tag ou "tag #X" \u2192 relat\u00f3rio filtrado
   if (/^#\w+$/.test(trimmedNorm) || /^tag\s+#\w+$/.test(trimmedNorm)) {
     return "relatorio_completo";
@@ -7010,6 +7104,9 @@ const buildIntentPrompt = (text) => {
 🔹 TAGS LIVRES:
    • Mensagens com #tag (ex: "#trabalho", "tag #aeroporto") → relatorio_completo (o filtro de tag é aplicado depois)
    • Tags são adicionadas pelo usuário em qualquer lançamento (ex: "uber 25 #trabalho")
+
+🔹 EXPORTAÇÃO:
+   • exportar_csv: "exportar", "exportar maio", "baixar csv", "planilha do mês", "extrato em csv"
 
 🔹 RELATÓRIO COMPLETO / SALDO:
    • relatorio_completo: "saldo", "balanço", "quanto tenho", "quanto sobrou", "resumo", "situação financeira"
@@ -8249,6 +8346,11 @@ async function handleUserText(fromRaw, text, messageId) {
     case "gastos_por_categoria": {
       const range = intentPeriod || defaultMonthRange();
       await showCategoryBreakdown(fromRaw, userNorm, range);
+      break;
+    }
+    case "exportar_csv": {
+      const range = intentPeriod || defaultMonthRange();
+      await exportEntriesToCsv(fromRaw, userNorm, range);
       break;
     }
     case "desfazer_ultimo":
