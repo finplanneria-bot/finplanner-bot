@@ -3174,6 +3174,7 @@ const SHEET_HEADERS = [
   "categoria",
   "categoria_emoji",
   "descricao",
+  "tags",
 ];
 
 const USUARIOS_HEADERS = [
@@ -3200,6 +3201,7 @@ const USER_LANC_HEADERS = [
   "vencimento_iso",
   "vencimento_br",
   "criado_em",
+  "tags",
 ];
 const CONFIG_HEADERS = ["key", "value"];
 const LOG_MENSAGENS_HEADERS = [
@@ -3637,6 +3639,7 @@ const buildUserSheetRow = (entry) => {
     vencimento_iso: getVal(entry, "vencimento_iso"),
     vencimento_br: getVal(entry, "vencimento_br"),
     criado_em: getVal(entry, "timestamp") || new Date().toISOString(),
+    tags: getVal(entry, "tags") || "",
   };
 };
 
@@ -4097,6 +4100,29 @@ const formatSaldoLine = (recebido, pago) => {
   const saldo = recebido - pago;
   const saldoText = formatSignedCurrencyBR(saldo);
   return saldo < 0 ? `🟥 🔹 Saldo no período: ${saldoText}` : `🔹 Saldo no período: ${saldoText}`;
+};
+
+const previousMonthRange = (range) => {
+  if (!range?.start || !range?.end) return null;
+  const start = range.start;
+  const end = range.end;
+  if (start.getDate() !== 1) return null;
+  if (start.getMonth() !== end.getMonth() || start.getFullYear() !== end.getFullYear()) return null;
+  const lastDay = endOfMonth(start.getFullYear(), start.getMonth()).getDate();
+  if (end.getDate() !== lastDay) return null;
+  const prevMonth = start.getMonth() === 0 ? 11 : start.getMonth() - 1;
+  const prevYear = start.getMonth() === 0 ? start.getFullYear() - 1 : start.getFullYear();
+  return { start: startOfMonth(prevYear, prevMonth), end: endOfMonth(prevYear, prevMonth) };
+};
+
+const formatVariationLine = (current, previous) => {
+  if (!previous || previous <= 0) {
+    return previous === 0 && current > 0 ? `📈 vs. mês anterior: novo` : null;
+  }
+  const pct = ((current - previous) / previous) * 100;
+  const sign = pct >= 0 ? "+" : "";
+  const arrow = pct > 5 ? "📈" : pct < -5 ? "📉" : "➡️";
+  return `${arrow} vs. mês anterior (${formatCurrencyBR(previous)}): *${sign}${pct.toFixed(1)}%*`;
 };
 
 const buildPeriodLabel = (start, end) => {
@@ -4655,6 +4681,10 @@ const migrateUserSheets = async () => {
 // ============================
 const parseRegisterText = (text) => {
   const original = (text || "").toString();
+  const tagMatches = original.match(/#[\p{L}\p{N}_]+/gu) || [];
+  const tags = tagMatches
+    .map((t) => normalizeDiacritics(t.slice(1)).toLowerCase())
+    .filter((t) => t.length >= 2);
   const normalized = normalizeDiacritics(original).toLowerCase();
   const isReceber = /\b(receb|receita|entrada|venda|vendi|ganhei)\b/.test(normalized);
   const tipo = isReceber ? "conta_receber" : "conta_pagar";
@@ -4717,6 +4747,7 @@ const parseRegisterText = (text) => {
     descricao = descricao.replace(new RegExp(rawEscaped, "i"), "");
   }
   descricao = descricao
+    .replace(/#[\p{L}\p{N}_]+/gu, "")
     .replace(/daqui\s+a?\s*\d+\s*dias?/gi, "")
     .replace(/depois\s+de?\s+amanhã?/gi, "")
     .replace(/semana\s+que\s+vem|próxima\s+semana|proxima\s+semana/gi, "")
@@ -4794,6 +4825,7 @@ const parseRegisterText = (text) => {
     statusDetected,
     descricao,
     tipoPagamento,
+    tags,
   };
 };
 
@@ -4831,11 +4863,26 @@ const detectCategoryFromQuery = (text) => {
   return null;
 };
 
-async function showReportByCategory(fromRaw, userNorm, category, range, categoryFilter = null) {
+const detectTagFromQuery = (text) => {
+  if (!text) return null;
+  const match = text.match(/#([\p{L}\p{N}_]+)/u);
+  return match ? normalizeDiacritics(match[1]).toLowerCase() : null;
+};
+
+const rowHasTag = (row, tag) => {
+  if (!tag) return true;
+  const raw = (getVal(row, "tags") || "").toString().toLowerCase();
+  if (!raw) return false;
+  return raw.split(/[,\s]+/).map((t) => normalizeDiacritics(t).toLowerCase()).includes(tag);
+};
+
+async function showReportByCategory(fromRaw, userNorm, category, range, categoryFilter = null, tagFilter = null) {
   const rows = await allRowsForUser(userNorm);
   const { start, end } = range;
-  const inRange = withinPeriod(rows, start, end);
+  const filteredByTag = tagFilter ? rows.filter((row) => rowHasTag(row, tagFilter)) : rows;
+  const inRange = withinPeriod(filteredByTag, start, end);
   const periodLabel = buildPeriodLabel(start, end);
+  const tagHeader = tagFilter ? `\n🏷 _Tag: #${tagFilter}_` : "";
 
   const statusOf = (row) => (getVal(row, "status") || "").toString().toLowerCase();
   const isPaid = (row) => statusOf(row) === "pago";
@@ -4881,7 +4928,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPaid = sumValues(paid);
     const totalExpenses = sumValues(expenses);
 
-    let message = `📊 *Contas a Pagar*\n📅 _${periodLabel}_`;
+    let message = `📊 *Contas a Pagar*${tagHeader}\n📅 _${periodLabel}_`;
     if (!expenses.length) {
       message += "\n\n✅ Nenhuma conta encontrada para o período selecionado.";
     } else {
@@ -4909,7 +4956,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPending = sumValues(pending);
     const totalReceipts = sumValues(receipts);
 
-    let message = `📊 *Recebimentos*\n📅 _${periodLabel}_`;
+    let message = `📊 *Recebimentos*${tagHeader}\n📅 _${periodLabel}_`;
     if (!receipts.length) {
       message += "\n\n✅ Nenhum recebimento encontrado para o período selecionado.";
     } else {
@@ -4936,7 +4983,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPaid = sumValues(paid);
     const totalPending = sumValues(pending);
 
-    let message = `📊 *Pagamentos*\n📅 _${periodLabel}_`;
+    let message = `📊 *Pagamentos*${tagHeader}\n📅 _${periodLabel}_`;
     if (!paid.length && !pending.length) {
       message += "\n\n✅ Nenhum pagamento encontrado no período.";
       await sendText(fromRaw, message);
@@ -4972,7 +5019,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPendingExpenses = sumValues(pendingExpenses);
     const totalExpenses = sumValues(expenses);
 
-    let message = `📊 *Resumo*\n📅 _${periodLabel}_`;
+    let message = `📊 *Resumo*${tagHeader}\n📅 _${periodLabel}_`;
     if (!receipts.length && !expenses.length) {
       message += "\n\n✅ Nenhum lançamento encontrado para o período selecionado.";
     } else {
@@ -4981,6 +5028,14 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
       message += `\n💵 Entradas: *${formatCurrencyBR(totalReceipts)}*`;
       message += `\n💸 Saídas:   *${formatCurrencyBR(totalExpenses)}*`;
       message += `\n${formatSaldoLine(totalReceived, totalPaid)}`;
+      const prevRange = previousMonthRange({ start, end });
+      if (prevRange) {
+        const prevRows = withinPeriod(rows, prevRange.start, prevRange.end);
+        const prevExpenses = prevRows.filter((row) => getVal(row, "tipo") === "conta_pagar");
+        const prevTotalExpenses = sumValues(prevExpenses);
+        const variationLine = formatVariationLine(totalExpenses, prevTotalExpenses);
+        if (variationLine) message += `\n${variationLine}`;
+      }
       // ── Detalhes por categoria ────────────────────────────────────
       if (expenses.length) {
         message += `\n\n${DIV}`;
@@ -6445,6 +6500,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     categoria: categoria.slug,
     categoria_emoji: categoria.emoji,
     descricao: finalDescricao,
+    tags: (parsed.tags || []).join(","),
   };
   if (!parsed.statusDetected) {
     payload.status = "pendente";
@@ -6830,6 +6886,10 @@ const detectIntentHeuristic = (text) => {
   if (/\bgastos?\s+por\s+categoria|\bcategorias?\s+do\s+m[e\u00ea]s|\bmeus\s+gastos?\s+por\s+categori|gr[a\u00e1]fico\s+(?:de\s+)?(?:gastos?|categori)|\bpor\s+categoria/.test(normalized)) {
     return "gastos_por_categoria";
   }
+  // Filtro por tag livre (Sess\u00e3o 8B): mensagem s\u00f3 com #tag ou "tag #X" \u2192 relat\u00f3rio filtrado
+  if (/^#\w+$/.test(trimmedNorm) || /^tag\s+#\w+$/.test(trimmedNorm)) {
+    return "relatorio_completo";
+  }
   // Parcelamento — resposta educativa
   if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
   // Relatório completo / saldo / balanço
@@ -6946,6 +7006,10 @@ const buildIntentPrompt = (text) => {
    • mostrar_ultimo: "último", "qual foi o último", "mostra o último"
    • lancamentos_hoje: "hoje", "lançamentos de hoje", "gastos de hoje"
    • gastos_por_categoria: "gastos por categoria", "ver por categoria", "gráfico de gastos"
+
+🔹 TAGS LIVRES:
+   • Mensagens com #tag (ex: "#trabalho", "tag #aeroporto") → relatorio_completo (o filtro de tag é aplicado depois)
+   • Tags são adicionadas pelo usuário em qualquer lançamento (ex: "uber 25 #trabalho")
 
 🔹 RELATÓRIO COMPLETO / SALDO:
    • relatorio_completo: "saldo", "balanço", "quanto tenho", "quanto sobrou", "resumo", "situação financeira"
@@ -8159,23 +8223,27 @@ async function handleUserText(fromRaw, text, messageId) {
     case "relatorio_pagamentos_mes": {
       const range = intentPeriod || defaultMonthRange();
       const catFilter = detectCategoryFromQuery(trimmed);
-      await showReportByCategory(fromRaw, userNorm, "pag", range, catFilter);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "pag", range, catFilter, tagFilter);
       break;
     }
     case "relatorio_recebimentos_mes": {
       const range = intentPeriod || defaultMonthRange();
-      await showReportByCategory(fromRaw, userNorm, "rec", range);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "rec", range, null, tagFilter);
       break;
     }
     case "relatorio_contas_pagar_mes": {
       const range = intentPeriod || defaultMonthRange();
-      await showReportByCategory(fromRaw, userNorm, "cp", range);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "cp", range, null, tagFilter);
       break;
     }
     case "relatorio_completo": {
       const range = intentPeriod || defaultMonthRange();
       const catFilter = detectCategoryFromQuery(trimmed);
-      await showReportByCategory(fromRaw, userNorm, "all", range, catFilter);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "all", range, catFilter, tagFilter);
       break;
     }
     case "gastos_por_categoria": {
