@@ -4233,9 +4233,20 @@ Sou seu assistente financeiro no WhatsApp. Basta me mandar uma mensagem normal:
 • Digite *menu* para ver todas as opções
 
 🚀 Pode começar digitando um gasto ou recebimento!`
-          : `Toque em *Abrir menu* ou digite o que deseja fazer.
+          : `📋 *Menu principal*
 
-💡 _Ex: "Paguei R$50 de mercado"_ ou _"saldo"_`,
+💰 Registrar pagamento
+💵 Registrar recebimento
+📅 Contas a pagar
+💵 Contas a receber
+♻️ Contas fixas
+📊 Relatórios
+🧾 Meus lançamentos
+✏️ Editar lançamentos
+🗑️ Excluir lançamento
+⚙️ Ajuda e exemplos
+
+Digite o que deseja (ex: *saldo*, *pendentes*, *relatório*) ou toque em *Abrir menu* para selecionar.`,
       },
       action: {
         button: "Abrir menu",
@@ -4466,6 +4477,9 @@ const sessionLastRegistered = new Map(); // rowId do último lançamento registr
 const sessionDuplicateConfirm = new Map(); // payload aguardando confirmação de duplicado
 const sessionNewCategory = new Map(); // estado do fluxo guiado de criação de categoria
 const sessionPendingAmount = new Map(); // registro sem valor aguardando confirmação de sugestão
+const sessionHighValue = new Map(); // confirmação de valor alto (>R$10k) antes de registrar
+const sessionPendingDesc = new Map(); // registro sem descrição aguardando "em quê?"
+const HIGH_VALUE_THRESHOLD = 10000;
 const lastMessagesHistory = new Map(); // userNorm → [últimas 5 mensagens normalizadas]
 
 const trackMessageAndDetectLoop = (userNorm, normalizedMessage) => {
@@ -4522,6 +4536,8 @@ const resetSession = (userNorm) => {
   sessionDuplicateConfirm.delete(userNorm);
   sessionNewCategory.delete(userNorm);
   sessionPendingAmount.delete(userNorm);
+  sessionHighValue.delete(userNorm);
+  sessionPendingDesc.delete(userNorm);
 };
 
 const hasActiveSession = (userNorm) =>
@@ -4536,7 +4552,9 @@ const hasActiveSession = (userNorm) =>
   sessionPeriod.has(userNorm) ||
   sessionDuplicateConfirm.has(userNorm) ||
   sessionNewCategory.has(userNorm) ||
-  sessionPendingAmount.has(userNorm);
+  sessionPendingAmount.has(userNorm) ||
+  sessionHighValue.has(userNorm) ||
+  sessionPendingDesc.has(userNorm);
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|excluir|parar|pare|stop|inicio|início)$/i;
 const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
@@ -6306,6 +6324,57 @@ async function handlePendingAmountFlow(fromRaw, userNorm, text) {
   return true;
 }
 
+async function handleHighValueFlow(fromRaw, userNorm, text) {
+  const state = sessionHighValue.get(userNorm);
+  if (!state) return false;
+  if (state.expiresAt && Date.now() > state.expiresAt) {
+    sessionHighValue.delete(userNorm);
+    return false;
+  }
+  const normalized = normalizeDiacritics(text).toLowerCase().trim();
+  if (/^(cancelar|cancel|nao|n|sair|voltar|menu)$/.test(normalized)) {
+    sessionHighValue.delete(userNorm);
+    await sendText(fromRaw, "✗ Registro cancelado. Verifique o valor e tente novamente.");
+    return true;
+  }
+  if (/^(sim|s|confirmar|confirma|ok|registrar|registra)$/.test(normalized)) {
+    sessionHighValue.delete(userNorm);
+    await registerEntry(fromRaw, userNorm, state.text, state.tipoPreferencial, { skipHighValueCheck: true });
+    return true;
+  }
+  await sendText(fromRaw, `Responda *sim* para confirmar o registro de *${formatCurrencyBR(state.valor)}* ou *cancelar*.`);
+  return true;
+}
+
+async function handlePendingDescFlow(fromRaw, userNorm, text) {
+  const state = sessionPendingDesc.get(userNorm);
+  if (!state) return false;
+  if (state.expiresAt && Date.now() > state.expiresAt) {
+    sessionPendingDesc.delete(userNorm);
+    return false;
+  }
+  const normalized = normalizeDiacritics(text).toLowerCase().trim();
+  if (/^(cancelar|cancel|sair|voltar|menu)$/.test(normalized)) {
+    sessionPendingDesc.delete(userNorm);
+    await sendCancelMessage(fromRaw);
+    return true;
+  }
+  if (/^(pular|skip|outros?|nao\s+sei|nao)$/.test(normalized)) {
+    sessionPendingDesc.delete(userNorm);
+    await registerEntry(fromRaw, userNorm, state.text, state.tipoPreferencial, { skipDescCheck: true });
+    return true;
+  }
+  // Qualquer outro texto vira a descrição — anexa ao texto original e re-processa
+  const cleanDesc = text.trim().slice(0, 50);
+  if (!cleanDesc) {
+    await sendText(fromRaw, `Em uma palavra, em quê foi? Ou envie *pular*.`);
+    return true;
+  }
+  sessionPendingDesc.delete(userNorm);
+  await registerEntry(fromRaw, userNorm, `${state.text} ${cleanDesc}`, state.tipoPreferencial, { skipDescCheck: true });
+  return true;
+}
+
 async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   const state = sessionStatusConfirm.get(userNorm);
   if (!state) return false;
@@ -6394,10 +6463,8 @@ async function handlePaymentConfirmFlow(fromRaw, userNorm, text) {
           await sendText(fromRaw, `Não encontrei a conta número ${numMatch[1]}.\nDigite o número correto ou *cancelar* para sair.`);
           return true;
         }
-        await deleteRow(row);
-        resetSession(userNorm);
-        await sendText(fromRaw, "🗑️ Conta excluída com sucesso.");
-        await sendMainMenu(fromRaw);
+        sessionPayConfirm.delete(userNorm);
+        await confirmDeleteRows(fromRaw, userNorm, [{ row, displayIndex: idx + 1 }]);
         return true;
       }
       await sendText(fromRaw, `Para excluir, informe o número da conta:\n_Ex: excluir 1_\n\n_Ou *cancelar* para sair._`);
@@ -6524,7 +6591,7 @@ async function markPaymentAsPaid(fromRaw, userNorm, row) {
 // ============================
 // Registro de lançamentos
 // ============================
-async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
+async function registerEntry(fromRaw, userNorm, text, tipoPreferencial, opts = {}) {
   const parsed = parseRegisterText(text);
   if (tipoPreferencial) parsed.tipo = tipoPreferencial;
   if (!parsed.valor) {
@@ -6560,6 +6627,66 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
       return;
     }
     await sendText(fromRaw, "Não consegui identificar o valor. Informe algo como 150, R$150,00 ou \"cem reais\".");
+    return;
+  }
+  // P4 — Se não há descrição clara (ou é só "Pagamento"/"Recebimento" default), perguntar
+  const descNorm = normalizeDiacritics((parsed.descricao || "").toLowerCase()).trim();
+  const isGenericDesc = !descNorm || /^(pagamento|recebimento|outros?)$/.test(descNorm);
+  if (isGenericDesc && !opts.skipDescCheck) {
+    sessionPendingDesc.set(userNorm, {
+      text,
+      tipoPreferencial,
+      parsedValor: parsed.valor,
+      expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+    });
+    const tipoLabel = parsed.tipo === "conta_receber" ? "recebimento" : "pagamento";
+    const success = await sendWA({
+      messaging_product: "whatsapp",
+      to: fromRaw,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: `Em quê foi esse ${tipoLabel} de *${formatCurrencyBR(parsed.valor)}*?\n\n💡 _Responda em uma palavra (ex: uber, mercado, salário)_` },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "DESC:SKIP", title: "Pular (Outros)" } },
+            { type: "reply", reply: { id: "DESC:CANCEL", title: "Cancelar" } },
+          ],
+        },
+      },
+    });
+    if (!success || success.skipped) {
+      await sendText(fromRaw, `Em quê foi esse ${tipoLabel} de *${formatCurrencyBR(parsed.valor)}*?\n_Responda em uma palavra ou *pular* pra registrar como Outros._`);
+    }
+    return;
+  }
+  // P3 — Valor alto: pedir confirmação antes de registrar
+  if (parsed.valor >= HIGH_VALUE_THRESHOLD && !opts.skipHighValueCheck) {
+    sessionHighValue.set(userNorm, {
+      text,
+      tipoPreferencial,
+      valor: parsed.valor,
+      descricao: parsed.descricao,
+      expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+    });
+    const success = await sendWA({
+      messaging_product: "whatsapp",
+      to: fromRaw,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: `⚠️ Valor alto detectado: *${formatCurrencyBR(parsed.valor)}* (${parsed.descricao}).\n\nConfirma o registro?` },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "HVAL:CONFIRM", title: "✓ Sim, registrar" } },
+            { type: "reply", reply: { id: "HVAL:CANCEL", title: "✗ Cancelar" } },
+          ],
+        },
+      },
+    });
+    if (!success || success.skipped) {
+      await sendText(fromRaw, `⚠️ Valor alto: *${formatCurrencyBR(parsed.valor)}* (${parsed.descricao}).\nResponda *sim* para registrar ou *cancelar*.`);
+    }
     return;
   }
   let data = parsed.data instanceof Date ? parsed.data : null;
@@ -7608,6 +7735,38 @@ async function handleInteractiveMessage(from, payload, messageId) {
       await sendText(from, "Qual o valor? (ex: 80 ou 150,50)");
       return;
     }
+    if (id === "HVAL:CONFIRM") {
+      const state = sessionHighValue.get(userNorm);
+      if (!state || Date.now() > state.expiresAt) {
+        await sendText(from, "Sessão expirada. Registre novamente.");
+        return;
+      }
+      sessionHighValue.delete(userNorm);
+      // Re-registrar contornando o guard: marca um flag para pular a checagem
+      await registerEntry(from, userNorm, state.text, state.tipoPreferencial, { skipHighValueCheck: true });
+      return;
+    }
+    if (id === "HVAL:CANCEL") {
+      sessionHighValue.delete(userNorm);
+      await sendText(from, "✗ Registro cancelado. Verifique o valor e tente novamente.");
+      return;
+    }
+    if (id === "DESC:SKIP") {
+      const state = sessionPendingDesc.get(userNorm);
+      if (!state || Date.now() > state.expiresAt) {
+        await sendText(from, "Sessão expirada. Registre novamente.");
+        return;
+      }
+      sessionPendingDesc.delete(userNorm);
+      // Registrar com descrição "Outros" (skip)
+      await registerEntry(from, userNorm, state.text, state.tipoPreferencial, { skipDescCheck: true });
+      return;
+    }
+    if (id === "DESC:CANCEL") {
+      sessionPendingDesc.delete(userNorm);
+      await sendText(from, "✗ Registro cancelado.");
+      return;
+    }
     if (id.startsWith("PAYCODE:ADD:")) {
       const [, , rowId] = id.split(":");
       const state = sessionPaymentCode.get(userNorm);
@@ -8228,6 +8387,8 @@ async function handleUserText(fromRaw, text, messageId) {
   }
 
   if (await handlePendingAmountFlow(fromRaw, userNorm, trimmed)) return;
+  if (await handleHighValueFlow(fromRaw, userNorm, trimmed)) return;
+  if (await handlePendingDescFlow(fromRaw, userNorm, trimmed)) return;
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleStatusConfirmationFlow(fromRaw, userNorm, trimmed)) return;
   if (await handlePaymentConfirmFlow(fromRaw, userNorm, trimmed)) return;
