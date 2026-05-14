@@ -3127,6 +3127,42 @@ const sendText = async (to, body, options = {}) => {
   return { ok: allDelivered, skipped: false };
 };
 
+const WA_MEDIA_API = `https://graph.facebook.com/${WA_API_VERSION}/${WA_PHONE_NUMBER_ID}/media`;
+
+const uploadDocumentToWA = async (buffer, filename, mimeType) => {
+  const formData = new FormData();
+  formData.append("messaging_product", "whatsapp");
+  formData.append("type", mimeType);
+  formData.append("file", new Blob([buffer], { type: mimeType }), filename);
+  try {
+    const response = await axios.post(WA_MEDIA_API, formData, {
+      headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` },
+      timeout: 15000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+    return response.data?.id || null;
+  } catch (error) {
+    console.error("[WA] media upload failed:", error.response?.data?.error?.message || error.message);
+    return null;
+  }
+};
+
+const sendDocument = (to, mediaId, filename, caption = "") =>
+  sendWA(
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "document",
+      document: {
+        id: mediaId,
+        filename,
+        ...(caption ? { caption } : {}),
+      },
+    },
+    { kind: "document" }
+  );
+
 const sendCopyButton = (to, title, code, btnTitle) => {
   if (!code) return;
   const safeTitle = btnTitle.length > 20 ? `${btnTitle.slice(0, 17)}...` : btnTitle;
@@ -3174,6 +3210,7 @@ const SHEET_HEADERS = [
   "categoria",
   "categoria_emoji",
   "descricao",
+  "tags",
 ];
 
 const USUARIOS_HEADERS = [
@@ -3200,6 +3237,7 @@ const USER_LANC_HEADERS = [
   "vencimento_iso",
   "vencimento_br",
   "criado_em",
+  "tags",
 ];
 const CONFIG_HEADERS = ["key", "value"];
 const LOG_MENSAGENS_HEADERS = [
@@ -3637,6 +3675,7 @@ const buildUserSheetRow = (entry) => {
     vencimento_iso: getVal(entry, "vencimento_iso"),
     vencimento_br: getVal(entry, "vencimento_br"),
     criado_em: getVal(entry, "timestamp") || new Date().toISOString(),
+    tags: getVal(entry, "tags") || "",
   };
 };
 
@@ -4097,6 +4136,29 @@ const formatSaldoLine = (recebido, pago) => {
   const saldo = recebido - pago;
   const saldoText = formatSignedCurrencyBR(saldo);
   return saldo < 0 ? `🟥 🔹 Saldo no período: ${saldoText}` : `🔹 Saldo no período: ${saldoText}`;
+};
+
+const previousMonthRange = (range) => {
+  if (!range?.start || !range?.end) return null;
+  const start = range.start;
+  const end = range.end;
+  if (start.getDate() !== 1) return null;
+  if (start.getMonth() !== end.getMonth() || start.getFullYear() !== end.getFullYear()) return null;
+  const lastDay = endOfMonth(start.getFullYear(), start.getMonth()).getDate();
+  if (end.getDate() !== lastDay) return null;
+  const prevMonth = start.getMonth() === 0 ? 11 : start.getMonth() - 1;
+  const prevYear = start.getMonth() === 0 ? start.getFullYear() - 1 : start.getFullYear();
+  return { start: startOfMonth(prevYear, prevMonth), end: endOfMonth(prevYear, prevMonth) };
+};
+
+const formatVariationLine = (current, previous) => {
+  if (!previous || previous <= 0) {
+    return previous === 0 && current > 0 ? `📈 vs. mês anterior: novo` : null;
+  }
+  const pct = ((current - previous) / previous) * 100;
+  const sign = pct >= 0 ? "+" : "";
+  const arrow = pct > 5 ? "📈" : pct < -5 ? "📉" : "➡️";
+  return `${arrow} vs. mês anterior (${formatCurrencyBR(previous)}): *${sign}${pct.toFixed(1)}%*`;
 };
 
 const buildPeriodLabel = (start, end) => {
@@ -4655,6 +4717,10 @@ const migrateUserSheets = async () => {
 // ============================
 const parseRegisterText = (text) => {
   const original = (text || "").toString();
+  const tagMatches = original.match(/#[\p{L}\p{N}_]+/gu) || [];
+  const tags = tagMatches
+    .map((t) => normalizeDiacritics(t.slice(1)).toLowerCase())
+    .filter((t) => t.length >= 2);
   const normalized = normalizeDiacritics(original).toLowerCase();
   const isReceber = /\b(receb|receita|entrada|venda|vendi|ganhei)\b/.test(normalized);
   const tipo = isReceber ? "conta_receber" : "conta_pagar";
@@ -4717,6 +4783,7 @@ const parseRegisterText = (text) => {
     descricao = descricao.replace(new RegExp(rawEscaped, "i"), "");
   }
   descricao = descricao
+    .replace(/#[\p{L}\p{N}_]+/gu, "")
     .replace(/daqui\s+a?\s*\d+\s*dias?/gi, "")
     .replace(/depois\s+de?\s+amanhã?/gi, "")
     .replace(/semana\s+que\s+vem|próxima\s+semana|proxima\s+semana/gi, "")
@@ -4794,6 +4861,7 @@ const parseRegisterText = (text) => {
     statusDetected,
     descricao,
     tipoPagamento,
+    tags,
   };
 };
 
@@ -4831,11 +4899,26 @@ const detectCategoryFromQuery = (text) => {
   return null;
 };
 
-async function showReportByCategory(fromRaw, userNorm, category, range, categoryFilter = null) {
+const detectTagFromQuery = (text) => {
+  if (!text) return null;
+  const match = text.match(/#([\p{L}\p{N}_]+)/u);
+  return match ? normalizeDiacritics(match[1]).toLowerCase() : null;
+};
+
+const rowHasTag = (row, tag) => {
+  if (!tag) return true;
+  const raw = (getVal(row, "tags") || "").toString().toLowerCase();
+  if (!raw) return false;
+  return raw.split(/[,\s]+/).map((t) => normalizeDiacritics(t).toLowerCase()).includes(tag);
+};
+
+async function showReportByCategory(fromRaw, userNorm, category, range, categoryFilter = null, tagFilter = null) {
   const rows = await allRowsForUser(userNorm);
   const { start, end } = range;
-  const inRange = withinPeriod(rows, start, end);
+  const filteredByTag = tagFilter ? rows.filter((row) => rowHasTag(row, tagFilter)) : rows;
+  const inRange = withinPeriod(filteredByTag, start, end);
   const periodLabel = buildPeriodLabel(start, end);
+  const tagHeader = tagFilter ? `\n🏷 _Tag: #${tagFilter}_` : "";
 
   const statusOf = (row) => (getVal(row, "status") || "").toString().toLowerCase();
   const isPaid = (row) => statusOf(row) === "pago";
@@ -4881,7 +4964,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPaid = sumValues(paid);
     const totalExpenses = sumValues(expenses);
 
-    let message = `📊 *Contas a Pagar*\n📅 _${periodLabel}_`;
+    let message = `📊 *Contas a Pagar*${tagHeader}\n📅 _${periodLabel}_`;
     if (!expenses.length) {
       message += "\n\n✅ Nenhuma conta encontrada para o período selecionado.";
     } else {
@@ -4909,7 +4992,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPending = sumValues(pending);
     const totalReceipts = sumValues(receipts);
 
-    let message = `📊 *Recebimentos*\n📅 _${periodLabel}_`;
+    let message = `📊 *Recebimentos*${tagHeader}\n📅 _${periodLabel}_`;
     if (!receipts.length) {
       message += "\n\n✅ Nenhum recebimento encontrado para o período selecionado.";
     } else {
@@ -4936,7 +5019,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPaid = sumValues(paid);
     const totalPending = sumValues(pending);
 
-    let message = `📊 *Pagamentos*\n📅 _${periodLabel}_`;
+    let message = `📊 *Pagamentos*${tagHeader}\n📅 _${periodLabel}_`;
     if (!paid.length && !pending.length) {
       message += "\n\n✅ Nenhum pagamento encontrado no período.";
       await sendText(fromRaw, message);
@@ -4972,7 +5055,7 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
     const totalPendingExpenses = sumValues(pendingExpenses);
     const totalExpenses = sumValues(expenses);
 
-    let message = `📊 *Resumo*\n📅 _${periodLabel}_`;
+    let message = `📊 *Resumo*${tagHeader}\n📅 _${periodLabel}_`;
     if (!receipts.length && !expenses.length) {
       message += "\n\n✅ Nenhum lançamento encontrado para o período selecionado.";
     } else {
@@ -4981,6 +5064,14 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
       message += `\n💵 Entradas: *${formatCurrencyBR(totalReceipts)}*`;
       message += `\n💸 Saídas:   *${formatCurrencyBR(totalExpenses)}*`;
       message += `\n${formatSaldoLine(totalReceived, totalPaid)}`;
+      const prevRange = previousMonthRange({ start, end });
+      if (prevRange) {
+        const prevRows = withinPeriod(rows, prevRange.start, prevRange.end);
+        const prevExpenses = prevRows.filter((row) => getVal(row, "tipo") === "conta_pagar");
+        const prevTotalExpenses = sumValues(prevExpenses);
+        const variationLine = formatVariationLine(totalExpenses, prevTotalExpenses);
+        if (variationLine) message += `\n${variationLine}`;
+      }
       // ── Detalhes por categoria ────────────────────────────────────
       if (expenses.length) {
         message += `\n\n${DIV}`;
@@ -5010,6 +5101,169 @@ async function showLancamentos(fromRaw, userNorm, range) {
   }
   const blocks = filtered.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
   const message = `🧾 *Meus lançamentos*\n\n${blocks.join("\n\n")}`;
+  await sendText(fromRaw, message);
+}
+
+const csvEscape = (value) => {
+  const str = (value ?? "").toString();
+  if (/[";\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+};
+
+const buildEntriesCsv = (rows) => {
+  const header = ["Data", "Tipo", "Descrição", "Categoria", "Status", "Valor", "Tags"];
+  const sorted = [...rows].sort(
+    (a, b) => (getEffectiveDate(a)?.getTime() || 0) - (getEffectiveDate(b)?.getTime() || 0)
+  );
+  const lines = sorted.map((row) => {
+    const tipoRaw = (getVal(row, "tipo") || "").toString();
+    const tipoLabel = tipoRaw === "conta_receber" ? "Recebimento" : "Pagamento";
+    const desc = (getVal(row, "descricao") || getVal(row, "conta") || "").toString();
+    const catSlug = (getVal(row, "categoria") || "").toString();
+    const catDef = catSlug ? getCategoryDefinition(catSlug) : null;
+    const catLabel = catDef?.label || catSlug || "—";
+    const status = (getVal(row, "status") || "").toString();
+    const valor = toNumber(getVal(row, "valor")).toFixed(2).replace(".", ",");
+    const tags = (getVal(row, "tags") || "").toString();
+    const date = getEffectiveDate(row);
+    const dateBr = date ? formatBRDate(date) : (getVal(row, "vencimento_br") || "");
+    return [dateBr, tipoLabel, desc, catLabel, status, valor, tags].map(csvEscape).join(";");
+  });
+  return "﻿" + [header.join(";"), ...lines].join("\r\n");
+};
+
+async function exportEntriesToCsv(fromRaw, userNorm, range) {
+  const rows = await allRowsForUser(userNorm);
+  const filtered = withinPeriod(rows, range.start, range.end).filter(
+    (row) => toNumber(getVal(row, "valor")) > 0
+  );
+  if (!filtered.length) {
+    await sendText(fromRaw, "📭 Nenhum lançamento para exportar no período selecionado.");
+    return;
+  }
+  const csv = buildEntriesCsv(filtered);
+  const buffer = Buffer.from(csv, "utf-8");
+  const periodLabel = buildPeriodLabel(range.start, range.end);
+  const safeLabel = (periodLabel || "periodo").replace(/[^\w\-]+/g, "_");
+  const filename = `finplanner_${safeLabel}.csv`;
+  const mediaId = await uploadDocumentToWA(buffer, filename, "text/csv");
+  if (!mediaId) {
+    await sendText(fromRaw, "⚠️ Falha ao gerar o arquivo. Tente novamente em instantes.");
+    return;
+  }
+  const caption = `📎 Extrato — ${periodLabel}\n${filtered.length} lançamento${filtered.length === 1 ? "" : "s"}`;
+  const ok = await sendDocument(fromRaw, mediaId, filename, caption);
+  if (!ok) {
+    await sendText(fromRaw, "⚠️ O arquivo foi gerado mas não pude enviar. Tente novamente.");
+  }
+}
+
+async function showCategoryBreakdown(fromRaw, userNorm, range) {
+  const rows = await allRowsForUser(userNorm);
+  const expenses = withinPeriod(rows, range.start, range.end)
+    .filter((row) => getVal(row, "tipo") === "conta_pagar" && toNumber(getVal(row, "valor")) > 0);
+  if (!expenses.length) {
+    await sendText(fromRaw, "📊 Nenhum gasto registrado no período selecionado.");
+    return;
+  }
+  const groups = new Map();
+  for (const row of expenses) {
+    const amount = toNumber(getVal(row, "valor"));
+    let slug = (getVal(row, "categoria") || "").toString();
+    let emoji = getVal(row, "categoria_emoji");
+    if (!slug) {
+      const fallback = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo"));
+      slug = fallback.slug;
+      emoji = emoji || fallback.emoji;
+    }
+    const def = getCategoryDefinition(slug) || getCategoryDefinition("outros");
+    const key = def?.slug || slug || "outros";
+    const label = def?.label || key;
+    const finalEmoji = emoji || def?.emoji || "🏷";
+    const entry = groups.get(key) || { label, emoji: finalEmoji, total: 0, count: 0 };
+    entry.total += amount;
+    entry.count += 1;
+    groups.set(key, entry);
+  }
+  const total = Array.from(groups.values()).reduce((acc, g) => acc + g.total, 0);
+  const sorted = Array.from(groups.values()).sort((a, b) => b.total - a.total);
+  const BAR_WIDTH = 12;
+  const lines = sorted.map((g) => {
+    const pct = total > 0 ? Math.round((g.total / total) * 100) : 0;
+    const filled = Math.max(1, Math.round((g.total / total) * BAR_WIDTH));
+    const bar = "█".repeat(filled) + "░".repeat(Math.max(0, BAR_WIDTH - filled));
+    return `${g.emoji} *${g.label}*\n${bar} ${formatCurrencyBR(g.total)} (${pct}%)`;
+  });
+  const periodLabel = buildPeriodLabel(range.start, range.end);
+  const message =
+    `📊 *Gastos por categoria*${periodLabel ? `\n📅 _${periodLabel}_` : ""}\n\n${lines.join("\n\n")}\n\n💰 *Total: ${formatCurrencyBR(total)}*`;
+  await sendText(fromRaw, message);
+}
+
+async function getMostRecentEntry(userNorm) {
+  const lastReg = sessionLastRegistered.get(userNorm);
+  if (lastReg && lastReg.expiresAt > Date.now()) {
+    const row = await findRowById(userNorm, lastReg.rowId);
+    if (row) return row;
+  }
+  const rows = await allRowsForUser(userNorm);
+  if (!rows.length) return null;
+  const sorted = rows
+    .filter((row) => toNumber(getVal(row, "valor")) > 0)
+    .sort((a, b) => {
+      const aTs = new Date(getVal(a, "timestamp") || 0).getTime() || 0;
+      const bTs = new Date(getVal(b, "timestamp") || 0).getTime() || 0;
+      return bTs - aTs;
+    });
+  return sorted[0] || null;
+}
+
+async function handleQuickUndo(fromRaw, userNorm) {
+  const row = await getMostRecentEntry(userNorm);
+  if (!row) {
+    await sendText(fromRaw, "🤔 Não encontrei nenhum lançamento para desfazer.");
+    return;
+  }
+  await confirmDeleteRows(fromRaw, userNorm, [{ row, displayIndex: 1 }]);
+}
+
+async function handleQuickLast(fromRaw, userNorm) {
+  const row = await getMostRecentEntry(userNorm);
+  if (!row) {
+    await sendText(fromRaw, "🤔 Você ainda não tem lançamentos registrados.");
+    return;
+  }
+  const summary = formatEntryBlock(row, { headerLabel: "🕐 *Último lançamento*" });
+  await sendText(fromRaw, summary);
+}
+
+async function handleQuickToday(fromRaw, userNorm) {
+  const rows = await allRowsForUser(userNorm);
+  const todayStart = startOfDay(new Date());
+  const todayEnd = endOfDay(new Date());
+  const filtered = rows
+    .filter((row) => toNumber(getVal(row, "valor")) > 0)
+    .filter((row) => {
+      const date = getEffectiveDate(row);
+      return date && date >= todayStart && date <= todayEnd;
+    })
+    .sort((a, b) => (getEffectiveDate(a)?.getTime() || 0) - (getEffectiveDate(b)?.getTime() || 0));
+  if (!filtered.length) {
+    await sendText(fromRaw, "📅 Nenhum lançamento registrado para hoje.");
+    return;
+  }
+  const blocks = filtered.map((row, index) => formatEntryBlock(row, { index: index + 1 }));
+  const total = filtered.reduce((acc, row) => {
+    const tipo = getVal(row, "tipo");
+    const val = toNumber(getVal(row, "valor"));
+    return tipo === "conta_pagar" ? acc + val : acc - val;
+  }, 0);
+  const totalLabel = total > 0
+    ? `\n💸 *Saídas hoje: ${formatCurrencyBR(total)}*`
+    : total < 0
+      ? `\n💵 *Entradas hoje: ${formatCurrencyBR(-total)}*`
+      : "";
+  const message = `📅 *Lançamentos de hoje* (${filtered.length})${totalLabel}\n\n${blocks.join("\n\n")}`;
   await sendText(fromRaw, message);
 }
 
@@ -6336,6 +6590,7 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
     categoria: categoria.slug,
     categoria_emoji: categoria.emoji,
     descricao: finalDescricao,
+    tags: (parsed.tags || []).join(","),
   };
   if (!parsed.statusDetected) {
     payload.status = "pendente";
@@ -6704,8 +6959,31 @@ const KNOWN_INTENTS = new Set([
 const detectIntentHeuristic = (text) => {
   const lower = (text || "").toLowerCase();
   const normalized = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const trimmedNorm = normalized.replace(/\s+/g, " ").trim();
   if (/\b(oi|ola|opa|bom dia|boa tarde|boa noite)\b/.test(normalized)) return "boas_vindas";
-  if (/^(abrir\s+)?menu$/.test(normalized.replace(/\s+/g, " ").trim())) return "mostrar_menu";
+  if (/^(abrir\s+)?menu$/.test(trimmedNorm)) return "mostrar_menu";
+  // Comandos r\u00e1pidos (Sess\u00e3o 6B)
+  if (/^(desfazer|desfaz|cancela(?:r)?\s+(?:o\s+)?ultim[oa]|exclui(?:r)?\s+(?:o\s+)?ultim[oa]|apaga(?:r)?\s+(?:o\s+)?ultim[oa]|remove(?:r)?\s+(?:o\s+)?ultim[oa])$/.test(trimmedNorm)) {
+    return "desfazer_ultimo";
+  }
+  if (/^(ultim[oa]|meu\s+ultim[oa]|qual\s+(?:foi\s+)?(?:o\s+|meu\s+)?ultim[oa](?:\s+lan[c\u00e7]amento)?|mostra(?:r)?\s+(?:o\s+)?ultim[oa]|ver\s+(?:o\s+)?ultim[oa])$/.test(trimmedNorm)) {
+    return "mostrar_ultimo";
+  }
+  if (/^(hoje|lan[c\u00e7]amentos?\s+de\s+hoje|gastos?\s+de\s+hoje|o\s+que\s+(?:eu\s+)?gastei\s+hoje|gastei\s+hoje)$/.test(trimmedNorm)) {
+    return "lancamentos_hoje";
+  }
+  // Relat\u00f3rio gr\u00e1fico por categoria (Sess\u00e3o 6A)
+  if (/\bgastos?\s+por\s+categoria|\bcategorias?\s+do\s+m[e\u00ea]s|\bmeus\s+gastos?\s+por\s+categori|gr[a\u00e1]fico\s+(?:de\s+)?(?:gastos?|categori)|\bpor\s+categoria/.test(normalized)) {
+    return "gastos_por_categoria";
+  }
+  // Exportar CSV (Sess\u00e3o 9A)
+  if (/\b(export(?:ar|a)|baixar|baixa|gerar?\s+csv|csv|planilha\s+do\s+m[e\u00ea]s|extrato\s+(?:do\s+m[e\u00ea]s|em\s+csv))\b/.test(normalized)) {
+    return "exportar_csv";
+  }
+  // Filtro por tag livre (Sess\u00e3o 8B): mensagem s\u00f3 com #tag ou "tag #X" \u2192 relat\u00f3rio filtrado
+  if (/^#\w+$/.test(trimmedNorm) || /^tag\s+#\w+$/.test(trimmedNorm)) {
+    return "relatorio_completo";
+  }
   // Parcelamento — resposta educativa
   if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
   // Relatório completo / saldo / balanço
@@ -6816,6 +7094,19 @@ const buildIntentPrompt = (text) => {
    • excluir: "excluir lançamento", "apagar registro"
    • contas_fixas: "contas fixas", "cadastrar conta fixa"
    • ajuda_parcelamento: "como parcelar", "lançar em parcelas", "em X vezes", "como funciona parcelamento"
+
+🔹 COMANDOS RÁPIDOS:
+   • desfazer_ultimo: "desfazer", "cancela último", "exclui o último", "apaga último"
+   • mostrar_ultimo: "último", "qual foi o último", "mostra o último"
+   • lancamentos_hoje: "hoje", "lançamentos de hoje", "gastos de hoje"
+   • gastos_por_categoria: "gastos por categoria", "ver por categoria", "gráfico de gastos"
+
+🔹 TAGS LIVRES:
+   • Mensagens com #tag (ex: "#trabalho", "tag #aeroporto") → relatorio_completo (o filtro de tag é aplicado depois)
+   • Tags são adicionadas pelo usuário em qualquer lançamento (ex: "uber 25 #trabalho")
+
+🔹 EXPORTAÇÃO:
+   • exportar_csv: "exportar", "exportar maio", "baixar csv", "planilha do mês", "extrato em csv"
 
 🔹 RELATÓRIO COMPLETO / SALDO:
    • relatorio_completo: "saldo", "balanço", "quanto tenho", "quanto sobrou", "resumo", "situação financeira"
@@ -8029,25 +8320,48 @@ async function handleUserText(fromRaw, text, messageId) {
     case "relatorio_pagamentos_mes": {
       const range = intentPeriod || defaultMonthRange();
       const catFilter = detectCategoryFromQuery(trimmed);
-      await showReportByCategory(fromRaw, userNorm, "pag", range, catFilter);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "pag", range, catFilter, tagFilter);
       break;
     }
     case "relatorio_recebimentos_mes": {
       const range = intentPeriod || defaultMonthRange();
-      await showReportByCategory(fromRaw, userNorm, "rec", range);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "rec", range, null, tagFilter);
       break;
     }
     case "relatorio_contas_pagar_mes": {
       const range = intentPeriod || defaultMonthRange();
-      await showReportByCategory(fromRaw, userNorm, "cp", range);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "cp", range, null, tagFilter);
       break;
     }
     case "relatorio_completo": {
       const range = intentPeriod || defaultMonthRange();
       const catFilter = detectCategoryFromQuery(trimmed);
-      await showReportByCategory(fromRaw, userNorm, "all", range, catFilter);
+      const tagFilter = detectTagFromQuery(trimmed);
+      await showReportByCategory(fromRaw, userNorm, "all", range, catFilter, tagFilter);
       break;
     }
+    case "gastos_por_categoria": {
+      const range = intentPeriod || defaultMonthRange();
+      await showCategoryBreakdown(fromRaw, userNorm, range);
+      break;
+    }
+    case "exportar_csv": {
+      const range = intentPeriod || defaultMonthRange();
+      await exportEntriesToCsv(fromRaw, userNorm, range);
+      break;
+    }
+    case "desfazer_ultimo":
+      await handleQuickUndo(fromRaw, userNorm);
+      break;
+    case "mostrar_ultimo":
+      await handleQuickLast(fromRaw, userNorm);
+      break;
+    case "lancamentos_hoje":
+      await handleQuickToday(fromRaw, userNorm);
+      break;
     case "listar_lancamentos":
       await sendLancPeriodoButtons(fromRaw);
       break;
