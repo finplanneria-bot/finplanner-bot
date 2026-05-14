@@ -3924,6 +3924,43 @@ const findRowById = async (userNorm, rowId) => {
 const withinPeriod = (rows, start, end) => rows.filter((row) => withinRange(getEffectiveDate(row), start, end));
 const sumValues = (rows) => rows.reduce((acc, row) => acc + toNumber(getVal(row, "valor")), 0);
 
+// Busca o lançamento passado mais recente com descrição similar (para sugerir valor)
+const findMostRecentSimilarEntry = async (userNorm, descricao) => {
+  if (!descricao) return null;
+  const descNorm = normalizeDiacritics(String(descricao)).toLowerCase().trim();
+  if (!descNorm || descNorm.length < 2) return null;
+  const stop = new Set(["valor", "pagamento", "conta", "lancamento", "registro", "novo", "uma", "dia", "data"]);
+  const significantTokens = descNorm
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !stop.has(t));
+  if (!significantTokens.length) return null;
+  const rows = await allRowsForUser(userNorm);
+  const candidates = [];
+  for (const row of rows) {
+    const rawDesc = (getVal(row, "descricao") || getVal(row, "conta") || "").toString();
+    if (!rawDesc) continue;
+    const rowDesc = normalizeDiacritics(rawDesc).toLowerCase();
+    const rowTokens = rowDesc.split(/\s+/).filter(Boolean);
+    if (!rowTokens.length) continue;
+    const overlap = significantTokens.filter((t) =>
+      rowTokens.some((rt) => rt === t || (rt.length >= 3 && t.length >= 3 && (rt.startsWith(t) || t.startsWith(rt))))
+    );
+    if (!overlap.length) continue;
+    const valor = toNumber(getVal(row, "valor"));
+    if (!valor || valor <= 0) continue;
+    const date = getEffectiveDate(row);
+    candidates.push({ row, overlapScore: overlap.length, date, valor });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => {
+    if (b.overlapScore !== a.overlapScore) return b.overlapScore - a.overlapScore;
+    const aDate = a.date instanceof Date ? a.date.getTime() : 0;
+    const bDate = b.date instanceof Date ? b.date.getTime() : 0;
+    return bDate - aDate;
+  });
+  return candidates[0];
+};
+
 // ============================
 // Rendering helpers
 // ============================
@@ -4366,6 +4403,7 @@ const sessionPayConfirm = new Map();
 const sessionLastRegistered = new Map(); // rowId do último lançamento registrado (para correção rápida)
 const sessionDuplicateConfirm = new Map(); // payload aguardando confirmação de duplicado
 const sessionNewCategory = new Map(); // estado do fluxo guiado de criação de categoria
+const sessionPendingAmount = new Map(); // registro sem valor aguardando confirmação de sugestão
 const lastMessagesHistory = new Map(); // userNorm → [últimas 5 mensagens normalizadas]
 
 const trackMessageAndDetectLoop = (userNorm, normalizedMessage) => {
@@ -4421,6 +4459,7 @@ const resetSession = (userNorm) => {
   sessionLastRegistered.delete(userNorm);
   sessionDuplicateConfirm.delete(userNorm);
   sessionNewCategory.delete(userNorm);
+  sessionPendingAmount.delete(userNorm);
 };
 
 const hasActiveSession = (userNorm) =>
@@ -4434,7 +4473,8 @@ const hasActiveSession = (userNorm) =>
   sessionRegister.has(userNorm) ||
   sessionPeriod.has(userNorm) ||
   sessionDuplicateConfirm.has(userNorm) ||
-  sessionNewCategory.has(userNorm);
+  sessionNewCategory.has(userNorm) ||
+  sessionPendingAmount.has(userNorm);
 
 const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|excluir|parar|pare|stop|inicio|início)$/i;
 const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
@@ -5989,6 +6029,29 @@ async function handleStatusSelection(fromRaw, userNorm, selectedStatus) {
   await finalizeRegisterEntry(fromRaw, userNorm, entry, { statusSource: "user_confirm", autoStatus: true });
 }
 
+async function handlePendingAmountFlow(fromRaw, userNorm, text) {
+  const state = sessionPendingAmount.get(userNorm);
+  if (!state) return false;
+  if (state.expiresAt && Date.now() > state.expiresAt) {
+    sessionPendingAmount.delete(userNorm);
+    return false;
+  }
+  const normalized = normalizeDiacritics(text).toLowerCase().trim();
+  if (/^(cancelar|cancel|sair|voltar|menu)$/.test(normalized)) {
+    sessionPendingAmount.delete(userNorm);
+    await sendCancelMessage(fromRaw);
+    return true;
+  }
+  const typedValue = toNumber(text);
+  if (typedValue > 0) {
+    sessionPendingAmount.delete(userNorm);
+    await registerEntry(fromRaw, userNorm, `${state.text} ${typedValue}`, state.tipoPreferencial);
+    return true;
+  }
+  await sendText(fromRaw, `Informe o valor (ex: 80 ou 150,50) ou *cancelar*:`);
+  return true;
+}
+
 async function handleStatusConfirmationFlow(fromRaw, userNorm, text) {
   const state = sessionStatusConfirm.get(userNorm);
   if (!state) return false;
@@ -6211,6 +6274,37 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial) {
   const parsed = parseRegisterText(text);
   if (tipoPreferencial) parsed.tipo = tipoPreferencial;
   if (!parsed.valor) {
+    // 5B — Sugestão de valor baseada em histórico
+    const similar = await findMostRecentSimilarEntry(userNorm, parsed.descricao);
+    if (similar) {
+      sessionPendingAmount.set(userNorm, {
+        text,
+        tipoPreferencial,
+        suggestedValue: similar.valor,
+        expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+      });
+      const recentDesc = (getVal(similar.row, "descricao") || getVal(similar.row, "conta") || parsed.descricao).toString();
+      const suggestion = formatCurrencyBR(similar.valor);
+      const success = await sendWA({
+        messaging_product: "whatsapp",
+        to: fromRaw,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: `Qual o valor de *${parsed.descricao}*?\n\n💡 Último _(${recentDesc})_ foi *${suggestion}*` },
+          action: {
+            buttons: [
+              { type: "reply", reply: { id: "AMT:USE", title: `✓ Usar ${suggestion}` } },
+              { type: "reply", reply: { id: "AMT:OTHER", title: "💬 Outro valor" } },
+            ],
+          },
+        },
+      });
+      if (!success || success.skipped) {
+        await sendText(fromRaw, `Qual o valor de *${parsed.descricao}*?\n💡 Último foi *${suggestion}*. Responda *sim* para usar ou informe outro valor.`);
+      }
+      return;
+    }
     await sendText(fromRaw, "Não consegui identificar o valor. Informe algo como 150, R$150,00 ou \"cem reais\".");
     return;
   }
@@ -7203,6 +7297,26 @@ async function handleInteractiveMessage(from, payload, messageId) {
       await sendText(from, prompt);
       return;
     }
+    if (id === "AMT:USE") {
+      const state = sessionPendingAmount.get(userNorm);
+      if (!state || Date.now() > state.expiresAt) {
+        await sendText(from, "Sessão expirada. Registre novamente.");
+        return;
+      }
+      sessionPendingAmount.delete(userNorm);
+      await registerEntry(from, userNorm, `${state.text} ${state.suggestedValue}`, state.tipoPreferencial);
+      return;
+    }
+    if (id === "AMT:OTHER") {
+      const state = sessionPendingAmount.get(userNorm);
+      if (!state || Date.now() > state.expiresAt) {
+        await sendText(from, "Sessão expirada. Registre novamente.");
+        return;
+      }
+      // Keep state alive, just ask for value
+      await sendText(from, "Qual o valor? (ex: 80 ou 150,50)");
+      return;
+    }
     if (id.startsWith("PAYCODE:ADD:")) {
       const [, , rowId] = id.split(":");
       const state = sessionPaymentCode.get(userNorm);
@@ -7635,6 +7749,64 @@ async function handleUserText(fromRaw, text, messageId) {
     }
   }
 
+  // Edição em linguagem natural — detecta "muda valor/data/categoria" no último lançamento
+  {
+    const lastReg = sessionLastRegistered.get(userNorm);
+    if (lastReg && lastReg.expiresAt > Date.now()) {
+      const valorEditMatch =
+        normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:o\s+)?valor\s+(?:pra|para|pro|p|:)?\s*([\d,\.]+)/) ||
+        normalizedMessage.match(/\bvalor\s+(?:e|eh|=)\s+([\d,\.]+)/);
+      const dataEditMatch =
+        normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:a\s+)?(?:data|vencimento)\s+(?:pra|para|pro|p|:)?\s*(.+?)$/) ||
+        normalizedMessage.match(/\b(?:data|vencimento)\s+(?:e|eh|=)\s+(.+?)$/);
+      const categoriaEditMatch =
+        normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:a\s+)?categoria\s+(?:pra|para|pro|p|:)?\s*(.+?)$/) ||
+        normalizedMessage.match(/\bcategoria\s+(?:e|eh|=)\s+(.+?)$/);
+      if (valorEditMatch || dataEditMatch || categoriaEditMatch) {
+        const row = await findRowById(userNorm, lastReg.rowId);
+        if (row) {
+          const updates = [];
+          if (valorEditMatch) {
+            const newValue = toNumber(valorEditMatch[1]);
+            if (newValue > 0) {
+              const oldValue = toNumber(getVal(row, "valor"));
+              setVal(row, "valor", newValue);
+              updates.push(`💰 Valor: ${formatCurrencyBR(oldValue)} → *${formatCurrencyBR(newValue)}*`);
+            }
+          }
+          if (dataEditMatch) {
+            const newDate = parseDateToken(dataEditMatch[1].trim());
+            if (newDate && !Number.isNaN(newDate.getTime())) {
+              const oldDateBr = getVal(row, "vencimento_br") || "";
+              setVal(row, "vencimento_iso", newDate.toISOString());
+              setVal(row, "vencimento_br", formatBRDate(newDate));
+              updates.push(`📅 Data: ${oldDateBr} → *${formatBRDate(newDate)}*`);
+            }
+          }
+          if (categoriaEditMatch) {
+            const catText = categoriaEditMatch[1].trim();
+            const detected = await resolveCategory(catText, getVal(row, "tipo"), userNorm);
+            if (detected) {
+              const oldCatSlug = (getVal(row, "categoria") || "").toString();
+              const oldCatDef = getCategoryDefinition(oldCatSlug);
+              const oldLabel = oldCatDef ? `${oldCatDef.emoji} ${oldCatDef.label}` : oldCatSlug;
+              setVal(row, "categoria", detected.slug);
+              setVal(row, "categoria_emoji", detected.emoji);
+              updates.push(`📂 Categoria: ${oldLabel} → *${detected.emoji} ${detected.label || detected.slug}*`);
+            }
+          }
+          if (updates.length) {
+            await saveRow(row);
+            sessionLastRegistered.set(userNorm, { ...lastReg, expiresAt: Date.now() + SESSION_TIMEOUT_MS });
+            const desc = getVal(row, "descricao") || getVal(row, "conta") || "Lançamento";
+            await sendText(fromRaw, `✅ Lançamento atualizado!\n\n_${desc}_\n${updates.join("\n")}`);
+            return;
+          }
+        }
+      }
+    }
+  }
+
   // Correção rápida — detecta padrões naturais de correção logo após um registro
   const correctionRegex = /\b(errad[oa]|incorret[oa]|errei|tá errad[oa]|ta errad[oa]|não é isso|nao e isso|ops?|opa|me enganei|lancei errado|registrei errado)\b|era\s+[\d,\.]+\s+(?:e\s+)?n[aã]o\b|\bn[aã]o\s+era\b|\bna\s+verdade\b|\bcorrig[ei]\b|\beschece\s+o\s+[uú]ltim|\btava\s+errad|\bfoi\s+errad|\bvalor\s+errad/i;
   if (correctionRegex.test(normalizedMessage)) {
@@ -7764,6 +7936,7 @@ async function handleUserText(fromRaw, text, messageId) {
     return;
   }
 
+  if (await handlePendingAmountFlow(fromRaw, userNorm, trimmed)) return;
   if (await handlePaymentCodeFlow(fromRaw, userNorm, trimmed)) return;
   if (await handleStatusConfirmationFlow(fromRaw, userNorm, trimmed)) return;
   if (await handlePaymentConfirmFlow(fromRaw, userNorm, trimmed)) return;
