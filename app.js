@@ -5774,6 +5774,12 @@ async function handleDeleteConfirmation(fromRaw, userNorm, text) {
   if (/^(nao|não|n)(\b|\s)/.test(normalized) || /cancel/.test(normalized) || /parar/.test(normalized)) {
     return finalizeDeleteConfirmation(fromRaw, userNorm, false);
   }
+  // Estado de confirmação ativo mas texto não reconhecido — orienta e mantém o fluxo
+  // (evita que a mensagem vaze para detecção de intenção e seja registrada como novo lançamento)
+  if (state?.awaiting === "confirm") {
+    await sendText(fromRaw, "Não entendi. Toque em *Sim, excluir* / *Cancelar* nos botões acima, ou responda *sim* / *cancelar*.");
+    return true;
+  }
   return false;
 }
 
@@ -7216,6 +7222,15 @@ const detectIntentHeuristic = (text) => {
   const trimmedNorm = normalized.replace(/\s+/g, " ").trim();
   if (/\b(oi|ola|opa|bom dia|boa tarde|boa noite)\b/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(trimmedNorm)) return "mostrar_menu";
+  // Pedido de ajuda / "como funciona" — formas naturais que o teste cego pegou
+  if (/^(ajuda|me\s+ajuda|preciso\s+de\s+ajuda|socorro|help)$/.test(trimmedNorm)
+      || /\bcomo\s+(?:voce|vc|isso|esse\s+bot|esse\s+app|funciona)\b/.test(normalized)
+      || /\bo\s+que\s+(?:voce|vc|esse\s+bot|esse\s+app)\s+faz\b/.test(normalized)
+      || /^(me\s+)?explica(?:r)?(\s+(?:isso|tudo|melhor))?$/.test(trimmedNorm)
+      || /\b(?:me\s+)?ensina(?:r)?\s+(?:a\s+)?(?:usar|mexer)\b/.test(normalized)
+      || /^(comandos|lista\s+de\s+comandos)$/.test(trimmedNorm)) {
+    return "boas_vindas";
+  }
   // Comandos r\u00e1pidos (Sess\u00e3o 6B)
   if (/^(desfazer|desfaz|cancela(?:r)?\s+(?:o\s+)?ultim[oa]|exclui(?:r)?\s+(?:o\s+)?ultim[oa]|apaga(?:r)?\s+(?:o\s+)?ultim[oa]|remove(?:r)?\s+(?:o\s+)?ultim[oa])$/.test(trimmedNorm)) {
     return "desfazer_ultimo";
@@ -7265,6 +7280,15 @@ const detectIntentHeuristic = (text) => {
   if (/contas?\s+a\s+pagar|\bpendentes?\b|a pagar/.test(lower)) return "listar_pendentes";
   // Vencimentos próximos
   if (/\bvenc(e|er|imento|imentos)\b|o que (devo|falta pagar)|proximas? contas?/.test(normalized)) return "listar_pendentes";
+  // Formas naturais de "estou devendo / minhas dívidas / contas em atraso"
+  if (/\b(?:to|tou|tow|estou|esta|ta)\s+devendo\b/.test(normalized)
+      || /\bdevendo\s+(?:o|a|os|as|no|na|um|uma)\b/.test(normalized)
+      || /\bminhas?\s+(?:contas\s+)?d[ií]vidas?\b/.test(normalized)
+      || /\bcontas?\s+(?:em\s+)?(?:atraso|atrasad[ao]s?)\b/.test(normalized)
+      || /\bo\s+que\s+(?:eu\s+)?tenho\s+(?:que|pra|para)\s+pagar\b/.test(normalized)
+      || /\bme\s+lembra(?:r)?\s+(?:(?:d[aeo]s?|as?|os?)\s+)?(?:minhas?\s+)?contas?\b/.test(normalized)) {
+    return "listar_pendentes";
+  }
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
