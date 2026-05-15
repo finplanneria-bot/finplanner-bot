@@ -3852,6 +3852,104 @@ const upsertUsuarioFromSubscription = async ({
   return update;
 };
 
+async function syncStripeCheckouts({ days = 30, notify = true } = {}) {
+  if (!stripe) return { error: "Stripe não configurado (STRIPE_SECRET_KEY ausente)" };
+  const since = Math.floor(Date.now() / 1000) - days * 24 * 3600;
+  let sessions = [];
+  try {
+    const result = await stripe.checkout.sessions.list({ limit: 100, created: { gte: since } });
+    sessions = result.data.filter((s) => s.payment_status === "paid" || s.status === "complete");
+  } catch (err) {
+    console.error("[STRIPE SYNC] Erro ao listar sessions:", err.message);
+    return { error: err.message };
+  }
+  let activated = 0;
+  let alreadyActive = 0;
+  let noWhatsapp = 0;
+  let errors = 0;
+  const activatedUsers = [];
+  for (const session of sessions) {
+    let whatsapp = session.metadata?.whatsapp || "";
+    if (!whatsapp && session.customer_details?.phone) whatsapp = session.customer_details.phone;
+    if (!whatsapp && Array.isArray(session.custom_fields)) {
+      const phoneField = session.custom_fields.find((f) => {
+        const key = String(f?.key || "").toLowerCase();
+        return /whats|telefone|celular|phone/.test(key);
+      });
+      whatsapp = phoneField?.text?.value || phoneField?.numeric?.value || "";
+    }
+    if (!whatsapp) {
+      noWhatsapp++;
+      continue;
+    }
+    const userNorm = normalizeWhatsAppNumber(whatsapp);
+    if (!userNorm) {
+      noWhatsapp++;
+      continue;
+    }
+    const isActive = await isUsuarioAtivo(userNorm).catch(() => false);
+    if (isActive) {
+      alreadyActive++;
+      continue;
+    }
+    let plano = normalizePlan(session.metadata?.plano);
+    if (!plano && session.subscription) {
+      const subMeta = await getSubscriptionMetadata(stripe, session.subscription);
+      plano = normalizePlan(subMeta?.plano);
+    }
+    if (!plano) {
+      try {
+        const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 5 });
+        const priceId = lineItems?.data?.[0]?.price?.id || "";
+        if (priceId === STRIPE_PRICE_MENSAL) plano = "mensal";
+        else if (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
+        else if (priceId === STRIPE_PRICE_ANUAL) plano = "anual";
+      } catch (e) {
+        console.error("[STRIPE SYNC] Erro ao buscar line items:", session.id, e.message);
+      }
+    }
+    if (!plano) {
+      errors++;
+      continue;
+    }
+    try {
+      const nome = session.customer_details?.name || session.metadata?.nome || "";
+      const email = session.customer_details?.email || session.metadata?.email || "";
+      const now = new Date();
+      const trialVencimento = new Date(now);
+      trialVencimento.setDate(trialVencimento.getDate() + 3);
+      await upsertUsuarioFromSubscription({
+        userNorm,
+        nome,
+        plano,
+        email,
+        checkout_id: session.id,
+        data_inicio: formatISODate(now),
+        vencimento_trial: formatISODate(trialVencimento),
+        ativo: true,
+        extendVencimento: false,
+      });
+      activated++;
+      activatedUsers.push(userNorm);
+      console.log("[STRIPE SYNC] Ativado:", maskPhone(userNorm), plano);
+    } catch (err) {
+      console.error("[STRIPE SYNC] Erro ao ativar:", maskPhone(userNorm), err.message);
+      errors++;
+    }
+  }
+  const summary = { total: sessions.length, activated, alreadyActive, noWhatsapp, errors };
+  console.log("[STRIPE SYNC] Resultado:", summary);
+  if (notify && ADMIN_WA_NUMBER && activated > 0) {
+    const names = activatedUsers.map((u) => maskPhone(u)).join(", ");
+    sendText(
+      ADMIN_WA_NUMBER,
+      `✅ *Stripe Sync*: ${activated} usuário(s) ativado(s) retroativamente.\nNúmeros: ${names}`,
+      { bypassWindow: true }
+    ).catch(() => {});
+  }
+  return summary;
+}
+
 const isUsuarioAtivo = async (userNorm) => {
   if (!userNorm) return false;
   const cached = usuarioStatusCache.get(userNorm);
@@ -8296,6 +8394,45 @@ async function handleUserText(fromRaw, text, messageId) {
       return;
     }
 
+    // Comando: "stripe status" — verifica configuração do Stripe
+    if (/^stripe\s+status$/i.test(normalizedMessage)) {
+      const lines = [
+        `🔧 *Stripe Status*`,
+        ``,
+        `STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? "✅" : "❌ ausente"}`,
+        `STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET ? "✅" : "❌ ausente"}`,
+        `STRIPE_PRICE_MENSAL: ${STRIPE_PRICE_MENSAL ? "✅" : "❌ ausente"}`,
+        `STRIPE_PRICE_TRIMESTRAL: ${STRIPE_PRICE_TRIMESTRAL ? "✅" : "❌ ausente"}`,
+        `STRIPE_PRICE_ANUAL: ${STRIPE_PRICE_ANUAL ? "✅" : "❌ ausente"}`,
+        `STRIPE_SUCCESS_URL: ${process.env.STRIPE_SUCCESS_URL ? "✅" : "❌ ausente"}`,
+        ``,
+        stripe ? "✅ SDK Stripe inicializado" : "❌ SDK Stripe não inicializado",
+      ];
+      await sendText(fromRaw, lines.join("\n"), { bypassWindow: true });
+      return;
+    }
+
+    // Comando: "stripe sync [dias]" — ativa retroativamente usuários que pagaram
+    const stripeSyncMatch = normalizedMessage.match(/^stripe\s+sync(?:\s+(\d+))?$/i);
+    if (stripeSyncMatch) {
+      const days = Math.min(90, Math.max(1, parseInt(stripeSyncMatch[1] || "30", 10)));
+      await sendText(fromRaw, `🔄 Sincronizando Stripe dos últimos ${days} dia(s)...`, { bypassWindow: true });
+      const r = await syncStripeCheckouts({ days, notify: false });
+      if (r.error) {
+        await sendText(fromRaw, `❌ Erro: ${r.error}`, { bypassWindow: true });
+      } else {
+        await sendText(fromRaw,
+          `✅ *Stripe Sync concluído*\n\n` +
+          `📋 Sessions encontradas: ${r.total}\n` +
+          `✅ Ativados agora: ${r.activated}\n` +
+          `✓ Já estavam ativos: ${r.alreadyActive}\n` +
+          `⚠️ Sem WhatsApp: ${r.noWhatsapp}\n` +
+          `❌ Erros: ${r.errors}`,
+          { bypassWindow: true });
+      }
+      return;
+    }
+
     // Comando: "ajuda admin" ou "admin help" — lista de comandos administrativos
     if (/^(ajuda\s+admin|admin\s+help|comandos\s+admin)$/i.test(normalizedMessage)) {
       const helpMsg =
@@ -8304,6 +8441,8 @@ async function handleUserText(fromRaw, text, messageId) {
         `✅ *ativar* <número> [mensal|trimestral|anual]\n_Ativa o usuário (default mensal)._\n\n` +
         `🚫 *desativar* <número>\n_Marca como inativo._\n\n` +
         `🗑️ *cache* <número>\n_Limpa cache de memória do usuário._\n\n` +
+        `🔧 *stripe status*\n_Verifica configuração do Stripe (env vars)._\n\n` +
+        `🔄 *stripe sync* [dias]\n_Ativa retroativamente usuários que pagaram mas não foram ativados (padrão: 30 dias, máx: 90)._\n\n` +
         `📢 *broadcast* <mensagem>\n_Envia novidade para todos ativos._\n\n` +
         `🧪 *cron teste*\n_Roda lembrete diário manual._\n\n` +
         `_Números aceitos com ou sem +55, com ou sem 9 (variantes auto-detectadas)._`;
@@ -8697,7 +8836,15 @@ async function handleUserText(fromRaw, text, messageId) {
 
 async function handleStripeWebhook(req, res) {
   if (!stripe || !STRIPE_WEBHOOK_SECRET) {
-    console.error("Stripe não configurado corretamente.");
+    const reason = !stripe ? "STRIPE_SECRET_KEY" : "STRIPE_WEBHOOK_SECRET";
+    console.error(`[STRIPE] ${reason} ausente — webhook ignorado.`);
+    if (ADMIN_WA_NUMBER && stripe) {
+      sendText(ADMIN_WA_NUMBER,
+        `⚠️ *Stripe*: ${reason} não configurado.\n` +
+        `Eventos de webhook são *ignorados silenciosamente*. Nenhum usuário será ativado automaticamente até corrigir o .env e reiniciar.`,
+        { bypassWindow: true }
+      ).catch(() => {});
+    }
     res.sendStatus(200);
     return;
   }
@@ -9638,6 +9785,21 @@ if (isCronAviso) {
   app.listen(port, () => {
     console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
     migrateUserSheets();
+
+    // Stripe sync no boot: recupera ativações perdidas se webhook estava quebrado
+    if (stripe) {
+      setTimeout(() => {
+        syncStripeCheckouts({ days: 30, notify: true })
+          .then((r) => {
+            if (r && r.activated > 0) {
+              console.log("[BOOT SYNC] Stripe ativou", r.activated, "usuário(s) retroativamente.");
+            } else if (r && !r.error) {
+              console.log("[BOOT SYNC] Stripe OK — nada a ativar.", r);
+            }
+          })
+          .catch((e) => console.error("[BOOT SYNC] Erro:", e.message));
+      }, 8000);
+    }
 
     // Scheduler interno: dispara cron de lembretes e onboarding diariamente às 08:00 BRT
     cron.schedule("0 8 * * *", async () => {
