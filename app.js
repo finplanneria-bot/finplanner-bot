@@ -7193,6 +7193,56 @@ const generateOffTopicResponse = async (fromRaw, userMessage, userNorm = null) =
   );
 };
 
+const FINPLANNER_CLARIFICATION_PROMPT = `Você é o FinPlanner, assistente financeiro pessoal via WhatsApp.
+
+A mensagem que vai receber é AMBÍGUA — pode ser financeira mas não está claro o que o usuário quer.
+
+✅ O QUE VOCÊ FAZ:
+• Registrar pagamento: "Paguei 50 almoço"
+• Registrar recebimento: "Recebi 3000 salário"
+• Ver saldo / relatórios: "saldo", "quanto gastei"
+• Listar pendências: "contas a pagar", "tô devendo"
+• Editar / excluir lançamentos
+• Ver lançamentos: "histórico", "meus lançamentos"
+
+SUA TAREFA:
+1. Tente inferir o que ele quis dizer (mesmo sem certeza)
+2. Faça UMA pergunta curta pra confirmar OU sugira o comando mais provável
+3. Dê 1 exemplo concreto que ele possa copiar
+4. Tom de amigo no zap — informal, curto, 1 emoji no máximo
+5. Máximo 3 linhas, sem listas, sem markdown
+6. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
+
+EXEMPLOS:
+"academia" → "Quer registrar o pagamento da academia? Tenta: 'Paguei 120 academia' 🙂"
+"mercado" → "Foi gasto no mercado? Me manda o valor: 'Mercado 350'"
+"100 reais" → "Foi gasto ou recebimento de R$100? Tenta: 'Paguei 100 X' ou 'Recebi 100 Y'"
+"tô lascado" → "Quer ver seu saldo do mês? Manda 'saldo' 😊"
+"kkk" → "Bora organizar as finanças? Me conta um gasto que teve hoje 😄"`.trim();
+
+const generateUnknownIntentResponse = async (fromRaw, userMessage, userNorm = null) => {
+  if (openaiClient && checkOpenAIQuota(userNorm)) {
+    try {
+      const resp = await callOpenAI({
+        model: OPENAI_INTENT_MODEL,
+        input: [
+          { role: "system", content: [{ type: "input_text", text: FINPLANNER_CLARIFICATION_PROMPT }] },
+          { role: "user", content: [{ type: "input_text", text: `Usuário disse: "${userMessage}"` }] },
+        ],
+        temperature: 0.6,
+        maxOutputTokens: 150,
+      });
+      if (resp && resp.trim()) {
+        await sendText(fromRaw, resp.trim());
+        return true;
+      }
+    } catch (err) {
+      console.error("[UnknownIntent] Erro ao gerar resposta:", err.message);
+    }
+  }
+  return false;
+};
+
 // ============================
 // Intent detection
 // ============================
@@ -8886,15 +8936,18 @@ async function handleUserText(fromRaw, text, messageId) {
         console.log("[handleUserText] Texto vazio recebido, ignorando.", { fromRaw, userNorm });
       } else {
         console.log("[handleUserText] Fallback contextual (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
-        await sendText(
-          fromRaw,
-          `Não entendi exatamente o que você quer fazer. 🤔\n\n` +
-          `Você pode:\n` +
-          `• Digitar o valor direto: *"Paguei R$150 de mercado"*\n` +
-          `• Digitar *saldo* para ver seu balanço do mês\n` +
-          `• Digitar *menu* para ver todas as opções`
-        );
-        await sendMainMenu(fromRaw);
+        const aiHandled = await generateUnknownIntentResponse(fromRaw, trimmed, userNorm);
+        if (!aiHandled) {
+          await sendText(
+            fromRaw,
+            `Não entendi exatamente o que você quer fazer. 🤔\n\n` +
+            `Você pode:\n` +
+            `• Digitar o valor direto: *"Paguei R$150 de mercado"*\n` +
+            `• Digitar *saldo* para ver seu balanço do mês\n` +
+            `• Digitar *menu* para ver todas as opções`
+          );
+          await sendMainMenu(fromRaw);
+        }
       }
       break;
   }
