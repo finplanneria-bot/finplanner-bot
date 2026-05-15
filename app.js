@@ -8549,6 +8549,57 @@ async function handleUserText(fromRaw, text, messageId) {
       return;
     }
 
+    // Comando: "limpar historico <numero> [sim]" — apaga todos os lançamentos do usuário
+    // (mantém cadastro intacto; usado para isolar testes)
+    const limparMatch = normalizedMessage.match(/^limpar\s+historico\s+(\d{10,15})(?:\s+(sim|confirmar))?$/i);
+    if (limparMatch) {
+      const targetNorm = normalizeUser(limparMatch[1]);
+      const confirmed = !!limparMatch[2];
+      try {
+        const sheet = await ensureUserSheet(targetNorm);
+        const rows = await withRetry(() => sheet.getRows(), "limpar-get-rows");
+        if (!confirmed) {
+          await sendText(fromRaw,
+            `📊 Encontrei *${rows.length}* lançamento(s) de \`${targetNorm}\`.\n\n` +
+            (rows.length === 0
+              ? `_Histórico já está vazio. Nada a fazer._`
+              : `Para confirmar a exclusão, mande:\n*limpar historico ${targetNorm} sim*\n\n⚠️ Operação irreversível — apaga TODOS os lançamentos.`),
+            { bypassWindow: true });
+          return;
+        }
+        if (rows.length === 0) {
+          await sendText(fromRaw, `✅ Histórico de \`${targetNorm}\` já estava vazio.`, { bypassWindow: true });
+          return;
+        }
+        await sendText(fromRaw, `🗑️ Apagando ${rows.length} lançamento(s) de \`${targetNorm}\`...`, { bypassWindow: true });
+        let deleted = 0;
+        let failed = 0;
+        // Apaga de trás pra frente: row.delete() na google-spreadsheet reordena índices
+        for (let i = rows.length - 1; i >= 0; i--) {
+          try {
+            await rows[i].delete();
+            deleted++;
+          } catch (e) {
+            console.error("[LIMPAR HISTORICO] Erro ao deletar row:", e.message);
+            failed++;
+          }
+        }
+        // Limpa estado da conversa + último registro para evitar referência a lançamentos apagados
+        conversationState.delete(targetNorm);
+        sessionLastRegistered.delete(targetNorm);
+        await sendText(fromRaw,
+          `✅ *Histórico limpo* — \`${targetNorm}\`\n\n` +
+          `🗑️ Apagados: ${deleted}\n` +
+          (failed > 0 ? `❌ Falhas: ${failed}\n` : ``) +
+          `🔄 Estado da conversa resetado.`,
+          { bypassWindow: true });
+      } catch (e) {
+        console.error("[LIMPAR HISTORICO] Erro geral:", e.message);
+        await sendText(fromRaw, `❌ Erro: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
+
     // Comando: "ajuda admin" ou "admin help" — lista de comandos administrativos
     if (/^(ajuda\s+admin|admin\s+help|comandos\s+admin)$/i.test(normalizedMessage)) {
       const helpMsg =
@@ -8557,6 +8608,7 @@ async function handleUserText(fromRaw, text, messageId) {
         `✅ *ativar* <número> [mensal|trimestral|anual]\n_Ativa o usuário (default mensal)._\n\n` +
         `🚫 *desativar* <número>\n_Marca como inativo._\n\n` +
         `🗑️ *cache* <número>\n_Limpa cache de memória do usuário._\n\n` +
+        `🧹 *limpar historico* <número> [sim]\n_Apaga TODOS os lançamentos do usuário (para isolar testes). Mande sem 'sim' primeiro pra ver quantos serão apagados._\n\n` +
         `🔧 *stripe status*\n_Verifica configuração do Stripe (env vars)._\n\n` +
         `🔄 *stripe sync* [dias]\n_Ativa retroativamente usuários que pagaram mas não foram ativados (padrão: 30 dias, máx: 90)._\n\n` +
         `📢 *broadcast* <mensagem>\n_Envia novidade para todos ativos._\n\n` +
