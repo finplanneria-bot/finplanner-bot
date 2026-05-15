@@ -3866,8 +3866,10 @@ async function syncStripeCheckouts({ days = 30, notify = true } = {}) {
   let activated = 0;
   let alreadyActive = 0;
   let noWhatsapp = 0;
+  let inactiveSubscription = 0;
   let errors = 0;
   const activatedUsers = [];
+  const inactiveDetails = [];
   for (const session of sessions) {
     let whatsapp = session.metadata?.whatsapp || "";
     if (!whatsapp && session.customer_details?.phone) whatsapp = session.customer_details.phone;
@@ -3891,6 +3893,28 @@ async function syncStripeCheckouts({ days = 30, notify = true } = {}) {
     if (isActive) {
       alreadyActive++;
       continue;
+    }
+    // Verifica estado ATUAL da assinatura no Stripe — só ativar se trialing/active
+    if (session.subscription) {
+      try {
+        const sub = await stripe.subscriptions.retrieve(session.subscription);
+        const validStatuses = ["trialing", "active"];
+        if (!validStatuses.includes(sub.status)) {
+          console.log(
+            "[STRIPE SYNC] Pulando",
+            maskPhone(userNorm),
+            "— subscription status:",
+            sub.status
+          );
+          inactiveSubscription++;
+          inactiveDetails.push(`${maskPhone(userNorm)} (${sub.status})`);
+          continue;
+        }
+      } catch (e) {
+        console.error("[STRIPE SYNC] Erro ao buscar subscription", session.subscription, ":", e.message);
+        errors++;
+        continue;
+      }
     }
     let plano = normalizePlan(session.metadata?.plano);
     if (!plano && session.subscription) {
@@ -3937,7 +3961,16 @@ async function syncStripeCheckouts({ days = 30, notify = true } = {}) {
       errors++;
     }
   }
-  const summary = { total: sessions.length, activated, alreadyActive, noWhatsapp, errors };
+  const summary = {
+    total: sessions.length,
+    activated,
+    alreadyActive,
+    noWhatsapp,
+    inactiveSubscription,
+    errors,
+    activatedUsers: activatedUsers.map((u) => maskPhone(u)),
+    inactiveDetails,
+  };
   console.log("[STRIPE SYNC] Resultado:", summary);
   if (notify && ADMIN_WA_NUMBER && activated > 0) {
     const names = activatedUsers.map((u) => maskPhone(u)).join(", ");
@@ -8421,14 +8454,23 @@ async function handleUserText(fromRaw, text, messageId) {
       if (r.error) {
         await sendText(fromRaw, `❌ Erro: ${r.error}`, { bypassWindow: true });
       } else {
-        await sendText(fromRaw,
-          `✅ *Stripe Sync concluído*\n\n` +
-          `📋 Sessions encontradas: ${r.total}\n` +
-          `✅ Ativados agora: ${r.activated}\n` +
-          `✓ Já estavam ativos: ${r.alreadyActive}\n` +
-          `⚠️ Sem WhatsApp: ${r.noWhatsapp}\n` +
+        const parts = [
+          `✅ *Stripe Sync concluído*`,
+          ``,
+          `📋 Sessions encontradas: ${r.total}`,
+          `✅ Ativados agora: ${r.activated}`,
+          `✓ Já estavam ativos: ${r.alreadyActive}`,
+          `⏭️ Subscription inativa (canceled/past_due): ${r.inactiveSubscription || 0}`,
+          `⚠️ Sem WhatsApp: ${r.noWhatsapp}`,
           `❌ Erros: ${r.errors}`,
-          { bypassWindow: true });
+        ];
+        if (r.activatedUsers && r.activatedUsers.length) {
+          parts.push(``, `*Ativados:* ${r.activatedUsers.join(", ")}`);
+        }
+        if (r.inactiveDetails && r.inactiveDetails.length) {
+          parts.push(``, `*Pulados:* ${r.inactiveDetails.join(", ")}`);
+        }
+        await sendText(fromRaw, parts.join("\n"), { bypassWindow: true });
       }
       return;
     }
