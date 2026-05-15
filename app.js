@@ -3852,6 +3852,104 @@ const upsertUsuarioFromSubscription = async ({
   return update;
 };
 
+async function syncStripeCheckouts({ days = 30, notify = true } = {}) {
+  if (!stripe) return { error: "Stripe não configurado (STRIPE_SECRET_KEY ausente)" };
+  const since = Math.floor(Date.now() / 1000) - days * 24 * 3600;
+  let sessions = [];
+  try {
+    const result = await stripe.checkout.sessions.list({ limit: 100, created: { gte: since } });
+    sessions = result.data.filter((s) => s.payment_status === "paid" || s.status === "complete");
+  } catch (err) {
+    console.error("[STRIPE SYNC] Erro ao listar sessions:", err.message);
+    return { error: err.message };
+  }
+  let activated = 0;
+  let alreadyActive = 0;
+  let noWhatsapp = 0;
+  let errors = 0;
+  const activatedUsers = [];
+  for (const session of sessions) {
+    let whatsapp = session.metadata?.whatsapp || "";
+    if (!whatsapp && session.customer_details?.phone) whatsapp = session.customer_details.phone;
+    if (!whatsapp && Array.isArray(session.custom_fields)) {
+      const phoneField = session.custom_fields.find((f) => {
+        const key = String(f?.key || "").toLowerCase();
+        return /whats|telefone|celular|phone/.test(key);
+      });
+      whatsapp = phoneField?.text?.value || phoneField?.numeric?.value || "";
+    }
+    if (!whatsapp) {
+      noWhatsapp++;
+      continue;
+    }
+    const userNorm = normalizeWhatsAppNumber(whatsapp);
+    if (!userNorm) {
+      noWhatsapp++;
+      continue;
+    }
+    const isActive = await isUsuarioAtivo(userNorm).catch(() => false);
+    if (isActive) {
+      alreadyActive++;
+      continue;
+    }
+    let plano = normalizePlan(session.metadata?.plano);
+    if (!plano && session.subscription) {
+      const subMeta = await getSubscriptionMetadata(stripe, session.subscription);
+      plano = normalizePlan(subMeta?.plano);
+    }
+    if (!plano) {
+      try {
+        const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 5 });
+        const priceId = lineItems?.data?.[0]?.price?.id || "";
+        if (priceId === STRIPE_PRICE_MENSAL) plano = "mensal";
+        else if (priceId === STRIPE_PRICE_TRIMESTRAL) plano = "trimestral";
+        else if (priceId === STRIPE_PRICE_ANUAL) plano = "anual";
+      } catch (e) {
+        console.error("[STRIPE SYNC] Erro ao buscar line items:", session.id, e.message);
+      }
+    }
+    if (!plano) {
+      errors++;
+      continue;
+    }
+    try {
+      const nome = session.customer_details?.name || session.metadata?.nome || "";
+      const email = session.customer_details?.email || session.metadata?.email || "";
+      const now = new Date();
+      const trialVencimento = new Date(now);
+      trialVencimento.setDate(trialVencimento.getDate() + 3);
+      await upsertUsuarioFromSubscription({
+        userNorm,
+        nome,
+        plano,
+        email,
+        checkout_id: session.id,
+        data_inicio: formatISODate(now),
+        vencimento_trial: formatISODate(trialVencimento),
+        ativo: true,
+        extendVencimento: false,
+      });
+      activated++;
+      activatedUsers.push(userNorm);
+      console.log("[STRIPE SYNC] Ativado:", maskPhone(userNorm), plano);
+    } catch (err) {
+      console.error("[STRIPE SYNC] Erro ao ativar:", maskPhone(userNorm), err.message);
+      errors++;
+    }
+  }
+  const summary = { total: sessions.length, activated, alreadyActive, noWhatsapp, errors };
+  console.log("[STRIPE SYNC] Resultado:", summary);
+  if (notify && ADMIN_WA_NUMBER && activated > 0) {
+    const names = activatedUsers.map((u) => maskPhone(u)).join(", ");
+    sendText(
+      ADMIN_WA_NUMBER,
+      `✅ *Stripe Sync*: ${activated} usuário(s) ativado(s) retroativamente.\nNúmeros: ${names}`,
+      { bypassWindow: true }
+    ).catch(() => {});
+  }
+  return summary;
+}
+
 const isUsuarioAtivo = async (userNorm) => {
   if (!userNorm) return false;
   const cached = usuarioStatusCache.get(userNorm);
@@ -4182,28 +4280,19 @@ const buildPeriodLabel = (start, end) => {
 // ============================
 const MAIN_MENU_SECTIONS = [
   {
-    title: "Lançamentos e Contas",
+    title: "Registrar",
     rows: [
-      { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
+      { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um gasto." },
       { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
-      { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
-      { id: "MENU:contas_receber", title: "💵 Contas a receber", description: "Ver e confirmar recebimentos pendentes." },
-      { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Cadastrar ou excluir contas recorrentes." },
     ],
   },
   {
-    title: "Relatórios e Histórico",
+    title: "Consultar",
     rows: [
-      { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gerar por categoria e período." },
-      { id: "MENU:lancamentos", title: "🧾 Meus lançamentos", description: "Ver por mês ou período personalizado." },
-    ],
-  },
-  {
-    title: "Ajustes e Ajuda",
-    rows: [
-      { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
-      { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
-      { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar o FinPlanner IA." },
+      { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pendentes." },
+      { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gastos e recebimentos por período." },
+      { id: "MENU:lancamentos", title: "🧾 Histórico", description: "Ver lançamentos por mês." },
+      { id: "MENU:ajuda", title: "⚙️ Ajuda", description: "Exemplos e comandos disponíveis." },
     ],
   },
 ];
@@ -4217,22 +4306,14 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `Olá! Bem-vindo ao FinPlanner IA 💰
+          ? `Olá! Sou o FinPlanner IA 💰 — seu controle financeiro no WhatsApp.
 
-Sou seu assistente financeiro no WhatsApp. Basta me mandar uma mensagem normal:
+Me diga o que gastou ou recebeu:
+• _"Paguei 50 de almoço"_
+• _"Recebi 3000 de salário"_
+• _"Conta de luz 180 vence dia 15"_
 
-✍️ *Exemplos que funcionam:*
-• _"Paguei R$89,90 de mercado"_
-• _"Recebi R$2.500 de salário"_
-• _"Gastei 45 no almoço hoje"_
-• _"Conta de luz R$180 vence dia 15"_
-
-📊 *Consultas:*
-• Digite *saldo* para ver seu balanço
-• Digite *pendentes* para ver contas a pagar
-• Digite *menu* para ver todas as opções
-
-🚀 Pode começar digitando um gasto ou recebimento!`
+Ou toque em *Abrir menu* para ver as opções.`
           : `Toque em *Abrir menu* ou me diga o que deseja fazer.
 
 💡 _Ex: "Paguei R$50 mercado", "saldo", "pendentes"._`,
@@ -8185,6 +8266,99 @@ async function handleUserText(fromRaw, text, messageId) {
       );
       return;
     }
+    // Comando: "verificar 5511999999999" — diagnóstico fresh da planilha (ignora cache)
+    const verificarMatch = trimmed.match(/^(verificar|check|status)\s+(\d{8,15})$/i);
+    if (verificarMatch) {
+      const inputNorm = normalizeUser(verificarMatch[2]);
+      try {
+        const sheet = await ensureSheetUsuarios();
+        const rows = await withRetry(() => sheet.getRows(), "verificar-get-usuarios");
+        const candidates = getUserCandidates(inputNorm);
+        const exact = rows.find((row) => normalizeUser(getVal(row, "user")) === inputNorm);
+        const candidateMatches = exact
+          ? [exact]
+          : rows.filter((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
+        const target = exact || candidateMatches[0];
+
+        // Estado do cache em memória
+        const cacheLines = candidates.map((c) => {
+          const cached = usuarioStatusCache.get(c);
+          if (!cached) return `  • ${c}: (vazio)`;
+          const remaining = Math.max(0, Math.round((cached.expiresAt - Date.now()) / 1000));
+          return `  • ${c}: ${cached.value ? "ativo" : "inativo"} (TTL ${remaining}s)`;
+        }).join("\n");
+
+        if (!target) {
+          await sendText(fromRaw,
+            `🔍 *Verificação de usuário*\n\n📱 Número informado: ${inputNorm}\n\n` +
+            `❌ *Nenhuma linha encontrada na planilha.*\n\n` +
+            `🔄 Variantes testadas:\n${candidates.map(c => `  • ${c}`).join("\n")}\n\n` +
+            `💾 Cache:\n${cacheLines}\n\n` +
+            `_O usuário precisa estar cadastrado na aba Usuarios._`,
+            { bypassWindow: true });
+          return;
+        }
+
+        const ativoVal = getVal(target, "ativo");
+        const ativoOk = isTruthy(ativoVal);
+        const vencPlanoRaw = getVal(target, "vencimento_plano");
+        const vencTrialRaw = getVal(target, "vencimento_trial");
+        const vencDate = parseDateLoose(vencPlanoRaw) || parseDateLoose(vencTrialRaw);
+        const today = startOfDay(new Date());
+        const vencOk = vencDate ? startOfDay(vencDate).getTime() >= today.getTime() : false;
+        const active = ativoOk && vencOk;
+        const matchedUser = normalizeUser(getVal(target, "user"));
+        const variantMatched = matchedUser === inputNorm ? "✅ exato" : `⚠️ variante (${matchedUser})`;
+
+        const msg =
+          `🔍 *Verificação de usuário*\n\n` +
+          `📱 Número informado: \`${inputNorm}\`\n` +
+          `🔗 Match planilha: ${variantMatched}\n` +
+          `👤 Nome: ${getVal(target, "nome") || "(vazio)"}\n` +
+          `📧 Email: ${getVal(target, "email") || "(vazio)"}\n` +
+          `💳 Plano: ${getVal(target, "plano") || "(vazio)"}\n` +
+          `🟢 Ativo (coluna): \`${ativoVal || "(vazio)"}\` → ${ativoOk ? "OK" : "❌ não é truthy"}\n` +
+          `📅 Vencimento plano: \`${vencPlanoRaw || "(vazio)"}\`\n` +
+          `🧪 Vencimento trial: \`${vencTrialRaw || "(vazio)"}\`\n` +
+          `📆 Vencimento efetivo: ${vencDate ? formatBRDate(vencDate) : "(nenhum)"} → ${vencOk ? "OK (futuro)" : "❌ passou ou vazio"}\n` +
+          `🚦 *Veredicto:* ${active ? "✅ ATIVO" : "❌ INATIVO"}\n\n` +
+          `💾 Cache em memória:\n${cacheLines}\n\n` +
+          `_Para forçar ativação: ativar ${inputNorm} mensal_\n` +
+          `_Para limpar cache: cache ${inputNorm}_`;
+        await sendText(fromRaw, msg, { bypassWindow: true });
+      } catch (e) {
+        await sendText(fromRaw, `❌ Erro ao verificar: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
+
+    // Comando: "cache 5511999999999" — limpa cache de todas as variantes
+    const cacheMatch = trimmed.match(/^cache\s+(?:limpar\s+)?(\d{8,15})$/i);
+    if (cacheMatch) {
+      const targetNorm = normalizeUser(cacheMatch[1]);
+      const candidates = getUserCandidates(targetNorm);
+      candidates.forEach((c) => usuarioStatusCache.delete(c));
+      await sendText(fromRaw, `🗑️ Cache limpo para ${candidates.length} variantes de \`${targetNorm}\`.\nPróxima mensagem do usuário será re-checada na planilha.`, { bypassWindow: true });
+      return;
+    }
+
+    // Comando: "desativar 5511999999999"
+    const desativarMatch = normalizedMessage.match(/^desativar\s+(\d{8,15})$/i);
+    if (desativarMatch) {
+      const targetNorm = normalizeUser(desativarMatch[1]);
+      try {
+        await upsertUsuarioFromSubscription({
+          userNorm: targetNorm,
+          ativo: false,
+          extendVencimento: false,
+        });
+        await sendText(fromRaw, `🚫 Usuário *${targetNorm}* desativado.`, { bypassWindow: true });
+      } catch (e) {
+        await sendText(fromRaw, `❌ Erro ao desativar: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
+
     // Comando: "ativar 5511999999999 mensal" ou "ativar 5511999999999"
     const ativarMatch = /^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i.test(normalizedMessage)
       ? normalizedMessage.match(/^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i)
@@ -8204,10 +8378,75 @@ async function handleUserText(fromRaw, text, messageId) {
           extendVencimento: false,
           vencimento_trial: formatISODate(vencimento),
         });
-        await sendText(fromRaw, `✅ Usuário *${targetNorm}* ativado com plano *${plano}* até ${formatBRDate(vencimento)}.`, { bypassWindow: true });
+        // Garante limpar cache de todas as variantes (upsertUsuarioFromSubscription já faz, mas reforça)
+        const candidates = getUserCandidates(targetNorm);
+        candidates.forEach((c) => usuarioStatusCache.delete(c));
+        await sendText(fromRaw,
+          `✅ Usuário *${targetNorm}* ativado!\n` +
+          `💳 Plano: ${plano}\n` +
+          `📆 Vence em: ${formatBRDate(vencimento)}\n` +
+          `🗑️ Cache limpo (${candidates.length} variantes)\n\n` +
+          `_Confira com: verificar ${targetNorm}_`,
+          { bypassWindow: true });
       } catch (e) {
         await sendText(fromRaw, `❌ Erro ao ativar: ${e.message}`, { bypassWindow: true });
       }
+      return;
+    }
+
+    // Comando: "stripe status" — verifica configuração do Stripe
+    if (/^stripe\s+status$/i.test(normalizedMessage)) {
+      const lines = [
+        `🔧 *Stripe Status*`,
+        ``,
+        `STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? "✅" : "❌ ausente"}`,
+        `STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET ? "✅" : "❌ ausente"}`,
+        `STRIPE_PRICE_MENSAL: ${STRIPE_PRICE_MENSAL ? "✅" : "❌ ausente"}`,
+        `STRIPE_PRICE_TRIMESTRAL: ${STRIPE_PRICE_TRIMESTRAL ? "✅" : "❌ ausente"}`,
+        `STRIPE_PRICE_ANUAL: ${STRIPE_PRICE_ANUAL ? "✅" : "❌ ausente"}`,
+        `STRIPE_SUCCESS_URL: ${process.env.STRIPE_SUCCESS_URL ? "✅" : "❌ ausente"}`,
+        ``,
+        stripe ? "✅ SDK Stripe inicializado" : "❌ SDK Stripe não inicializado",
+      ];
+      await sendText(fromRaw, lines.join("\n"), { bypassWindow: true });
+      return;
+    }
+
+    // Comando: "stripe sync [dias]" — ativa retroativamente usuários que pagaram
+    const stripeSyncMatch = normalizedMessage.match(/^stripe\s+sync(?:\s+(\d+))?$/i);
+    if (stripeSyncMatch) {
+      const days = Math.min(90, Math.max(1, parseInt(stripeSyncMatch[1] || "30", 10)));
+      await sendText(fromRaw, `🔄 Sincronizando Stripe dos últimos ${days} dia(s)...`, { bypassWindow: true });
+      const r = await syncStripeCheckouts({ days, notify: false });
+      if (r.error) {
+        await sendText(fromRaw, `❌ Erro: ${r.error}`, { bypassWindow: true });
+      } else {
+        await sendText(fromRaw,
+          `✅ *Stripe Sync concluído*\n\n` +
+          `📋 Sessions encontradas: ${r.total}\n` +
+          `✅ Ativados agora: ${r.activated}\n` +
+          `✓ Já estavam ativos: ${r.alreadyActive}\n` +
+          `⚠️ Sem WhatsApp: ${r.noWhatsapp}\n` +
+          `❌ Erros: ${r.errors}`,
+          { bypassWindow: true });
+      }
+      return;
+    }
+
+    // Comando: "ajuda admin" ou "admin help" — lista de comandos administrativos
+    if (/^(ajuda\s+admin|admin\s+help|comandos\s+admin)$/i.test(normalizedMessage)) {
+      const helpMsg =
+        `🛠️ *Comandos admin disponíveis*\n\n` +
+        `🔍 *verificar* <número>\n_Diagnóstico completo do usuário (lê fresh da planilha)._\n\n` +
+        `✅ *ativar* <número> [mensal|trimestral|anual]\n_Ativa o usuário (default mensal)._\n\n` +
+        `🚫 *desativar* <número>\n_Marca como inativo._\n\n` +
+        `🗑️ *cache* <número>\n_Limpa cache de memória do usuário._\n\n` +
+        `🔧 *stripe status*\n_Verifica configuração do Stripe (env vars)._\n\n` +
+        `🔄 *stripe sync* [dias]\n_Ativa retroativamente usuários que pagaram mas não foram ativados (padrão: 30 dias, máx: 90)._\n\n` +
+        `📢 *broadcast* <mensagem>\n_Envia novidade para todos ativos._\n\n` +
+        `🧪 *cron teste*\n_Roda lembrete diário manual._\n\n` +
+        `_Números aceitos com ou sem +55, com ou sem 9 (variantes auto-detectadas)._`;
+      await sendText(fromRaw, helpMsg, { bypassWindow: true });
       return;
     }
   }
@@ -8597,7 +8836,15 @@ async function handleUserText(fromRaw, text, messageId) {
 
 async function handleStripeWebhook(req, res) {
   if (!stripe || !STRIPE_WEBHOOK_SECRET) {
-    console.error("Stripe não configurado corretamente.");
+    const reason = !stripe ? "STRIPE_SECRET_KEY" : "STRIPE_WEBHOOK_SECRET";
+    console.error(`[STRIPE] ${reason} ausente — webhook ignorado.`);
+    if (ADMIN_WA_NUMBER && stripe) {
+      sendText(ADMIN_WA_NUMBER,
+        `⚠️ *Stripe*: ${reason} não configurado.\n` +
+        `Eventos de webhook são *ignorados silenciosamente*. Nenhum usuário será ativado automaticamente até corrigir o .env e reiniciar.`,
+        { bypassWindow: true }
+      ).catch(() => {});
+    }
     res.sendStatus(200);
     return;
   }
@@ -9538,6 +9785,21 @@ if (isCronAviso) {
   app.listen(port, () => {
     console.log(`FinPlanner IA (2025-10-23) rodando na porta ${port}`);
     migrateUserSheets();
+
+    // Stripe sync no boot: recupera ativações perdidas se webhook estava quebrado
+    if (stripe) {
+      setTimeout(() => {
+        syncStripeCheckouts({ days: 30, notify: true })
+          .then((r) => {
+            if (r && r.activated > 0) {
+              console.log("[BOOT SYNC] Stripe ativou", r.activated, "usuário(s) retroativamente.");
+            } else if (r && !r.error) {
+              console.log("[BOOT SYNC] Stripe OK — nada a ativar.", r);
+            }
+          })
+          .catch((e) => console.error("[BOOT SYNC] Erro:", e.message));
+      }, 8000);
+    }
 
     // Scheduler interno: dispara cron de lembretes e onboarding diariamente às 08:00 BRT
     cron.schedule("0 8 * * *", async () => {
