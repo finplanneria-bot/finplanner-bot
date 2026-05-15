@@ -8551,46 +8551,71 @@ async function handleUserText(fromRaw, text, messageId) {
 
     // Comando: "limpar historico <numero> [sim]" — apaga todos os lançamentos do usuário
     // (mantém cadastro intacto; usado para isolar testes)
+    // Varre TODAS as variantes do número (com/sem 9, com/sem 55) e limpa em todas
     const limparMatch = normalizedMessage.match(/^limpar\s+historico\s+(\d{10,15})(?:\s+(sim|confirmar))?$/i);
     if (limparMatch) {
       const targetNorm = normalizeUser(limparMatch[1]);
       const confirmed = !!limparMatch[2];
       try {
-        const sheet = await ensureUserSheet(targetNorm);
-        const rows = await withRetry(() => sheet.getRows(), "limpar-get-rows");
-        if (!confirmed) {
+        await ensureAuth();
+        const candidates = getUserCandidates(targetNorm);
+        const found = [];
+        for (const cand of candidates) {
+          const title = getUserSheetName(cand);
+          const sheet = doc.sheetsByTitle[title];
+          if (!sheet) continue;
+          try {
+            await withRetry(() => sheet.loadHeaderRow(), "limpar-load-header");
+            const rows = await withRetry(() => sheet.getRows(), "limpar-get-rows");
+            if (rows.length > 0) {
+              found.push({ candidate: cand, title, sheet, rows });
+            }
+          } catch (e) {
+            console.error("[LIMPAR HISTORICO] Erro ao ler aba", title, ":", e.message);
+          }
+        }
+        const totalRows = found.reduce((sum, f) => sum + f.rows.length, 0);
+        if (totalRows === 0) {
           await sendText(fromRaw,
-            `📊 Encontrei *${rows.length}* lançamento(s) de \`${targetNorm}\`.\n\n` +
-            (rows.length === 0
-              ? `_Histórico já está vazio. Nada a fazer._`
-              : `Para confirmar a exclusão, mande:\n*limpar historico ${targetNorm} sim*\n\n⚠️ Operação irreversível — apaga TODOS os lançamentos.`),
+            `📊 Nenhum lançamento encontrado em ${candidates.length} variante(s) de \`${targetNorm}\`.\n\n` +
+            `_Variantes verificadas:_\n${candidates.map(c => `• \`${c}\``).join("\n")}`,
             { bypassWindow: true });
           return;
         }
-        if (rows.length === 0) {
-          await sendText(fromRaw, `✅ Histórico de \`${targetNorm}\` já estava vazio.`, { bypassWindow: true });
+        if (!confirmed) {
+          const summary = found.map(f => `• \`${f.candidate}\` (aba *${f.title}*): ${f.rows.length}`).join("\n");
+          await sendText(fromRaw,
+            `📊 Encontrei *${totalRows}* lançamento(s) em ${found.length} variante(s):\n\n${summary}\n\n` +
+            `Para confirmar a exclusão, mande:\n*limpar historico ${targetNorm} sim*\n\n` +
+            `⚠️ Operação irreversível.`,
+            { bypassWindow: true });
           return;
         }
-        await sendText(fromRaw, `🗑️ Apagando ${rows.length} lançamento(s) de \`${targetNorm}\`...`, { bypassWindow: true });
+        await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...`, { bypassWindow: true });
         let deleted = 0;
         let failed = 0;
-        // Apaga de trás pra frente: row.delete() na google-spreadsheet reordena índices
-        for (let i = rows.length - 1; i >= 0; i--) {
-          try {
-            await rows[i].delete();
-            deleted++;
-          } catch (e) {
-            console.error("[LIMPAR HISTORICO] Erro ao deletar row:", e.message);
-            failed++;
+        for (const f of found) {
+          // Apaga de trás pra frente: row.delete() reordena índices subsequentes
+          for (let i = f.rows.length - 1; i >= 0; i--) {
+            try {
+              await f.rows[i].delete();
+              deleted++;
+            } catch (e) {
+              console.error("[LIMPAR HISTORICO] Erro ao deletar row da aba", f.title, ":", e.message);
+              failed++;
+            }
           }
         }
-        // Limpa estado da conversa + último registro para evitar referência a lançamentos apagados
-        conversationState.delete(targetNorm);
-        sessionLastRegistered.delete(targetNorm);
+        // Limpa estado de TODAS as variantes para evitar referência a lançamentos apagados
+        candidates.forEach((c) => {
+          conversationState.delete(c);
+          sessionLastRegistered.delete(c);
+        });
         await sendText(fromRaw,
           `✅ *Histórico limpo* — \`${targetNorm}\`\n\n` +
           `🗑️ Apagados: ${deleted}\n` +
           (failed > 0 ? `❌ Falhas: ${failed}\n` : ``) +
+          `📁 Abas afetadas: ${found.length}\n` +
           `🔄 Estado da conversa resetado.`,
           { bypassWindow: true });
       } catch (e) {
