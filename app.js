@@ -4182,28 +4182,19 @@ const buildPeriodLabel = (start, end) => {
 // ============================
 const MAIN_MENU_SECTIONS = [
   {
-    title: "Lançamentos e Contas",
+    title: "Registrar",
     rows: [
-      { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um novo gasto." },
+      { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um gasto." },
       { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
-      { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pagamentos pendentes." },
-      { id: "MENU:contas_receber", title: "💵 Contas a receber", description: "Ver e confirmar recebimentos pendentes." },
-      { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Cadastrar ou excluir contas recorrentes." },
     ],
   },
   {
-    title: "Relatórios e Histórico",
+    title: "Consultar",
     rows: [
-      { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gerar por categoria e período." },
-      { id: "MENU:lancamentos", title: "🧾 Meus lançamentos", description: "Ver por mês ou período personalizado." },
-    ],
-  },
-  {
-    title: "Ajustes e Ajuda",
-    rows: [
-      { id: "MENU:editar", title: "✏️ Editar lançamentos", description: "Alterar registros por número." },
-      { id: "MENU:excluir", title: "🗑️ Excluir lançamento", description: "Excluir último ou escolher por número." },
-      { id: "MENU:ajuda", title: "⚙️ Ajuda e exemplos", description: "Como usar o FinPlanner IA." },
+      { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pendentes." },
+      { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gastos e recebimentos por período." },
+      { id: "MENU:lancamentos", title: "🧾 Histórico", description: "Ver lançamentos por mês." },
+      { id: "MENU:ajuda", title: "⚙️ Ajuda", description: "Exemplos e comandos disponíveis." },
     ],
   },
 ];
@@ -4217,22 +4208,14 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `Olá! Bem-vindo ao FinPlanner IA 💰
+          ? `Olá! Sou o FinPlanner IA 💰 — seu controle financeiro no WhatsApp.
 
-Sou seu assistente financeiro no WhatsApp. Basta me mandar uma mensagem normal:
+Me diga o que gastou ou recebeu:
+• _"Paguei 50 de almoço"_
+• _"Recebi 3000 de salário"_
+• _"Conta de luz 180 vence dia 15"_
 
-✍️ *Exemplos que funcionam:*
-• _"Paguei R$89,90 de mercado"_
-• _"Recebi R$2.500 de salário"_
-• _"Gastei 45 no almoço hoje"_
-• _"Conta de luz R$180 vence dia 15"_
-
-📊 *Consultas:*
-• Digite *saldo* para ver seu balanço
-• Digite *pendentes* para ver contas a pagar
-• Digite *menu* para ver todas as opções
-
-🚀 Pode começar digitando um gasto ou recebimento!`
+Ou toque em *Abrir menu* para ver as opções.`
           : `Toque em *Abrir menu* ou me diga o que deseja fazer.
 
 💡 _Ex: "Paguei R$50 mercado", "saldo", "pendentes"._`,
