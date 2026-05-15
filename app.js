@@ -5774,6 +5774,12 @@ async function handleDeleteConfirmation(fromRaw, userNorm, text) {
   if (/^(nao|não|n)(\b|\s)/.test(normalized) || /cancel/.test(normalized) || /parar/.test(normalized)) {
     return finalizeDeleteConfirmation(fromRaw, userNorm, false);
   }
+  // Estado de confirmação ativo mas texto não reconhecido — orienta e mantém o fluxo
+  // (evita que a mensagem vaze para detecção de intenção e seja registrada como novo lançamento)
+  if (state?.awaiting === "confirm") {
+    await sendText(fromRaw, "Não entendi. Toque em *Sim, excluir* / *Cancelar* nos botões acima, ou responda *sim* / *cancelar*.");
+    return true;
+  }
   return false;
 }
 
@@ -7187,6 +7193,56 @@ const generateOffTopicResponse = async (fromRaw, userMessage, userNorm = null) =
   );
 };
 
+const FINPLANNER_CLARIFICATION_PROMPT = `Você é o FinPlanner, assistente financeiro pessoal via WhatsApp.
+
+A mensagem que vai receber é AMBÍGUA — pode ser financeira mas não está claro o que o usuário quer.
+
+✅ O QUE VOCÊ FAZ:
+• Registrar pagamento: "Paguei 50 almoço"
+• Registrar recebimento: "Recebi 3000 salário"
+• Ver saldo / relatórios: "saldo", "quanto gastei"
+• Listar pendências: "contas a pagar", "tô devendo"
+• Editar / excluir lançamentos
+• Ver lançamentos: "histórico", "meus lançamentos"
+
+SUA TAREFA:
+1. Tente inferir o que ele quis dizer (mesmo sem certeza)
+2. Faça UMA pergunta curta pra confirmar OU sugira o comando mais provável
+3. Dê 1 exemplo concreto que ele possa copiar
+4. Tom de amigo no zap — informal, curto, 1 emoji no máximo
+5. Máximo 3 linhas, sem listas, sem markdown
+6. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
+
+EXEMPLOS:
+"academia" → "Quer registrar o pagamento da academia? Tenta: 'Paguei 120 academia' 🙂"
+"mercado" → "Foi gasto no mercado? Me manda o valor: 'Mercado 350'"
+"100 reais" → "Foi gasto ou recebimento de R$100? Tenta: 'Paguei 100 X' ou 'Recebi 100 Y'"
+"tô lascado" → "Quer ver seu saldo do mês? Manda 'saldo' 😊"
+"kkk" → "Bora organizar as finanças? Me conta um gasto que teve hoje 😄"`.trim();
+
+const generateUnknownIntentResponse = async (fromRaw, userMessage, userNorm = null) => {
+  if (openaiClient && checkOpenAIQuota(userNorm)) {
+    try {
+      const resp = await callOpenAI({
+        model: OPENAI_INTENT_MODEL,
+        input: [
+          { role: "system", content: [{ type: "input_text", text: FINPLANNER_CLARIFICATION_PROMPT }] },
+          { role: "user", content: [{ type: "input_text", text: `Usuário disse: "${userMessage}"` }] },
+        ],
+        temperature: 0.6,
+        maxOutputTokens: 150,
+      });
+      if (resp && resp.trim()) {
+        await sendText(fromRaw, resp.trim());
+        return true;
+      }
+    } catch (err) {
+      console.error("[UnknownIntent] Erro ao gerar resposta:", err.message);
+    }
+  }
+  return false;
+};
+
 // ============================
 // Intent detection
 // ============================
@@ -7216,6 +7272,15 @@ const detectIntentHeuristic = (text) => {
   const trimmedNorm = normalized.replace(/\s+/g, " ").trim();
   if (/\b(oi|ola|opa|bom dia|boa tarde|boa noite)\b/.test(normalized)) return "boas_vindas";
   if (/^(abrir\s+)?menu$/.test(trimmedNorm)) return "mostrar_menu";
+  // Pedido de ajuda / "como funciona" — formas naturais que o teste cego pegou
+  if (/^(ajuda|me\s+ajuda|preciso\s+de\s+ajuda|socorro|help)$/.test(trimmedNorm)
+      || /\bcomo\s+(?:voce|vc|isso|esse\s+bot|esse\s+app|funciona)\b/.test(normalized)
+      || /\bo\s+que\s+(?:voce|vc|esse\s+bot|esse\s+app)\s+faz\b/.test(normalized)
+      || /^(me\s+)?explica(?:r)?(\s+(?:isso|tudo|melhor))?$/.test(trimmedNorm)
+      || /\b(?:me\s+)?ensina(?:r)?\s+(?:a\s+)?(?:usar|mexer)\b/.test(normalized)
+      || /^(comandos|lista\s+de\s+comandos)$/.test(trimmedNorm)) {
+    return "boas_vindas";
+  }
   // Comandos r\u00e1pidos (Sess\u00e3o 6B)
   if (/^(desfazer|desfaz|cancela(?:r)?\s+(?:o\s+)?ultim[oa]|exclui(?:r)?\s+(?:o\s+)?ultim[oa]|apaga(?:r)?\s+(?:o\s+)?ultim[oa]|remove(?:r)?\s+(?:o\s+)?ultim[oa])$/.test(trimmedNorm)) {
     return "desfazer_ultimo";
@@ -7265,6 +7330,15 @@ const detectIntentHeuristic = (text) => {
   if (/contas?\s+a\s+pagar|\bpendentes?\b|a pagar/.test(lower)) return "listar_pendentes";
   // Vencimentos próximos
   if (/\bvenc(e|er|imento|imentos)\b|o que (devo|falta pagar)|proximas? contas?/.test(normalized)) return "listar_pendentes";
+  // Formas naturais de "estou devendo / minhas dívidas / contas em atraso"
+  if (/\b(?:to|tou|tow|estou|esta|ta)\s+devendo\b/.test(normalized)
+      || /\bdevendo\s+(?:o|a|os|as|no|na|um|uma)\b/.test(normalized)
+      || /\bminhas?\s+(?:contas\s+)?d[ií]vidas?\b/.test(normalized)
+      || /\bcontas?\s+(?:em\s+)?(?:atraso|atrasad[ao]s?)\b/.test(normalized)
+      || /\bo\s+que\s+(?:eu\s+)?tenho\s+(?:que|pra|para)\s+pagar\b/.test(normalized)
+      || /\bme\s+lembra(?:r)?\s+(?:(?:d[aeo]s?|as?|os?)\s+)?(?:minhas?\s+)?contas?\b/.test(normalized)) {
+    return "listar_pendentes";
+  }
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
@@ -8475,6 +8549,57 @@ async function handleUserText(fromRaw, text, messageId) {
       return;
     }
 
+    // Comando: "limpar historico <numero> [sim]" — apaga todos os lançamentos do usuário
+    // (mantém cadastro intacto; usado para isolar testes)
+    const limparMatch = normalizedMessage.match(/^limpar\s+historico\s+(\d{10,15})(?:\s+(sim|confirmar))?$/i);
+    if (limparMatch) {
+      const targetNorm = normalizeUser(limparMatch[1]);
+      const confirmed = !!limparMatch[2];
+      try {
+        const sheet = await ensureUserSheet(targetNorm);
+        const rows = await withRetry(() => sheet.getRows(), "limpar-get-rows");
+        if (!confirmed) {
+          await sendText(fromRaw,
+            `📊 Encontrei *${rows.length}* lançamento(s) de \`${targetNorm}\`.\n\n` +
+            (rows.length === 0
+              ? `_Histórico já está vazio. Nada a fazer._`
+              : `Para confirmar a exclusão, mande:\n*limpar historico ${targetNorm} sim*\n\n⚠️ Operação irreversível — apaga TODOS os lançamentos.`),
+            { bypassWindow: true });
+          return;
+        }
+        if (rows.length === 0) {
+          await sendText(fromRaw, `✅ Histórico de \`${targetNorm}\` já estava vazio.`, { bypassWindow: true });
+          return;
+        }
+        await sendText(fromRaw, `🗑️ Apagando ${rows.length} lançamento(s) de \`${targetNorm}\`...`, { bypassWindow: true });
+        let deleted = 0;
+        let failed = 0;
+        // Apaga de trás pra frente: row.delete() na google-spreadsheet reordena índices
+        for (let i = rows.length - 1; i >= 0; i--) {
+          try {
+            await rows[i].delete();
+            deleted++;
+          } catch (e) {
+            console.error("[LIMPAR HISTORICO] Erro ao deletar row:", e.message);
+            failed++;
+          }
+        }
+        // Limpa estado da conversa + último registro para evitar referência a lançamentos apagados
+        conversationState.delete(targetNorm);
+        sessionLastRegistered.delete(targetNorm);
+        await sendText(fromRaw,
+          `✅ *Histórico limpo* — \`${targetNorm}\`\n\n` +
+          `🗑️ Apagados: ${deleted}\n` +
+          (failed > 0 ? `❌ Falhas: ${failed}\n` : ``) +
+          `🔄 Estado da conversa resetado.`,
+          { bypassWindow: true });
+      } catch (e) {
+        console.error("[LIMPAR HISTORICO] Erro geral:", e.message);
+        await sendText(fromRaw, `❌ Erro: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
+
     // Comando: "ajuda admin" ou "admin help" — lista de comandos administrativos
     if (/^(ajuda\s+admin|admin\s+help|comandos\s+admin)$/i.test(normalizedMessage)) {
       const helpMsg =
@@ -8483,6 +8608,7 @@ async function handleUserText(fromRaw, text, messageId) {
         `✅ *ativar* <número> [mensal|trimestral|anual]\n_Ativa o usuário (default mensal)._\n\n` +
         `🚫 *desativar* <número>\n_Marca como inativo._\n\n` +
         `🗑️ *cache* <número>\n_Limpa cache de memória do usuário._\n\n` +
+        `🧹 *limpar historico* <número> [sim]\n_Apaga TODOS os lançamentos do usuário (para isolar testes). Mande sem 'sim' primeiro pra ver quantos serão apagados._\n\n` +
         `🔧 *stripe status*\n_Verifica configuração do Stripe (env vars)._\n\n` +
         `🔄 *stripe sync* [dias]\n_Ativa retroativamente usuários que pagaram mas não foram ativados (padrão: 30 dias, máx: 90)._\n\n` +
         `📢 *broadcast* <mensagem>\n_Envia novidade para todos ativos._\n\n` +
@@ -8862,15 +8988,18 @@ async function handleUserText(fromRaw, text, messageId) {
         console.log("[handleUserText] Texto vazio recebido, ignorando.", { fromRaw, userNorm });
       } else {
         console.log("[handleUserText] Fallback contextual (intent desconhecido):", { fromRaw, userNorm, trimmed, intent });
-        await sendText(
-          fromRaw,
-          `Não entendi exatamente o que você quer fazer. 🤔\n\n` +
-          `Você pode:\n` +
-          `• Digitar o valor direto: *"Paguei R$150 de mercado"*\n` +
-          `• Digitar *saldo* para ver seu balanço do mês\n` +
-          `• Digitar *menu* para ver todas as opções`
-        );
-        await sendMainMenu(fromRaw);
+        const aiHandled = await generateUnknownIntentResponse(fromRaw, trimmed, userNorm);
+        if (!aiHandled) {
+          await sendText(
+            fromRaw,
+            `Não entendi exatamente o que você quer fazer. 🤔\n\n` +
+            `Você pode:\n` +
+            `• Digitar o valor direto: *"Paguei R$150 de mercado"*\n` +
+            `• Digitar *saldo* para ver seu balanço do mês\n` +
+            `• Digitar *menu* para ver todas as opções`
+          );
+          await sendMainMenu(fromRaw);
+        }
       }
       break;
   }
