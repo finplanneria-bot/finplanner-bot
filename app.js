@@ -8168,6 +8168,99 @@ async function handleUserText(fromRaw, text, messageId) {
       );
       return;
     }
+    // Comando: "verificar 5511999999999" — diagnóstico fresh da planilha (ignora cache)
+    const verificarMatch = trimmed.match(/^(verificar|check|status)\s+(\d{8,15})$/i);
+    if (verificarMatch) {
+      const inputNorm = normalizeUser(verificarMatch[2]);
+      try {
+        const sheet = await ensureSheetUsuarios();
+        const rows = await withRetry(() => sheet.getRows(), "verificar-get-usuarios");
+        const candidates = getUserCandidates(inputNorm);
+        const exact = rows.find((row) => normalizeUser(getVal(row, "user")) === inputNorm);
+        const candidateMatches = exact
+          ? [exact]
+          : rows.filter((row) => candidates.includes(normalizeUser(getVal(row, "user"))));
+        const target = exact || candidateMatches[0];
+
+        // Estado do cache em memória
+        const cacheLines = candidates.map((c) => {
+          const cached = usuarioStatusCache.get(c);
+          if (!cached) return `  • ${c}: (vazio)`;
+          const remaining = Math.max(0, Math.round((cached.expiresAt - Date.now()) / 1000));
+          return `  • ${c}: ${cached.value ? "ativo" : "inativo"} (TTL ${remaining}s)`;
+        }).join("\n");
+
+        if (!target) {
+          await sendText(fromRaw,
+            `🔍 *Verificação de usuário*\n\n📱 Número informado: ${inputNorm}\n\n` +
+            `❌ *Nenhuma linha encontrada na planilha.*\n\n` +
+            `🔄 Variantes testadas:\n${candidates.map(c => `  • ${c}`).join("\n")}\n\n` +
+            `💾 Cache:\n${cacheLines}\n\n` +
+            `_O usuário precisa estar cadastrado na aba Usuarios._`,
+            { bypassWindow: true });
+          return;
+        }
+
+        const ativoVal = getVal(target, "ativo");
+        const ativoOk = isTruthy(ativoVal);
+        const vencPlanoRaw = getVal(target, "vencimento_plano");
+        const vencTrialRaw = getVal(target, "vencimento_trial");
+        const vencDate = parseDateLoose(vencPlanoRaw) || parseDateLoose(vencTrialRaw);
+        const today = startOfDay(new Date());
+        const vencOk = vencDate ? startOfDay(vencDate).getTime() >= today.getTime() : false;
+        const active = ativoOk && vencOk;
+        const matchedUser = normalizeUser(getVal(target, "user"));
+        const variantMatched = matchedUser === inputNorm ? "✅ exato" : `⚠️ variante (${matchedUser})`;
+
+        const msg =
+          `🔍 *Verificação de usuário*\n\n` +
+          `📱 Número informado: \`${inputNorm}\`\n` +
+          `🔗 Match planilha: ${variantMatched}\n` +
+          `👤 Nome: ${getVal(target, "nome") || "(vazio)"}\n` +
+          `📧 Email: ${getVal(target, "email") || "(vazio)"}\n` +
+          `💳 Plano: ${getVal(target, "plano") || "(vazio)"}\n` +
+          `🟢 Ativo (coluna): \`${ativoVal || "(vazio)"}\` → ${ativoOk ? "OK" : "❌ não é truthy"}\n` +
+          `📅 Vencimento plano: \`${vencPlanoRaw || "(vazio)"}\`\n` +
+          `🧪 Vencimento trial: \`${vencTrialRaw || "(vazio)"}\`\n` +
+          `📆 Vencimento efetivo: ${vencDate ? formatBRDate(vencDate) : "(nenhum)"} → ${vencOk ? "OK (futuro)" : "❌ passou ou vazio"}\n` +
+          `🚦 *Veredicto:* ${active ? "✅ ATIVO" : "❌ INATIVO"}\n\n` +
+          `💾 Cache em memória:\n${cacheLines}\n\n` +
+          `_Para forçar ativação: ativar ${inputNorm} mensal_\n` +
+          `_Para limpar cache: cache ${inputNorm}_`;
+        await sendText(fromRaw, msg, { bypassWindow: true });
+      } catch (e) {
+        await sendText(fromRaw, `❌ Erro ao verificar: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
+
+    // Comando: "cache 5511999999999" — limpa cache de todas as variantes
+    const cacheMatch = trimmed.match(/^cache\s+(?:limpar\s+)?(\d{8,15})$/i);
+    if (cacheMatch) {
+      const targetNorm = normalizeUser(cacheMatch[1]);
+      const candidates = getUserCandidates(targetNorm);
+      candidates.forEach((c) => usuarioStatusCache.delete(c));
+      await sendText(fromRaw, `🗑️ Cache limpo para ${candidates.length} variantes de \`${targetNorm}\`.\nPróxima mensagem do usuário será re-checada na planilha.`, { bypassWindow: true });
+      return;
+    }
+
+    // Comando: "desativar 5511999999999"
+    const desativarMatch = normalizedMessage.match(/^desativar\s+(\d{8,15})$/i);
+    if (desativarMatch) {
+      const targetNorm = normalizeUser(desativarMatch[1]);
+      try {
+        await upsertUsuarioFromSubscription({
+          userNorm: targetNorm,
+          ativo: false,
+          extendVencimento: false,
+        });
+        await sendText(fromRaw, `🚫 Usuário *${targetNorm}* desativado.`, { bypassWindow: true });
+      } catch (e) {
+        await sendText(fromRaw, `❌ Erro ao desativar: ${e.message}`, { bypassWindow: true });
+      }
+      return;
+    }
+
     // Comando: "ativar 5511999999999 mensal" ou "ativar 5511999999999"
     const ativarMatch = /^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i.test(normalizedMessage)
       ? normalizedMessage.match(/^ativar\s+(\d{10,15})(?:\s+(mensal|trimestral|anual))?$/i)
@@ -8187,10 +8280,34 @@ async function handleUserText(fromRaw, text, messageId) {
           extendVencimento: false,
           vencimento_trial: formatISODate(vencimento),
         });
-        await sendText(fromRaw, `✅ Usuário *${targetNorm}* ativado com plano *${plano}* até ${formatBRDate(vencimento)}.`, { bypassWindow: true });
+        // Garante limpar cache de todas as variantes (upsertUsuarioFromSubscription já faz, mas reforça)
+        const candidates = getUserCandidates(targetNorm);
+        candidates.forEach((c) => usuarioStatusCache.delete(c));
+        await sendText(fromRaw,
+          `✅ Usuário *${targetNorm}* ativado!\n` +
+          `💳 Plano: ${plano}\n` +
+          `📆 Vence em: ${formatBRDate(vencimento)}\n` +
+          `🗑️ Cache limpo (${candidates.length} variantes)\n\n` +
+          `_Confira com: verificar ${targetNorm}_`,
+          { bypassWindow: true });
       } catch (e) {
         await sendText(fromRaw, `❌ Erro ao ativar: ${e.message}`, { bypassWindow: true });
       }
+      return;
+    }
+
+    // Comando: "ajuda admin" ou "admin help" — lista de comandos administrativos
+    if (/^(ajuda\s+admin|admin\s+help|comandos\s+admin)$/i.test(normalizedMessage)) {
+      const helpMsg =
+        `🛠️ *Comandos admin disponíveis*\n\n` +
+        `🔍 *verificar* <número>\n_Diagnóstico completo do usuário (lê fresh da planilha)._\n\n` +
+        `✅ *ativar* <número> [mensal|trimestral|anual]\n_Ativa o usuário (default mensal)._\n\n` +
+        `🚫 *desativar* <número>\n_Marca como inativo._\n\n` +
+        `🗑️ *cache* <número>\n_Limpa cache de memória do usuário._\n\n` +
+        `📢 *broadcast* <mensagem>\n_Envia novidade para todos ativos._\n\n` +
+        `🧪 *cron teste*\n_Roda lembrete diário manual._\n\n` +
+        `_Números aceitos com ou sem +55, com ou sem 9 (variantes auto-detectadas)._`;
+      await sendText(fromRaw, helpMsg, { bypassWindow: true });
       return;
     }
   }
