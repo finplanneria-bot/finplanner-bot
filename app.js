@@ -8551,7 +8551,7 @@ async function handleUserText(fromRaw, text, messageId) {
 
     // Comando: "limpar historico <numero> [sim]" — apaga todos os lançamentos do usuário
     // (mantém cadastro intacto; usado para isolar testes)
-    // Varre TODAS as variantes do número (com/sem 9, com/sem 55) e limpa em todas
+    // Varre a aba central "finplanner" + todas as abas por-usuário (todas variantes)
     const limparMatch = normalizedMessage.match(/^limpar\s+historico\s+(\d{10,15})(?:\s+(sim|confirmar))?$/i);
     if (limparMatch) {
       const targetNorm = normalizeUser(limparMatch[1]);
@@ -8559,7 +8559,28 @@ async function handleUserText(fromRaw, text, messageId) {
       try {
         await ensureAuth();
         const candidates = getUserCandidates(targetNorm);
+        const candidateSet = new Set(candidates);
         const found = [];
+
+        // 1. Aba central "finplanner" — fonte real de dados do bot
+        const centralSheet = doc.sheetsByTitle["finplanner"];
+        if (centralSheet) {
+          try {
+            await withRetry(() => centralSheet.loadHeaderRow(), "limpar-load-central");
+            const allRows = await withRetry(() => centralSheet.getRows(), "limpar-get-central");
+            const userRows = allRows.filter((r) =>
+              candidateSet.has(normalizeUser(getVal(r, "user"))) ||
+              candidateSet.has(normalizeUser(getVal(r, "user_raw")))
+            );
+            if (userRows.length > 0) {
+              found.push({ candidate: targetNorm, title: "finplanner", sheet: centralSheet, rows: userRows });
+            }
+          } catch (e) {
+            console.error("[LIMPAR HISTORICO] Erro ao ler aba central:", e.message);
+          }
+        }
+
+        // 2. Abas por-usuário (espelhos visuais) — todas as variantes
         for (const cand of candidates) {
           const title = getUserSheetName(cand);
           const sheet = doc.sheetsByTitle[title];
@@ -8574,18 +8595,19 @@ async function handleUserText(fromRaw, text, messageId) {
             console.error("[LIMPAR HISTORICO] Erro ao ler aba", title, ":", e.message);
           }
         }
+
         const totalRows = found.reduce((sum, f) => sum + f.rows.length, 0);
         if (totalRows === 0) {
           await sendText(fromRaw,
-            `📊 Nenhum lançamento encontrado em ${candidates.length} variante(s) de \`${targetNorm}\`.\n\n` +
-            `_Variantes verificadas:_\n${candidates.map(c => `• \`${c}\``).join("\n")}`,
+            `📊 Nenhum lançamento encontrado para \`${targetNorm}\`.\n\n` +
+            `_Abas verificadas:_\n• finplanner (central)\n${candidates.map(c => `• ${getUserSheetName(c)}`).join("\n")}`,
             { bypassWindow: true });
           return;
         }
         if (!confirmed) {
-          const summary = found.map(f => `• \`${f.candidate}\` (aba *${f.title}*): ${f.rows.length}`).join("\n");
+          const summary = found.map(f => `• *${f.title}*: ${f.rows.length} registro(s)`).join("\n");
           await sendText(fromRaw,
-            `📊 Encontrei *${totalRows}* lançamento(s) em ${found.length} variante(s):\n\n${summary}\n\n` +
+            `📊 Encontrei *${totalRows}* lançamento(s) em ${found.length} aba(s):\n\n${summary}\n\n` +
             `Para confirmar a exclusão, mande:\n*limpar historico ${targetNorm} sim*\n\n` +
             `⚠️ Operação irreversível.`,
             { bypassWindow: true });
