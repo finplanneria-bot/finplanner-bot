@@ -2604,6 +2604,13 @@ const detectCategoryHeuristic = (description, tipo) => {
   }
   if (bestMatch) return bestMatch;
   if (tipo === "conta_receber") {
+    // PIX/transferência pessoal sem indício de venda → "outros", não "vendas_receitas"
+    const isP2P = /\b(pix|transferencia|deposito|me\s+mandou|mandou|enviou|me\s+pagou)\b/.test(normalized);
+    const isSale = /\b(venda|vendi|servico|servicos|freelance|produto|cliente|cobrei)\b/.test(normalized);
+    if (isP2P && !isSale) {
+      const outros = getCategoryDefinition("outros");
+      return { slug: outros.slug, emoji: outros.emoji };
+    }
     const fallback = getCategoryDefinition("vendas_receitas") || getCategoryDefinition("outros");
     return { slug: fallback.slug, emoji: fallback.emoji };
   }
@@ -4863,9 +4870,9 @@ const parseRegisterText = (text) => {
 
   let status = "pendente";
   let statusDetected = false;
-  const receivedRegex = /\b(recebid[oa]?|recebi|recebemos|creditad[oa]|caiu|confirmad[oa])\b/;
+  const receivedRegex = /\b(recebid[oa]?|recebi|recebemos|creditad[oa]|caiu|confirmad[oa]|entrou|depositaram|depositou)\b/;
   const pendingRegex = /\b(pendente|a pagar|pagar|a receber|aguardando|em aberto)\b/;
-  const paidRegex = /\b(pag[ouei]|paguei|quitad[oa]|liquidad[oa]|transferi|transferido|pix|almocei|jantei|lanchei|comprei|gastei|botei|coloquei|usei|peguei|tomei|comi|assinei|mandei|depositei|fiz)\b/;
+  const paidRegex = /\b(pag[ouei]|paguei|quitad[oa]|liquidad[oa]|transferi|transferido|pix|almocei|jantei|lanchei|comprei|gastei|botei|coloquei|usei|peguei|tomei|comi|assinei|mandei|depositei|fiz|abasteci|rodei|fechei|quitei|gasei)\b/;
   if (receivedRegex.test(normalized)) {
     status = "recebido";
     statusDetected = true;
@@ -4939,6 +4946,7 @@ const parseRegisterText = (text) => {
     .replace(/\b(gastei|comprei|ganhei|vendi|transferi|mandei|depositei|pix(?:ei)?|almocei|jantei|lanchei|tomei|comi|botei|coloquei|usei|peguei|assinei|fiz|fui|vou)\b/gi, "")
     .replace(/\b(dia|data)\b/gi, "")
     .replace(/\b(valor|lançamento|lancamento|novo|registrar|registro)\b/gi, "")
+    .replace(/\b(pilas?|mangos?|pratas?|granas?)\b/gi, "")
     .replace(/r\$/gi, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -5007,7 +5015,9 @@ const parseRegisterText = (text) => {
 
 // Detecta categoria implícita em perguntas de consulta ("quanto gastei com comida")
 const CATEGORY_QUERY_MAP = {
-  comida: "alimentacao", alimentacao: "alimentacao", refeicao: "alimentacao",
+  // "comida" e "alimentação" como conceito amplo incluem tanto Alimentação quanto Mercado
+  comida: ["alimentacao", "mercado"], alimentacao: ["alimentacao", "mercado"],
+  refeicao: "alimentacao",
   restaurante: "alimentacao", almoco: "alimentacao", jantar: "alimentacao",
   lanche: "alimentacao", cafe: "alimentacao", pizza: "alimentacao", delivery: "alimentacao",
   ifood: "alimentacao", rappi: "alimentacao",
@@ -5030,7 +5040,9 @@ const CATEGORY_QUERY_MAP = {
 const detectCategoryFromQuery = (text) => {
   const norm = normalizeDiacritics(text).toLowerCase();
   for (const [keyword, slug] of Object.entries(CATEGORY_QUERY_MAP)) {
-    if (new RegExp(`\\b${keyword}\\b`).test(norm)) return slug;
+    if (new RegExp(`\\b${keyword}\\b`).test(norm)) {
+      return Array.isArray(slug) ? slug : [slug];
+    }
   }
   return null;
 };
@@ -5067,14 +5079,17 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
 
   // ── Filtro por categoria específica (ex: "quanto gastei com comida") ──
   if (categoryFilter) {
-    const catDef = getCategoryDefinition(categoryFilter) || { slug: categoryFilter, label: categoryFilter, emoji: "📂" };
+    const slugs = Array.isArray(categoryFilter) ? categoryFilter : [categoryFilter];
+    const firstDef = getCategoryDefinition(slugs[0]) || { slug: slugs[0], label: slugs[0], emoji: "📂" };
     const expenses = inRange.filter((row) => getVal(row, "tipo") === "conta_pagar");
     const filtered = expenses.filter((row) => {
       let slug = (getVal(row, "categoria") || "").toString();
       if (!slug) slug = detectCategoryHeuristic(getVal(row, "descricao") || getVal(row, "conta"), getVal(row, "tipo")).slug;
-      return slug === categoryFilter;
+      return slugs.includes(slug);
     });
-    const catLabel = catDef.emoji ? `${catDef.emoji} *${catDef.label}*` : `*${catDef.label}*`;
+    const catLabel = slugs.length > 1
+      ? `📂 *${slugs.map(s => getCategoryDefinition(s)?.label || s).join(" + ")}*`
+      : (firstDef.emoji ? `${firstDef.emoji} *${firstDef.label}*` : `*${firstDef.label}*`);
     if (!filtered.length) {
       await sendText(fromRaw, `${catLabel}\n📅 _${periodLabel}_\n\n✅ Nenhum gasto nesta categoria no período.`);
       return;
@@ -5200,6 +5215,10 @@ async function showReportByCategory(fromRaw, userNorm, category, range, category
       message += `\n💵 Entradas: *${formatCurrencyBR(totalReceipts)}*`;
       message += `\n💸 Saídas:   *${formatCurrencyBR(totalExpenses)}*`;
       message += `\n${formatSaldoLine(totalReceived, totalPaid)}`;
+      if (totalPendingExpenses > 0) {
+        const projetado = totalReceived - totalPaid - totalPendingExpenses;
+        message += `\n📌 _Projetado (−pendentes): *${formatSignedCurrencyBR(projetado)}*_`;
+      }
       const prevRange = previousMonthRange({ start, end });
       if (prevRange) {
         const prevRows = withinPeriod(rows, prevRange.start, prevRange.end);
@@ -7306,7 +7325,7 @@ const detectIntentHeuristic = (text) => {
   // Parcelamento — resposta educativa
   if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
   // Relatório completo / saldo / balanço
-  if (/\bsaldo\b|\bbalanco\b|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes/.test(normalized)) return "relatorio_completo";
+  if (/\bsaldo\b|\bbalanco\b|quanto tenho|quanto sobrou|quanto estou|meu dinheiro|minha situac|situacao financeira|resumo (geral|do mes)|balanco do mes|\b(negativo|positivo|no azul|no vermelho)\b|to\s+bem\s+de\s+(grana|dinheiro)|como\s+(ando|estou|to)\s+(financ|de\s+grana|de\s+dinheiro)/.test(normalized)) return "relatorio_completo";
   // "despesas e recebimentos" (qualquer ordem) → completo, antes dos checks individuais
   if (/despesas?.*(recebimentos?|entradas?)|recebimentos?.*(despesas?|saidas?)|tudo.*mes|tudo.*periodo/.test(normalized)) return "relatorio_completo";
   if (/quanto eu gastei|quanto gastei|gastei esse mes|gastos? desse mes|gastos? do mes/.test(normalized)) {
@@ -7756,6 +7775,192 @@ const detectIntentWithContext = async (text, userNorm = null) => {
   }
   return { intent: fallbackIntent };
 };
+
+// ============================
+// NLU Parser (structured output)
+// ============================
+
+const NLU_CACHE = new Map(); // normalizedText → { result, expiresAt }
+const NLU_CACHE_TTL = 5 * 60 * 1000;
+
+const buildNLUPrompt = (text) => {
+  const today = new Date().toISOString().slice(0, 10);
+  return [
+    {
+      role: "system",
+      content: [{
+        type: "input_text",
+        text: `Você é o parser do FinPlanner IA (bot brasileiro de finanças no WhatsApp).
+Hoje: ${today}.
+
+Retorne JSON válido (sem markdown) com a estrutura:
+{"intent":"...","entries":[...],"query":{...},"delete_target":{...},"confidence":0-1}
+
+INTENTS VÁLIDOS:
+register | query_balance | query_pending | query_report | list_entries | delete | edit | help | menu | cancel | off_topic | unknown
+
+ENTRIES (apenas para intent="register"):
+[{"type":"payment|income","amount":N,"description":"string","category":"slug","status":"paid|received|pending","due_date":"YYYY-MM-DD|null"}]
+- type: payment=gasto/saída; income=entrada/recebimento
+- amount: valor em reais (número). Gírias: "pila","conto","mango","prata" = reais. "80 pila"→80.
+- description: CURTA (≤25 chars), limpa, sem verbos/gírias/números. Ex: "Uber", "Almoço", "Pix do João".
+- category: slug fixo da lista abaixo
+- status: paid=pago/realizado, received=recebido, pending=ainda vai vencer ou "vence dia X"
+- due_date: ISO YYYY-MM-DD se mencionada, null se não mencionada
+
+CATEGORIAS (slugs fixos):
+alimentacao, mercado, transporte, moradia, saude, lazer, internet_telefonia,
+educacao, roupas, pets, presentes, salario_trabalho, vendas_receitas, banco_financeiro, outros
+
+QUERY (para query_report, query_balance, query_pending):
+{"categories":["slug",...],"period":"month|last_month|today|yesterday|year","tag":"string|null"}
+- "comida"/"alimentação" como conceito amplo → categories: ["alimentacao","mercado"]
+
+DELETE_TARGET (para delete):
+{"description_hint":"string","amount_hint":N}
+
+REGRAS CRÍTICAS:
+- Múltiplos lançamentos em uma frase → retornar TODOS em entries[]
+- PIX/transferência pessoal entre pessoas físicas → category="outros" (NÃO "vendas_receitas")
+- Venda real/serviço prestado → category="vendas_receitas"
+- "to no negativo/positivo?","to bem de grana?","como ando financeiramente?" → query_balance
+- "to devendo","minhas dívidas","contas atrasadas" → query_pending
+- Verbos que indicam status paid: paguei, comprei, almocei, jantei, lanchei, gastei, botei, usei, abasteci, assinei, fiz, comi, tomei
+- Verbos que indicam status received: recebi, caiu, entrou, depositaram, creditaram
+- Sem verbo ou "vence dia X" → status=pending
+- Description sem: verbos de ação, gírias monetárias, preposições iniciais, artigos
+
+EXEMPLOS:
+"recebi um pix do joao de 80 pila"
+→{"intent":"register","entries":[{"type":"income","amount":80,"description":"Pix do João","category":"outros","status":"received","due_date":null}],"confidence":0.95}
+
+"paguei 25 no uber e 15 num lanche"
+→{"intent":"register","entries":[{"type":"payment","amount":25,"description":"Uber","category":"transporte","status":"paid","due_date":null},{"type":"payment","amount":15,"description":"Lanche","category":"alimentacao","status":"paid","due_date":null}],"confidence":0.95}
+
+"to no negativo ou positivo?"
+→{"intent":"query_balance","confidence":0.9}
+
+"quanto gastei com comida esse mes"
+→{"intent":"query_report","query":{"categories":["alimentacao","mercado"],"period":"month"},"confidence":0.9}
+
+"conta de luz 150 vence dia 20"
+→{"intent":"register","entries":[{"type":"payment","amount":150,"description":"Conta de luz","category":"moradia","status":"pending","due_date":"${today.slice(0,8)}20"}],"confidence":0.95}
+
+"pix do joao 50"
+→{"intent":"register","entries":[{"type":"income","amount":50,"description":"Pix do João","category":"outros","status":"received","due_date":null}],"confidence":0.85}
+
+"apaga o pix do joao"
+→{"intent":"delete","delete_target":{"description_hint":"pix do joão","amount_hint":null},"confidence":0.9}
+
+"almocei 30"
+→{"intent":"register","entries":[{"type":"payment","amount":30,"description":"Almoço","category":"alimentacao","status":"paid","due_date":null}],"confidence":0.95}`,
+      }],
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text }],
+    },
+  ];
+};
+
+const parseNLUResponse = (output) => {
+  if (!output) return null;
+  try {
+    const jsonStr = output.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+    const parsed = JSON.parse(jsonStr);
+    if (!parsed || typeof parsed.intent !== "string") return null;
+    // Normalizar entries
+    if (parsed.entries) {
+      parsed.entries = parsed.entries.filter(e => e && typeof e.amount === "number" && e.amount > 0);
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const parseWithNLU = async (text, userNorm) => {
+  if (!openaiClient || !text) return null;
+  const cacheKey = normalizeDiacritics(text).toLowerCase().trim();
+  const cached = NLU_CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  if (!checkOpenAIQuota(userNorm)) return null;
+  try {
+    const output = await callOpenAI({
+      model: OPENAI_INTENT_MODEL,
+      input: buildNLUPrompt(text),
+      temperature: 0,
+      maxOutputTokens: 600,
+    });
+    const parsed = parseNLUResponse(output);
+    if (parsed) {
+      NLU_CACHE.set(cacheKey, { result: parsed, expiresAt: Date.now() + NLU_CACHE_TTL });
+      console.log("[NLU_TRACE]", JSON.stringify({
+        ts: new Date().toISOString(),
+        intent: parsed.intent,
+        confidence: parsed.confidence,
+        n_entries: parsed.entries?.length || 0,
+        has_query: !!parsed.query,
+      }));
+    }
+    return parsed;
+  } catch (e) {
+    console.error("[NLU] erro:", e.message);
+    return null;
+  }
+};
+
+// Registra uma entrada já parseada pelo NLU (bypassa parseRegisterText)
+async function registerEntryWithNLU(fromRaw, userNorm, entry) {
+  const tipo = entry.type === "income" ? "conta_receber" : "conta_pagar";
+  const catDef = getCategoryDefinition(entry.category);
+  let status = entry.status === "paid" ? "pago" : entry.status === "received" ? "recebido" : "pendente";
+  // Normalização defensiva
+  if (tipo === "conta_receber" && status === "pago") status = "recebido";
+  if (tipo === "conta_pagar" && status === "recebido") status = "pago";
+
+  let vencimentoIso = null;
+  let vencimentoBr = "";
+  if (entry.due_date) {
+    try {
+      const d = new Date(entry.due_date + "T12:00:00");
+      if (!isNaN(d.getTime())) {
+        vencimentoIso = entry.due_date;
+        vencimentoBr = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+      }
+    } catch {}
+  }
+
+  const payload = {
+    row_id: generateRowId(),
+    timestamp: new Date().toISOString(),
+    user: userNorm,
+    user_raw: fromRaw,
+    tipo,
+    conta: entry.description || "",
+    valor: entry.amount,
+    descricao: entry.description || "",
+    categoria: catDef?.slug || entry.category || "outros",
+    categoria_emoji: catDef?.emoji || "📦",
+    status,
+    vencimento_iso: vencimentoIso || "",
+    vencimento_br: vencimentoBr,
+    fixa: "false",
+    fix_parent_id: "",
+    vencimento_dia: "",
+    recorrencia_tipo: "",
+    recorrencia_valor: "",
+    tags: "",
+    tipo_pagamento: "",
+    codigo_pagamento: "",
+  };
+
+  await finalizeRegisterEntry(fromRaw, userNorm, payload, {
+    autoStatus: true,
+    statusSource: "nlu",
+    skipHighValueConfirm: false,
+  });
+}
 
 // ============================
 // Webhook
@@ -8298,6 +8503,8 @@ async function handleUserText(fromRaw, text, messageId) {
   // detectIntent só será aguardado quando necessário (linha ~detectIntent await abaixo)
   const persistPromise = persistLastInteraction(userNorm);
   const intentPromise = detectIntentWithContext(trimmed, userNorm);
+  // NLU estruturado em paralelo — usado para registro multi-entry, categorias compostas e intents não cobertos pela heurística
+  const nluPromise = parseWithNLU(trimmed, userNorm);
 
   await persistPromise;
   const interactionInfo = getLastInteractionInfo(userNorm);
@@ -8947,7 +9154,8 @@ async function handleUserText(fromRaw, text, messageId) {
       break;
     case "relatorio_pagamentos_mes": {
       const range = intentPeriod || defaultMonthRange();
-      const catFilter = detectCategoryFromQuery(trimmed);
+      const nluQ = await nluPromise;
+      const catFilter = (nluQ?.query?.categories?.length > 0) ? nluQ.query.categories : detectCategoryFromQuery(trimmed);
       const tagFilter = detectTagFromQuery(trimmed);
       await showReportByCategory(fromRaw, userNorm, "pag", range, catFilter, tagFilter);
       break;
@@ -8966,7 +9174,8 @@ async function handleUserText(fromRaw, text, messageId) {
     }
     case "relatorio_completo": {
       const range = intentPeriod || defaultMonthRange();
-      const catFilter = detectCategoryFromQuery(trimmed);
+      const nluC = await nluPromise;
+      const catFilter = (nluC?.query?.categories?.length > 0) ? nluC.query.categories : detectCategoryFromQuery(trimmed);
       const tagFilter = detectTagFromQuery(trimmed);
       await showReportByCategory(fromRaw, userNorm, "all", range, catFilter, tagFilter);
       break;
@@ -9006,12 +9215,24 @@ async function handleUserText(fromRaw, text, messageId) {
     case "excluir":
       await sendDeleteMenu(fromRaw);
       break;
-    case "registrar_recebimento":
-      await registerEntry(fromRaw, userNorm, text, "conta_receber");
+    case "registrar_recebimento": {
+      const nluRec = await nluPromise;
+      if (nluRec?.intent === "register" && nluRec.entries?.length > 0 && (nluRec.confidence || 0) >= 0.7) {
+        for (const e of nluRec.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
+      } else {
+        await registerEntry(fromRaw, userNorm, text, "conta_receber");
+      }
       break;
-    case "registrar_pagamento":
-      await registerEntry(fromRaw, userNorm, text, "conta_pagar");
+    }
+    case "registrar_pagamento": {
+      const nluPag = await nluPromise;
+      if (nluPag?.intent === "register" && nluPag.entries?.length > 0 && (nluPag.confidence || 0) >= 0.7) {
+        for (const e of nluPag.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
+      } else {
+        await registerEntry(fromRaw, userNorm, text, "conta_pagar");
+      }
       break;
+    }
     case "ajuda_parcelamento":
       await sendText(
         fromRaw,
@@ -9028,7 +9249,43 @@ async function handleUserText(fromRaw, text, messageId) {
     case "fora_do_escopo":
       await generateOffTopicResponse(fromRaw, trimmed, userNorm);
       break;
-    default:
+    default: {
+      const nluDef = await nluPromise;
+      // NLU com alta confiança redireciona intents que heurística perdeu
+      if (nluDef && (nluDef.confidence || 0) >= 0.7) {
+        if (nluDef.intent === "register" && nluDef.entries?.length > 0) {
+          for (const e of nluDef.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
+          break;
+        }
+        if (nluDef.intent === "query_balance") {
+          await showReportByCategory(fromRaw, userNorm, "all", defaultMonthRange());
+          break;
+        }
+        if (nluDef.intent === "query_pending") {
+          await listPendingPayments(fromRaw, userNorm);
+          await sendReceberHint(fromRaw, userNorm);
+          break;
+        }
+        if (nluDef.intent === "query_report") {
+          const range = defaultMonthRange();
+          const cats = nluDef.query?.categories?.length > 0 ? nluDef.query.categories : null;
+          await showReportByCategory(fromRaw, userNorm, "pag", range, cats);
+          break;
+        }
+        if (nluDef.intent === "list_entries") {
+          await sendLancPeriodoButtons(fromRaw);
+          break;
+        }
+        if (nluDef.intent === "help" || nluDef.intent === "menu") {
+          await sendMainMenu(fromRaw);
+          break;
+        }
+        if (nluDef.intent === "off_topic") {
+          await generateOffTopicResponse(fromRaw, trimmed, userNorm);
+          break;
+        }
+      }
+      // Fallback: heurística legada
       if (extractAmountFromText(trimmed).amount) {
         await registerEntry(fromRaw, userNorm, text);
       } else if (!trimmed) {
@@ -9049,6 +9306,7 @@ async function handleUserText(fromRaw, text, messageId) {
         }
       }
       break;
+    }
   }
 }
 
