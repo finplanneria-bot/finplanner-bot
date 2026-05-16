@@ -979,6 +979,11 @@ const parseNumberWordsTokens = (tokens) => {
       current = 0;
       continue;
     }
+    if (token === "conto" || token === "contos") {
+      total += (current || 1) * 1000;
+      current = 0;
+      continue;
+    }
     if (token === "milhao" || token === "milhão" || token === "milhoes" || token === "milhões") {
       total += (current || 1) * 1_000_000;
       current = 0;
@@ -4334,12 +4339,14 @@ const MAIN_MENU_SECTIONS = [
     rows: [
       { id: "MENU:registrar_pagamento", title: "💰 Registrar pagamento", description: "Adicionar um gasto." },
       { id: "MENU:registrar_recebimento", title: "💵 Registrar recebimento", description: "Adicionar uma entrada." },
+      { id: "MENU:contas_fixas", title: "♻️ Contas fixas", description: "Gerenciar despesas recorrentes." },
     ],
   },
   {
     title: "Consultar",
     rows: [
       { id: "MENU:contas_pagar", title: "📅 Contas a pagar", description: "Ver e confirmar pendentes." },
+      { id: "MENU:contas_receber", title: "💵 Contas a receber", description: "Ver recebimentos pendentes." },
       { id: "MENU:relatorios", title: "📊 Relatórios", description: "Gastos e recebimentos por período." },
       { id: "MENU:lancamentos", title: "🧾 Histórico", description: "Ver lançamentos por mês." },
       { id: "MENU:ajuda", title: "⚙️ Ajuda", description: "Exemplos e comandos disponíveis." },
@@ -6382,12 +6389,13 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
   await createRow(entry);
   const resumo = formatEntrySummary(entry);
   const statusLabel = statusIconLabel(entry.status);
+  let confirmationBody;
   if (entry.tipo === "conta_receber") {
     const categoryInfo = getCategoryInfo(entry.categoria);
     const isReceived = entry.status === "recebido";
     const header = isReceived ? "💵 *Recebimento Registrado!*" : "📅 *Recebimento Agendado!*";
     const dateLabel = isReceived ? "📅 *Data*" : "📅 *Previsão*";
-    let message = `${header}
+    confirmationBody = `${header}
 
 💰 *Valor*: ${formatCurrencyBR(entry.valor)}
 
@@ -6400,13 +6408,12 @@ ${dateLabel}: ${formatBRDate(entry.vencimento_iso)}
 ${isReceived ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    await sendText(fromRaw, message);
   } else {
     const categoryInfo = getCategoryInfo(entry.categoria);
     const isPaid = entry.status === "pago";
     const header = isPaid ? "✅ *Pagamento Registrado!*" : "📅 *Conta a Pagar Registrada!*";
     const dateLabel = isPaid ? "📅 *Data*" : "📅 *Vencimento*";
-    let message = `${header}
+    confirmationBody = `${header}
 
 💸 *Valor*: ${formatCurrencyBR(entry.valor)}
 
@@ -6419,7 +6426,24 @@ ${dateLabel}: ${formatBRDate(entry.vencimento_iso)}
 ${isPaid ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    await sendText(fromRaw, message);
+  }
+  const buttonResult = await sendWA({
+    messaging_product: "whatsapp",
+    to: fromRaw,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: confirmationBody },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: `REG:EDIT:${entry.row_id}`, title: "✏️ Editar" } },
+          { type: "reply", reply: { id: `REG:DELETE:${entry.row_id}`, title: "🗑️ Excluir" } },
+        ],
+      },
+    },
+  });
+  if (!buttonResult || buttonResult.skipped) {
+    await sendText(fromRaw, confirmationBody);
   }
 
   // Guarda rowId para correção rápida (digitando "errado" logo após o registro)
@@ -6499,7 +6523,11 @@ async function handleHighValueFlow(fromRaw, userNorm, text) {
   }
   if (/^(sim|s|confirmar|confirma|ok|registrar|registra)$/.test(normalized)) {
     sessionHighValue.delete(userNorm);
-    await registerEntry(fromRaw, userNorm, state.text, state.tipoPreferencial, { skipHighValueCheck: true });
+    if (state.nluEntry) {
+      await registerEntryWithNLU(fromRaw, userNorm, state.nluEntry, { skipHighValueCheck: true });
+    } else {
+      await registerEntry(fromRaw, userNorm, state.text, state.tipoPreferencial, { skipHighValueCheck: true });
+    }
     return true;
   }
   await sendText(fromRaw, `Responda *sim* para confirmar o registro de *${formatCurrencyBR(state.valor)}* ou *cancelar*.`);
@@ -7811,7 +7839,7 @@ register | query_balance | query_pending | query_report | list_entries | delete 
 ENTRIES (apenas para intent="register"):
 [{"type":"payment|income","amount":N,"description":"string","category":"slug","status":"paid|received|pending","due_date":"YYYY-MM-DD|null"}]
 - type: payment=gasto/saída; income=entrada/recebimento
-- amount: valor em reais (número). Gírias: "pila","conto","mango","prata" = reais. "80 pila"→80.
+- amount: valor em reais (número). Gírias ×1: "pila","mango","prata" = reais. Gíria ×1000: "conto/contos" = R$1000. "80 pila"→80, "2 contos"→2000.
 - description: CURTA (≤25 chars), limpa, sem verbos/gírias/números. Ex: "Uber", "Almoço", "Pix do João".
 - category: slug fixo da lista abaixo
 - status: paid=pago/realizado, received=recebido, pending=ainda vai vencer ou "vence dia X"
@@ -7874,7 +7902,19 @@ EXEMPLOS:
 →{"intent":"delete","delete_target":{"description_hint":"100 milhoes","amount_hint":null},"confidence":0.85}
 
 "deu algum erro no sistema?"
-→{"intent":"off_topic","confidence":0.9}`,
+→{"intent":"off_topic","confidence":0.9}
+
+"paguei 2 contos no mercado"
+→{"intent":"register","entries":[{"type":"payment","amount":2000,"description":"Mercado","category":"mercado","status":"paid","due_date":null}],"confidence":0.95}
+
+"como ando financeiramente?"
+→{"intent":"query_balance","confidence":0.9}
+
+"to bem de grana?"
+→{"intent":"query_balance","confidence":0.9}
+
+"kuanto gastei mes pasado"
+→{"intent":"query_report","query":{"categories":[],"period":"last_month","tag":null},"confidence":0.85}`,
       }],
     },
     {
@@ -7932,7 +7972,35 @@ const parseWithNLU = async (text, userNorm) => {
 };
 
 // Registra uma entrada já parseada pelo NLU (bypassa parseRegisterText)
-async function registerEntryWithNLU(fromRaw, userNorm, entry) {
+async function registerEntryWithNLU(fromRaw, userNorm, entry, opts = {}) {
+  if (entry.amount >= HIGH_VALUE_THRESHOLD && !opts.skipHighValueCheck) {
+    sessionHighValue.set(userNorm, {
+      nluEntry: entry,
+      tipoPreferencial: entry.type === "income" ? "conta_receber" : "conta_pagar",
+      valor: entry.amount,
+      descricao: entry.description || "",
+      expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+    });
+    const success = await sendWA({
+      messaging_product: "whatsapp",
+      to: fromRaw,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: `⚠️ Valor alto detectado: *${formatCurrencyBR(entry.amount)}* (${entry.description || "sem descrição"}).\n\nConfirma o registro?` },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "HVAL:CONFIRM", title: "✓ Sim, registrar" } },
+            { type: "reply", reply: { id: "HVAL:CANCEL", title: "✗ Cancelar" } },
+          ],
+        },
+      },
+    });
+    if (!success || success.skipped) {
+      await sendText(fromRaw, `⚠️ Valor alto: *${formatCurrencyBR(entry.amount)}*. Responda *sim* para registrar ou *cancelar*.`);
+    }
+    return;
+  }
   const tipo = entry.type === "income" ? "conta_receber" : "conta_pagar";
   const catDef = getCategoryDefinition(entry.category);
   let status = entry.status === "paid" ? "pago" : entry.status === "received" ? "recebido" : "pendente";
@@ -8169,8 +8237,11 @@ async function handleInteractiveMessage(from, payload, messageId) {
         return;
       }
       sessionHighValue.delete(userNorm);
-      // Re-registrar contornando o guard: marca um flag para pular a checagem
-      await registerEntry(from, userNorm, state.text, state.tipoPreferencial, { skipHighValueCheck: true });
+      if (state.nluEntry) {
+        await registerEntryWithNLU(from, userNorm, state.nluEntry, { skipHighValueCheck: true });
+      } else {
+        await registerEntry(from, userNorm, state.text, state.tipoPreferencial, { skipHighValueCheck: true });
+      }
       return;
     }
     if (id === "HVAL:CANCEL") {

@@ -28,16 +28,53 @@ INTENTS: register | query_balance | query_pending | query_report | list_entries 
 
 ENTRIES (intent="register"):
 [{"type":"payment|income","amount":N,"description":"string","category":"slug","status":"paid|received|pending","due_date":"YYYY-MM-DD|null"}]
-- Gírias monetárias: "pila","conto","mango","prata" = reais. "80 pila"→80
-- Múltiplos lançamentos em uma frase → TODOS em entries[]
-- PIX/transferência pessoal → category="outros" (NÃO "vendas_receitas")
-- paid: paguei/comprei/almocei/gastei/abasteci/fiz/etc. received: recebi/caiu/entrou. pending: sem verbo / "vence dia X"
+- type: payment=gasto; income=entrada/recebimento
+- amount: Gírias ×1: "pila","mango","prata" = reais. Gíria ×1000: "conto/contos" = R$1000. "80 pila"→80, "2 contos"→2000.
 - description LIMPA ≤25 chars: sem verbos, sem gírias, sem preposições iniciais
+- status: paid: paguei/comprei/almocei/gastei/abasteci/fiz/etc. received: recebi/caiu/entrou. pending: sem verbo / "vence dia X"
 
-QUERY: {"categories":["slug",...],"period":"month|last_month|today","tag":"string|null"}
-- "comida"/"alimentação" → categories:["alimentacao","mercado"]
+QUERY (query_report, query_balance, query_pending):
+{"categories":["slug",...],"period":"month|last_month|today","tag":"string|null"}
+- "comida"/"alimentação" como conceito amplo → categories:["alimentacao","mercado"]
+- "quanto gastei X" → query_report; "qual meu saldo/to no negativo?" → query_balance
 
-CATEGORIAS: alimentacao, mercado, transporte, moradia, saude, lazer, internet_telefonia, educacao, roupas, pets, presentes, salario_trabalho, vendas_receitas, banco_financeiro, outros`,
+CATEGORIAS: alimentacao, mercado, transporte, moradia, saude, lazer, internet_telefonia, educacao, roupas, pets, presentes, salario_trabalho, vendas_receitas, banco_financeiro, outros
+
+REGRAS CRÍTICAS:
+- Múltiplos lançamentos em uma frase → retornar TODOS em entries[]
+- PIX/transferência pessoal entre pessoas físicas → category="outros" (NÃO "vendas_receitas")
+- "to no negativo/positivo?","to bem de grana?","como ando financeiramente?","no azul ou vermelho?" → query_balance
+- "to devendo","minhas dívidas","contas atrasadas" → query_pending
+- Verbos paid: paguei, comprei, almocei, jantei, lanchei, gastei, botei, usei, abasteci, assinei, fiz, comi
+- Verbos received: recebi, caiu, entrou, depositaram, creditaram
+
+EXEMPLOS:
+"recebi um pix do joao de 80 pila"
+→{"intent":"register","entries":[{"type":"income","amount":80,"description":"Pix do João","category":"outros","status":"received","due_date":null}],"confidence":0.95}
+
+"paguei 2 contos no mercado"
+→{"intent":"register","entries":[{"type":"payment","amount":2000,"description":"Mercado","category":"mercado","status":"paid","due_date":null}],"confidence":0.95}
+
+"paguei 25 no uber e 15 num lanche"
+→{"intent":"register","entries":[{"type":"payment","amount":25,"description":"Uber","category":"transporte","status":"paid","due_date":null},{"type":"payment","amount":15,"description":"Lanche","category":"alimentacao","status":"paid","due_date":null}],"confidence":0.95}
+
+"to no negativo ou positivo?"
+→{"intent":"query_balance","confidence":0.9}
+
+"como ando financeiramente?"
+→{"intent":"query_balance","confidence":0.9}
+
+"to bem de grana?"
+→{"intent":"query_balance","confidence":0.9}
+
+"quanto gastei com comida esse mes"
+→{"intent":"query_report","query":{"categories":["alimentacao","mercado"],"period":"month","tag":null},"confidence":0.9}
+
+"kuanto gastei mes pasado"
+→{"intent":"query_report","query":{"categories":[],"period":"last_month","tag":null},"confidence":0.85}
+
+"almocei 30"
+→{"intent":"register","entries":[{"type":"payment","amount":30,"description":"Almoço","category":"alimentacao","status":"paid","due_date":null}],"confidence":0.95}`,
   },
   { role: "user", content: text },
 ];
