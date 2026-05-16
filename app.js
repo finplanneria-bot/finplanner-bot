@@ -979,6 +979,16 @@ const parseNumberWordsTokens = (tokens) => {
       current = 0;
       continue;
     }
+    if (token === "milhao" || token === "milhão" || token === "milhoes" || token === "milhões") {
+      total += (current || 1) * 1_000_000;
+      current = 0;
+      continue;
+    }
+    if (token === "bilhao" || token === "bilhão" || token === "bilhoes" || token === "bilhões") {
+      total += (current || 1) * 1_000_000_000;
+      current = 0;
+      continue;
+    }
     const value = NUMBER_WORDS[token];
     if (typeof value === "number") {
       current += value;
@@ -4630,6 +4640,7 @@ const sessionPendingDesc = makeFlowAdapter("pending_desc");
 // sessionLastRegistered não é fluxo: armazena o último rowId do usuário para
 // correção rápida. Mantido como Map separado.
 const sessionLastRegistered = new Map();
+const adminPendingConfirm = new Map(); // userNorm → { action, args, expiresAt }
 
 const HIGH_VALUE_THRESHOLD = 10000;
 const lastMessagesHistory = new Map(); // userNorm → [últimas 5 mensagens normalizadas]
@@ -6059,7 +6070,8 @@ async function handleDeleteFlow(fromRaw, userNorm, text) {
     return false; // mensagem não consumida — processa como comando novo
   }
   if (state.awaiting === "index") {
-    const indexes = resolveSelectionIndexes(text, state.rows || []);
+    const cleanedText = text.replace(/^(excluir|apagar|deletar|remover)\s+/i, "").trim();
+    const indexes = resolveSelectionIndexes(cleanedText, state.rows || []);
     if (!indexes.length) {
       await sendText(fromRaw, "Não entendi quais lançamentos você deseja excluir. Informe os números ou o nome.");
       return true;
@@ -6415,10 +6427,6 @@ ${isPaid ? "✓" : "⏳"} *Status*: ${statusLabel}
     rowId: entry.row_id,
     expiresAt: Date.now() + SESSION_TIMEOUT_MS,
   });
-
-  if (options.autoStatus) {
-    await sendRegistrationEditPrompt(fromRaw, entry.row_id, statusLabel);
-  }
 
   if (
     entry.tipo === "conta_pagar" &&
@@ -7361,6 +7369,7 @@ const detectIntentHeuristic = (text) => {
   if (/contas?\s+fixas?/.test(lower)) return "contas_fixas";
   if (/editar lan[cç]amentos?/.test(lower)) return "editar";
   if (/excluir lan[cç]amentos?/.test(lower)) return "excluir";
+  if (/^(excluir|apagar|deletar)\s+\d+$/i.test(trimmedNorm)) return "excluir";
   // Registrar recebimento — formas naturais
   if (/\b(recebi|ganhei|vendi|entrou|me pagaram|me transferiram|deposito recebido|pix recebido)\b/.test(normalized)) return "registrar_recebimento";
   if (/registrar recebimento|\brecebimento\b/.test(lower)) return "registrar_recebimento";
@@ -7853,7 +7862,19 @@ EXEMPLOS:
 →{"intent":"delete","delete_target":{"description_hint":"pix do joão","amount_hint":null},"confidence":0.9}
 
 "almocei 30"
-→{"intent":"register","entries":[{"type":"payment","amount":30,"description":"Almoço","category":"alimentacao","status":"paid","due_date":null}],"confidence":0.95}`,
+→{"intent":"register","entries":[{"type":"payment","amount":30,"description":"Almoço","category":"alimentacao","status":"paid","due_date":null}],"confidence":0.95}
+
+"excluir 23"
+→{"intent":"delete","delete_target":{"description_hint":null,"amount_hint":null,"index_hint":23},"confidence":0.85}
+
+"ta com algum erro no total ai? ta dando 100 milhoes"
+→{"intent":"off_topic","confidence":0.95}
+
+"tem um lançamento de 100 milhoes que n foi eu, tira isso de lá"
+→{"intent":"delete","delete_target":{"description_hint":"100 milhoes","amount_hint":null},"confidence":0.85}
+
+"deu algum erro no sistema?"
+→{"intent":"off_topic","confidence":0.9}`,
       }],
     },
     {
@@ -8492,6 +8513,80 @@ async function handleNewCategoryFlow(fromRaw, userNorm, text) {
   return false;
 }
 
+async function executeLimparHistorico(fromRaw, adminNorm, targetNorm) {
+  try {
+    await ensureAuth();
+    const candidates = getUserCandidates(targetNorm);
+    const candidateSet = new Set(candidates);
+    const found = [];
+
+    const centralSheet = doc.sheetsByTitle["finplanner"];
+    if (centralSheet) {
+      try {
+        await withRetry(() => centralSheet.loadHeaderRow(), "limpar-load-central");
+        const allRows = await withRetry(() => centralSheet.getRows(), "limpar-get-central");
+        const userRows = allRows.filter((r) =>
+          candidateSet.has(normalizeUser(getVal(r, "user"))) ||
+          candidateSet.has(normalizeUser(getVal(r, "user_raw")))
+        );
+        if (userRows.length > 0) {
+          found.push({ candidate: targetNorm, title: "finplanner", sheet: centralSheet, rows: userRows });
+        }
+      } catch (e) {
+        console.error("[LIMPAR HISTORICO] Erro ao ler aba central:", e.message);
+      }
+    }
+
+    for (const cand of candidates) {
+      const title = getUserSheetName(cand);
+      const sheet = doc.sheetsByTitle[title];
+      if (!sheet) continue;
+      try {
+        await withRetry(() => sheet.loadHeaderRow(), "limpar-load-header");
+        const rows = await withRetry(() => sheet.getRows(), "limpar-get-rows");
+        if (rows.length > 0) found.push({ candidate: cand, title, sheet, rows });
+      } catch (e) {
+        console.error("[LIMPAR HISTORICO] Erro ao ler aba", title, ":", e.message);
+      }
+    }
+
+    const totalRows = found.reduce((sum, f) => sum + f.rows.length, 0);
+    if (totalRows === 0) {
+      await sendText(fromRaw, `📊 Nenhum lançamento encontrado para \`${targetNorm}\`.`, { bypassWindow: true });
+      return;
+    }
+
+    await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...`, { bypassWindow: true });
+    let deleted = 0;
+    let failed = 0;
+    for (const f of found) {
+      for (let i = f.rows.length - 1; i >= 0; i--) {
+        try {
+          await f.rows[i].delete();
+          deleted++;
+        } catch (e) {
+          console.error("[LIMPAR HISTORICO] Erro ao deletar row da aba", f.title, ":", e.message);
+          failed++;
+        }
+      }
+    }
+    candidates.forEach((c) => {
+      conversationState.delete(c);
+      sessionLastRegistered.delete(c);
+    });
+    await sendText(fromRaw,
+      `✅ *Histórico limpo* — \`${targetNorm}\`\n\n` +
+      `🗑️ Apagados: ${deleted}\n` +
+      (failed > 0 ? `❌ Falhas: ${failed}\n` : ``) +
+      `📁 Abas afetadas: ${found.length}\n` +
+      `🔄 Estado da conversa resetado.`,
+      { bypassWindow: true });
+  } catch (e) {
+    console.error("[LIMPAR HISTORICO] Erro geral:", e.message);
+    await sendText(fromRaw, `❌ Erro: ${e.message}`, { bypassWindow: true });
+  }
+}
+
 async function handleUserText(fromRaw, text, messageId) {
   const userNorm = normalizeUser(fromRaw);
   const trimmed = (text || "").trim();
@@ -8553,6 +8648,22 @@ async function handleUserText(fromRaw, text, messageId) {
     /\bcron\s*(teste|agora)?\b/i.test(normalizedMessage);
 
   if (isAdminUser(userNorm)) {
+    const pendingConfirm = adminPendingConfirm.get(userNorm);
+    if (pendingConfirm && pendingConfirm.expiresAt > Date.now()) {
+      const simMatch = /^(sim|confirmar|ok|yes)$/i.test(trimmed.trim());
+      const naoMatch = /^(n[aã]o|cancel|nope|nao)$/i.test(trimmed.trim());
+      if (simMatch) {
+        adminPendingConfirm.delete(userNorm);
+        if (pendingConfirm.action === "limpar_historico") {
+          await executeLimparHistorico(fromRaw, userNorm, pendingConfirm.args.targetNorm);
+          return;
+        }
+      } else if (naoMatch) {
+        adminPendingConfirm.delete(userNorm);
+        await sendText(fromRaw, "❌ Operação cancelada.", { bypassWindow: true });
+        return;
+      }
+    }
     if (adminCronCommand) {
       console.log("🧪 Admin cron command received:", { fromRaw, normalizedMessage });
       await sendCronReminderForUser(userNorm, fromRaw, { bypassWindow: true });
@@ -8763,6 +8874,11 @@ async function handleUserText(fromRaw, text, messageId) {
     if (limparMatch) {
       const targetNorm = normalizeUser(limparMatch[1]);
       const confirmed = !!limparMatch[2];
+      if (confirmed) {
+        await executeLimparHistorico(fromRaw, userNorm, targetNorm);
+        return;
+      }
+      // Sem "sim" → mostrar preview e guardar confirmação pendente
       try {
         await ensureAuth();
         const candidates = getUserCandidates(targetNorm);
@@ -8795,9 +8911,7 @@ async function handleUserText(fromRaw, text, messageId) {
           try {
             await withRetry(() => sheet.loadHeaderRow(), "limpar-load-header");
             const rows = await withRetry(() => sheet.getRows(), "limpar-get-rows");
-            if (rows.length > 0) {
-              found.push({ candidate: cand, title, sheet, rows });
-            }
+            if (rows.length > 0) found.push({ candidate: cand, title, sheet, rows });
           } catch (e) {
             console.error("[LIMPAR HISTORICO] Erro ao ler aba", title, ":", e.message);
           }
@@ -8811,41 +8925,15 @@ async function handleUserText(fromRaw, text, messageId) {
             { bypassWindow: true });
           return;
         }
-        if (!confirmed) {
-          const summary = found.map(f => `• *${f.title}*: ${f.rows.length} registro(s)`).join("\n");
-          await sendText(fromRaw,
-            `📊 Encontrei *${totalRows}* lançamento(s) em ${found.length} aba(s):\n\n${summary}\n\n` +
-            `Para confirmar a exclusão, mande:\n*limpar historico ${targetNorm} sim*\n\n` +
-            `⚠️ Operação irreversível.`,
-            { bypassWindow: true });
-          return;
-        }
-        await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...`, { bypassWindow: true });
-        let deleted = 0;
-        let failed = 0;
-        for (const f of found) {
-          // Apaga de trás pra frente: row.delete() reordena índices subsequentes
-          for (let i = f.rows.length - 1; i >= 0; i--) {
-            try {
-              await f.rows[i].delete();
-              deleted++;
-            } catch (e) {
-              console.error("[LIMPAR HISTORICO] Erro ao deletar row da aba", f.title, ":", e.message);
-              failed++;
-            }
-          }
-        }
-        // Limpa estado de TODAS as variantes para evitar referência a lançamentos apagados
-        candidates.forEach((c) => {
-          conversationState.delete(c);
-          sessionLastRegistered.delete(c);
+        const summary = found.map(f => `• *${f.title}*: ${f.rows.length} registro(s)`).join("\n");
+        adminPendingConfirm.set(userNorm, {
+          action: "limpar_historico",
+          args: { targetNorm },
+          expiresAt: Date.now() + 5 * 60 * 1000,
         });
         await sendText(fromRaw,
-          `✅ *Histórico limpo* — \`${targetNorm}\`\n\n` +
-          `🗑️ Apagados: ${deleted}\n` +
-          (failed > 0 ? `❌ Falhas: ${failed}\n` : ``) +
-          `📁 Abas afetadas: ${found.length}\n` +
-          `🔄 Estado da conversa resetado.`,
+          `📊 Encontrei *${totalRows}* lançamento(s) em ${found.length} aba(s):\n\n${summary}\n\n` +
+          `⚠️ Operação irreversível.\n\nResponda *sim* para confirmar ou *não* para cancelar.`,
           { bypassWindow: true });
       } catch (e) {
         console.error("[LIMPAR HISTORICO] Erro geral:", e.message);
@@ -9766,7 +9854,15 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
         const firstName = extractFirstName(getVal(row, "nome")) || getStoredFirstName(userNorm) || "";
         const greeting = firstName ? `Bom dia, ${firstName}! ☀️` : "Bom dia! ☀️";
         const yesterday = startOfDay(new Date(today.getTime() - 86400000));
-        const allRows = await allRowsForUser(userNorm);
+        let allRows = await allRowsForUser(userNorm);
+        if (allRows.length === 0) {
+          const cands = getUserCandidates(userNorm);
+          for (const cand of cands) {
+            if (cand === userNorm) continue;
+            const candRows = await allRowsForUser(cand);
+            if (candRows.length > 0) { allRows = candRows; break; }
+          }
+        }
         const count = withinPeriod(allRows, yesterday, endOfDay(yesterday)).length;
         const label = count === 1 ? "lançamento" : "lançamentos";
         const msg = count > 0
@@ -9788,7 +9884,15 @@ async function runOnboardingCron({ requestedBy = "cron", forceHour = false } = {
         const greeting = firstName ? `Bom dia, ${firstName}! 🌟` : "Bom dia! 🌟";
         const periodStart = startOfDay(dataInicio);
         const periodEnd = endOfDay(new Date(today.getTime() - 86400000));
-        const allRows = await allRowsForUser(userNorm);
+        let allRows = await allRowsForUser(userNorm);
+        if (allRows.length === 0) {
+          const cands = getUserCandidates(userNorm);
+          for (const cand of cands) {
+            if (cand === userNorm) continue;
+            const candRows = await allRowsForUser(cand);
+            if (candRows.length > 0) { allRows = candRows; break; }
+          }
+        }
         const periodRows = withinPeriod(allRows, periodStart, periodEnd);
         const count = periodRows.length;
         const total = sumValues(periodRows);
