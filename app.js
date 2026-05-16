@@ -979,6 +979,11 @@ const parseNumberWordsTokens = (tokens) => {
       current = 0;
       continue;
     }
+    if (token === "conto" || token === "contos") {
+      total += (current || 1) * 1000;
+      current = 0;
+      continue;
+    }
     if (token === "milhao" || token === "milhão" || token === "milhoes" || token === "milhões") {
       total += (current || 1) * 1_000_000;
       current = 0;
@@ -7811,7 +7816,7 @@ register | query_balance | query_pending | query_report | list_entries | delete 
 ENTRIES (apenas para intent="register"):
 [{"type":"payment|income","amount":N,"description":"string","category":"slug","status":"paid|received|pending","due_date":"YYYY-MM-DD|null"}]
 - type: payment=gasto/saída; income=entrada/recebimento
-- amount: valor em reais (número). Gírias: "pila","conto","mango","prata" = reais. "80 pila"→80.
+- amount: valor em reais (número). Gírias ×1: "pila","mango","prata" = reais. Gíria ×1000: "conto/contos" = R$1000. "80 pila"→80, "2 contos"→2000.
 - description: CURTA (≤25 chars), limpa, sem verbos/gírias/números. Ex: "Uber", "Almoço", "Pix do João".
 - category: slug fixo da lista abaixo
 - status: paid=pago/realizado, received=recebido, pending=ainda vai vencer ou "vence dia X"
@@ -7874,7 +7879,19 @@ EXEMPLOS:
 →{"intent":"delete","delete_target":{"description_hint":"100 milhoes","amount_hint":null},"confidence":0.85}
 
 "deu algum erro no sistema?"
-→{"intent":"off_topic","confidence":0.9}`,
+→{"intent":"off_topic","confidence":0.9}
+
+"paguei 2 contos no mercado"
+→{"intent":"register","entries":[{"type":"payment","amount":2000,"description":"Mercado","category":"mercado","status":"paid","due_date":null}],"confidence":0.95}
+
+"como ando financeiramente?"
+→{"intent":"query_balance","confidence":0.9}
+
+"to bem de grana?"
+→{"intent":"query_balance","confidence":0.9}
+
+"kuanto gastei mes pasado"
+→{"intent":"query_report","query":{"categories":[],"period":"last_month","tag":null},"confidence":0.85}`,
       }],
     },
     {
