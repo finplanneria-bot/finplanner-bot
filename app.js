@@ -6389,12 +6389,13 @@ async function finalizeRegisterEntry(fromRaw, userNorm, entry, options = {}) {
   await createRow(entry);
   const resumo = formatEntrySummary(entry);
   const statusLabel = statusIconLabel(entry.status);
+  let confirmationBody;
   if (entry.tipo === "conta_receber") {
     const categoryInfo = getCategoryInfo(entry.categoria);
     const isReceived = entry.status === "recebido";
     const header = isReceived ? "💵 *Recebimento Registrado!*" : "📅 *Recebimento Agendado!*";
     const dateLabel = isReceived ? "📅 *Data*" : "📅 *Previsão*";
-    let message = `${header}
+    confirmationBody = `${header}
 
 💰 *Valor*: ${formatCurrencyBR(entry.valor)}
 
@@ -6407,13 +6408,12 @@ ${dateLabel}: ${formatBRDate(entry.vencimento_iso)}
 ${isReceived ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    await sendText(fromRaw, message);
   } else {
     const categoryInfo = getCategoryInfo(entry.categoria);
     const isPaid = entry.status === "pago";
     const header = isPaid ? "✅ *Pagamento Registrado!*" : "📅 *Conta a Pagar Registrada!*";
     const dateLabel = isPaid ? "📅 *Data*" : "📅 *Vencimento*";
-    let message = `${header}
+    confirmationBody = `${header}
 
 💸 *Valor*: ${formatCurrencyBR(entry.valor)}
 
@@ -6426,7 +6426,24 @@ ${dateLabel}: ${formatBRDate(entry.vencimento_iso)}
 ${isPaid ? "✓" : "⏳"} *Status*: ${statusLabel}
 
 💡 Lançamento adicionado!`;
-    await sendText(fromRaw, message);
+  }
+  const buttonResult = await sendWA({
+    messaging_product: "whatsapp",
+    to: fromRaw,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: confirmationBody },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: `REG:EDIT:${entry.row_id}`, title: "✏️ Editar" } },
+          { type: "reply", reply: { id: `REG:DELETE:${entry.row_id}`, title: "🗑️ Excluir" } },
+        ],
+      },
+    },
+  });
+  if (!buttonResult || buttonResult.skipped) {
+    await sendText(fromRaw, confirmationBody);
   }
 
   // Guarda rowId para correção rápida (digitando "errado" logo após o registro)
