@@ -4363,7 +4363,7 @@ const sendMainMenu = (to, { greeting = false } = {}) =>
       type: "list",
       body: {
         text: greeting
-          ? `Olá! Sou o FinPlanner IA 💰 — seu controle financeiro no WhatsApp.
+          ? `Olá! Sou o FinPlanner IA 💰, seu controle financeiro no WhatsApp.
 
 Me diga o que gastou ou recebeu:
 • _"Paguei 50 de almoço"_
@@ -5673,23 +5673,15 @@ async function promptNextDeleteConfirmation(to, userNorm) {
   }
   const summary = formatEntrySummary(currentItem.row, { headerLabel: "🧾 Lançamento selecionado:" });
   const entryValue = toNumber(getVal(currentItem.row, "valor"));
-  const HIGH_VALUE_THRESHOLD = 500;
+  const isHighValue = entryValue >= HIGH_VALUE_THRESHOLD;
+  const prefix = isHighValue
+    ? `⚠️ *Atenção: valor alto* (${formatCurrencyBR(entryValue)})\n\n`
+    : "";
+  const body = `${prefix}${summary}\n\nDeseja realmente excluir este lançamento?`;
 
-  // Valores altos (≥ R$500): exige digitar o valor para confirmar
-  if (entryValue >= HIGH_VALUE_THRESHOLD) {
-    const nextState = resetDeleteTimeout({ ...state, awaiting: "confirm_typed", currentIndex, expectedValue: entryValue });
-    sessionDelete.set(userNorm, nextState);
-    await sendText(
-      to,
-      `⚠️ *Atenção — exclusão de alto valor*\n\n${summary}\n\nPara confirmar a exclusão de *${formatCurrencyBR(entryValue)}*, digite o valor exato (ex: _${entryValue.toFixed(2).replace(".", ",")}_ ).\n\nOu *cancelar* para desistir.`
-    );
-    return;
-  }
-
-  const body = `⚠ Confirmar exclusão do lançamento:\n\n${summary}\n\nDeseja realmente excluir este lançamento?`;
   const nextState = resetDeleteTimeout({ ...state, awaiting: "confirm", currentIndex });
   sessionDelete.set(userNorm, nextState);
-  await sendWA({
+  const success = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -5698,12 +5690,15 @@ async function promptNextDeleteConfirmation(to, userNorm) {
       body: { text: body },
       action: {
         buttons: [
-          { type: "reply", reply: { id: "DEL:CONFIRM:YES", title: "✅ Sim, excluir" } },
+          { type: "reply", reply: { id: "DEL:CONFIRM:YES", title: "🗑️ Excluir" } },
           { type: "reply", reply: { id: "DEL:CONFIRM:NO", title: "❌ Cancelar" } },
         ],
       },
     },
   });
+  if (!success || success.skipped) {
+    await sendText(to, `${prefix}${summary}\n\nResponda *sim* para excluir ou *cancelar*.`);
+  }
 }
 
 async function confirmDeleteRows(fromRaw, userNorm, selections) {
@@ -5791,30 +5786,14 @@ async function handleDeleteConfirmation(fromRaw, userNorm, text) {
   const normalized = normalizeDiacritics(text).toLowerCase().trim();
   if (!normalized) return false;
 
-  // Fluxo de confirmação por digitação (valores altos)
-  if (state?.awaiting === "confirm_typed") {
-    if (/\b(cancel|sair|voltar|nao|não)\b/.test(normalized)) {
-      return finalizeDeleteConfirmation(fromRaw, userNorm, false);
-    }
-    const typedValue = toNumber(text);
-    const expected = state.expectedValue || 0;
-    if (Math.abs(typedValue - expected) < 0.01) {
-      return finalizeDeleteConfirmation(fromRaw, userNorm, true);
-    }
-    await sendText(fromRaw, `Valor não confere. O lançamento é de *${formatCurrencyBR(expected)}*.\nDigite o valor correto para confirmar ou *cancelar* para desistir.`);
-    return true;
-  }
-
   if (/^(s|sim)(\b|\s)/.test(normalized) || /excluir/.test(normalized) || /confirm/.test(normalized)) {
     return finalizeDeleteConfirmation(fromRaw, userNorm, true);
   }
   if (/^(nao|não|n)(\b|\s)/.test(normalized) || /cancel/.test(normalized) || /parar/.test(normalized)) {
     return finalizeDeleteConfirmation(fromRaw, userNorm, false);
   }
-  // Estado de confirmação ativo mas texto não reconhecido — orienta e mantém o fluxo
-  // (evita que a mensagem vaze para detecção de intenção e seja registrada como novo lançamento)
   if (state?.awaiting === "confirm") {
-    await sendText(fromRaw, "Não entendi. Toque em *Sim, excluir* / *Cancelar* nos botões acima, ou responda *sim* / *cancelar*.");
+    await sendText(fromRaw, "Não entendi. Toque em *Excluir* ou *Cancelar* nos botões acima, ou responda *sim* / *cancelar*.");
     return true;
   }
   return false;
