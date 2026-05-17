@@ -8026,7 +8026,6 @@ async function registerEntryWithNLU(fromRaw, userNorm, entry, opts = {}) {
   await finalizeRegisterEntry(fromRaw, userNorm, payload, {
     autoStatus: true,
     statusSource: "nlu",
-    skipHighValueConfirm: false,
   });
 }
 
@@ -8634,6 +8633,50 @@ async function executeLimparHistorico(fromRaw, adminNorm, targetNorm) {
   } catch (e) {
     console.error("[LIMPAR HISTORICO] Erro geral:", e.message);
     await sendText(fromRaw, `❌ Erro: ${e.message}`, { bypassWindow: true });
+  }
+}
+
+// Roteia intents do NLU diferentes de "register" para os handlers corretos.
+// Usado tanto no default case quanto quando heurística diverge de NLU com alta confiança.
+// Retorna true se tratou, false se o caller deve seguir lógica própria.
+async function dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nlu) {
+  if (!nlu || !nlu.intent) return false;
+  switch (nlu.intent) {
+    case "query_balance":
+      await showReportByCategory(fromRaw, userNorm, "all", defaultMonthRange());
+      return true;
+    case "query_pending":
+      await listPendingPayments(fromRaw, userNorm);
+      await sendReceberHint(fromRaw, userNorm);
+      return true;
+    case "query_report": {
+      const range = defaultMonthRange();
+      const cats = nlu.query?.categories?.length > 0 ? nlu.query.categories : null;
+      await showReportByCategory(fromRaw, userNorm, "pag", range, cats);
+      return true;
+    }
+    case "list_entries":
+      await sendLancPeriodoButtons(fromRaw);
+      return true;
+    case "delete":
+      await sendDeleteMenu(fromRaw);
+      return true;
+    case "edit":
+      await listRowsForSelection(fromRaw, userNorm, "edit");
+      return true;
+    case "help":
+    case "menu":
+      await sendMainMenu(fromRaw);
+      return true;
+    case "cancel":
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
+      return true;
+    case "off_topic":
+      await generateOffTopicResponse(fromRaw, trimmed, userNorm);
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -9355,6 +9398,9 @@ async function handleUserText(fromRaw, text, messageId) {
       break;
     case "registrar_recebimento": {
       const nluRec = await nluPromise;
+      if (nluRec && (nluRec.confidence || 0) >= 0.8 && nluRec.intent && nluRec.intent !== "register") {
+        if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluRec)) break;
+      }
       if (nluRec?.intent === "register" && nluRec.entries?.length > 0 && (nluRec.confidence || 0) >= 0.7) {
         for (const e of nluRec.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
       } else {
@@ -9364,6 +9410,9 @@ async function handleUserText(fromRaw, text, messageId) {
     }
     case "registrar_pagamento": {
       const nluPag = await nluPromise;
+      if (nluPag && (nluPag.confidence || 0) >= 0.8 && nluPag.intent && nluPag.intent !== "register") {
+        if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluPag)) break;
+      }
       if (nluPag?.intent === "register" && nluPag.entries?.length > 0 && (nluPag.confidence || 0) >= 0.7) {
         for (const e of nluPag.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
       } else {
@@ -9395,33 +9444,7 @@ async function handleUserText(fromRaw, text, messageId) {
           for (const e of nluDef.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
           break;
         }
-        if (nluDef.intent === "query_balance") {
-          await showReportByCategory(fromRaw, userNorm, "all", defaultMonthRange());
-          break;
-        }
-        if (nluDef.intent === "query_pending") {
-          await listPendingPayments(fromRaw, userNorm);
-          await sendReceberHint(fromRaw, userNorm);
-          break;
-        }
-        if (nluDef.intent === "query_report") {
-          const range = defaultMonthRange();
-          const cats = nluDef.query?.categories?.length > 0 ? nluDef.query.categories : null;
-          await showReportByCategory(fromRaw, userNorm, "pag", range, cats);
-          break;
-        }
-        if (nluDef.intent === "list_entries") {
-          await sendLancPeriodoButtons(fromRaw);
-          break;
-        }
-        if (nluDef.intent === "help" || nluDef.intent === "menu") {
-          await sendMainMenu(fromRaw);
-          break;
-        }
-        if (nluDef.intent === "off_topic") {
-          await generateOffTopicResponse(fromRaw, trimmed, userNorm);
-          break;
-        }
+        if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluDef)) break;
       }
       // Fallback: heurística legada
       if (extractAmountFromText(trimmed).amount) {
