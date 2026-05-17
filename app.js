@@ -369,10 +369,41 @@ setInterval(() => {
       if (v.windowStart < floodCutoff) userMessageCounts.delete(k);
     }
   }
+  // conversationState: remove fluxos expirados (data.expiresAt no passado)
+  if (typeof conversationState !== "undefined") {
+    const now = Date.now();
+    for (const [k, v] of conversationState.entries()) {
+      if (v?.data?.expiresAt && v.data.expiresAt < now) conversationState.delete(k);
+    }
+  }
+  // lastMessagesHistory: remove histórico de usuários inativos há mais de 30 dias
+  if (typeof lastMessagesHistory !== "undefined") {
+    for (const k of lastMessagesHistory.keys()) {
+      if (!lastInboundInteraction.has(k) || lastInboundInteraction.get(k) < cutoff) {
+        lastMessagesHistory.delete(k);
+      }
+    }
+  }
+  // onboardingNotice: remove entradas de dias anteriores
+  if (typeof onboardingNotice !== "undefined") {
+    const today = new Date().toISOString().split("T")[0];
+    for (const [k, v] of onboardingNotice.entries()) {
+      if (v !== today) onboardingNotice.delete(k);
+    }
+  }
   if (cleaned > 0) {
     logger.info("[Memory] Limpeza de Maps de usuários inativos", { removed: cleaned });
   }
 }, 24 * 60 * 60 * 1000);
+
+// Global error handlers — sem isso, unhandled rejections derrubam o processo no Node 22+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[UnhandledRejection]", reason?.message || reason, reason?.stack || "");
+});
+process.on("uncaughtException", (err) => {
+  console.error("[UncaughtException]", err?.message || err, err?.stack || "");
+});
+
 const app = express();
 
 // ✅ Confiar em 1 proxy reverso (Nginx) - mais seguro que 'true' para rate limiting correto
@@ -652,11 +683,18 @@ const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const lastInboundInteraction = new Map();
 const reminderAdminNotice = new Map();
 const onboardingNotice = new Map();
+const pruneOnboardingNotice = (today) => {
+  for (const [key, val] of onboardingNotice) {
+    if (val !== today) onboardingNotice.delete(key);
+  }
+};
 const shouldSendOnboarding = (userNorm, day) => {
   if (!userNorm || !day) return false;
   const today = new Date().toISOString().split("T")[0];
   const key = `${userNorm}:day${day}`;
   if (onboardingNotice.get(key) === today) return false;
+  // Limpa entradas de dias anteriores quando atinge 1000 entradas
+  if (onboardingNotice.size > 1000) pruneOnboardingNotice(today);
   onboardingNotice.set(key, today);
   return true;
 };
@@ -664,7 +702,19 @@ const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const usuarioStatusCache = new Map();
 const USUARIO_CACHE_TTL_MS = 60 * 1000;
 const USUARIO_ROW_CACHE_TTL_MS = 60 * 1000;
+const USUARIO_CACHE_MAX = 200;
 const usuarioRowCache = new Map();
+const pruneTTLCache = (cache, max) => {
+  const now = Date.now();
+  for (const [key, val] of cache) {
+    if (val.expiresAt <= now) cache.delete(key);
+  }
+  if (cache.size > max) {
+    const excess = cache.size - max;
+    const keys = cache.keys();
+    for (let i = 0; i < excess; i++) cache.delete(keys.next().value);
+  }
+};
 
 function getCanonicalUserId(value) {
   const norm = normalizeUser(value);
@@ -786,6 +836,7 @@ const persistLastInteraction = async (userNorm) => {
         const key = normalizeUser(getVal(row, "user"));
         if (key) rowMap.set(key, row);
       });
+      if (usuarioRowCache.size >= USUARIO_CACHE_MAX) pruneTTLCache(usuarioRowCache, USUARIO_CACHE_MAX);
       usuarioRowCache.set(cacheKey, { rows, rowMap, expiresAt: Date.now() + USUARIO_ROW_CACHE_TTL_MS });
     }
     const candidates = getUserCandidates(canonical);
@@ -4086,6 +4137,7 @@ const isUsuarioAtivo = async (userNorm) => {
     vencOk,
     planoVal,
   });
+  if (usuarioStatusCache.size >= USUARIO_CACHE_MAX) pruneTTLCache(usuarioStatusCache, USUARIO_CACHE_MAX);
   usuarioStatusCache.set(userNorm, { value: active, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
   return active;
 };
@@ -8695,8 +8747,31 @@ async function dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nlu) {
   }
 }
 
+// Serializa mensagens do mesmo usuário para evitar race conditions
+// (2 mensagens em <100ms podiam ler/escrever Maps de sessão concorrentemente)
+const userMessageQueue = new Map(); // userNorm → Promise da última mensagem em processamento
+
 async function handleUserText(fromRaw, text, messageId) {
   const userNorm = normalizeUser(fromRaw);
+  // Lock per-user: aguarda mensagem anterior do mesmo usuário antes de processar
+  const previous = userMessageQueue.get(userNorm) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  const chained = previous.then(() => current);
+  userMessageQueue.set(userNorm, chained);
+  try {
+    await previous;
+    return await processUserText(fromRaw, userNorm, text, messageId);
+  } finally {
+    release();
+    // Limpa entrada do Map se nenhuma mensagem nova foi enfileirada
+    if (userMessageQueue.get(userNorm) === chained) {
+      userMessageQueue.delete(userNorm);
+    }
+  }
+}
+
+async function processUserText(fromRaw, userNorm, text, messageId) {
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
 
