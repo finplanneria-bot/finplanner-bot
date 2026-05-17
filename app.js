@@ -8762,8 +8762,9 @@ const userMessageQueue = new Map(); // userNorm → Promise da última mensagem 
 
 async function handleUserText(fromRaw, text, messageId) {
   const userNorm = normalizeUser(fromRaw);
-  // Lock per-user: aguarda mensagem anterior do mesmo usuário antes de processar
-  const previous = userMessageQueue.get(userNorm) || Promise.resolve();
+  // Lock per-user: aguarda mensagem anterior do mesmo usuário antes de processar.
+  // .catch() garante que falha de mensagem anterior não quebra a chain (próximas seguem normalmente).
+  const previous = (userMessageQueue.get(userNorm) || Promise.resolve()).catch(() => {});
   let release;
   const current = new Promise((resolve) => { release = resolve; });
   const chained = previous.then(() => current);
@@ -8773,7 +8774,6 @@ async function handleUserText(fromRaw, text, messageId) {
     return await processUserText(fromRaw, userNorm, text, messageId);
   } finally {
     release();
-    // Limpa entrada do Map se nenhuma mensagem nova foi enfileirada
     if (userMessageQueue.get(userNorm) === chained) {
       userMessageQueue.delete(userNorm);
     }
