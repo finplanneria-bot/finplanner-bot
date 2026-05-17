@@ -8703,6 +8703,15 @@ async function executeLimparHistorico(fromRaw, adminNorm, targetNorm) {
   }
 }
 
+// Helper para fallback ao mês atual quando IA não extraiu período
+const defaultMonthRange = () => {
+  const now = new Date();
+  return {
+    start: startOfMonth(now.getFullYear(), now.getMonth()),
+    end: endOfMonth(now.getFullYear(), now.getMonth()),
+  };
+};
+
 // Roteia intents do NLU diferentes de "register" para os handlers corretos.
 // Usado tanto no default case quanto quando heurística diverge de NLU com alta confiança.
 // Retorna true se tratou, false se o caller deve seguir lógica própria.
@@ -9395,14 +9404,6 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
 
   // Aguardar resultado do detectIntentWithContext que foi iniciado em paralelo no início da função
   const { intent, period: intentPeriod } = await intentPromise;
-  // Helper para fallback ao mês atual quando IA não extraiu período
-  const defaultMonthRange = () => {
-    const now = new Date();
-    return {
-      start: startOfMonth(now.getFullYear(), now.getMonth()),
-      end: endOfMonth(now.getFullYear(), now.getMonth()),
-    };
-  };
   // Atalho: mensagem é só nome de mês ("Fevereiro", "fev", "Janeiro 2025", "02/2025", "2025")
   // → relatório completo do período. Roda antes do switch para não depender de intent IA.
   const monthOnlyRange = parseMonthNameInput(trimmed);
