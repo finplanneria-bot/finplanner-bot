@@ -369,10 +369,41 @@ setInterval(() => {
       if (v.windowStart < floodCutoff) userMessageCounts.delete(k);
     }
   }
+  // conversationState: remove fluxos expirados (data.expiresAt no passado)
+  if (typeof conversationState !== "undefined") {
+    const now = Date.now();
+    for (const [k, v] of conversationState.entries()) {
+      if (v?.data?.expiresAt && v.data.expiresAt < now) conversationState.delete(k);
+    }
+  }
+  // lastMessagesHistory: remove histórico de usuários inativos há mais de 30 dias
+  if (typeof lastMessagesHistory !== "undefined") {
+    for (const k of lastMessagesHistory.keys()) {
+      if (!lastInboundInteraction.has(k) || lastInboundInteraction.get(k) < cutoff) {
+        lastMessagesHistory.delete(k);
+      }
+    }
+  }
+  // onboardingNotice: remove entradas de dias anteriores
+  if (typeof onboardingNotice !== "undefined") {
+    const today = new Date().toISOString().split("T")[0];
+    for (const [k, v] of onboardingNotice.entries()) {
+      if (v !== today) onboardingNotice.delete(k);
+    }
+  }
   if (cleaned > 0) {
     logger.info("[Memory] Limpeza de Maps de usuários inativos", { removed: cleaned });
   }
 }, 24 * 60 * 60 * 1000);
+
+// Global error handlers — sem isso, unhandled rejections derrubam o processo no Node 22+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[UnhandledRejection]", reason?.message || reason, reason?.stack || "");
+});
+process.on("uncaughtException", (err) => {
+  console.error("[UncaughtException]", err?.message || err, err?.stack || "");
+});
+
 const app = express();
 
 // ✅ Confiar em 1 proxy reverso (Nginx) - mais seguro que 'true' para rate limiting correto
@@ -652,11 +683,18 @@ const MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const lastInboundInteraction = new Map();
 const reminderAdminNotice = new Map();
 const onboardingNotice = new Map();
+const pruneOnboardingNotice = (today) => {
+  for (const [key, val] of onboardingNotice) {
+    if (val !== today) onboardingNotice.delete(key);
+  }
+};
 const shouldSendOnboarding = (userNorm, day) => {
   if (!userNorm || !day) return false;
   const today = new Date().toISOString().split("T")[0];
   const key = `${userNorm}:day${day}`;
   if (onboardingNotice.get(key) === today) return false;
+  // Limpa entradas de dias anteriores quando atinge 1000 entradas
+  if (onboardingNotice.size > 1000) pruneOnboardingNotice(today);
   onboardingNotice.set(key, today);
   return true;
 };
@@ -664,7 +702,19 @@ const WA_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const usuarioStatusCache = new Map();
 const USUARIO_CACHE_TTL_MS = 60 * 1000;
 const USUARIO_ROW_CACHE_TTL_MS = 60 * 1000;
+const USUARIO_CACHE_MAX = 200;
 const usuarioRowCache = new Map();
+const pruneTTLCache = (cache, max) => {
+  const now = Date.now();
+  for (const [key, val] of cache) {
+    if (val.expiresAt <= now) cache.delete(key);
+  }
+  if (cache.size > max) {
+    const excess = cache.size - max;
+    const keys = cache.keys();
+    for (let i = 0; i < excess; i++) cache.delete(keys.next().value);
+  }
+};
 
 function getCanonicalUserId(value) {
   const norm = normalizeUser(value);
@@ -786,6 +836,7 @@ const persistLastInteraction = async (userNorm) => {
         const key = normalizeUser(getVal(row, "user"));
         if (key) rowMap.set(key, row);
       });
+      if (usuarioRowCache.size >= USUARIO_CACHE_MAX) pruneTTLCache(usuarioRowCache, USUARIO_CACHE_MAX);
       usuarioRowCache.set(cacheKey, { rows, rowMap, expiresAt: Date.now() + USUARIO_ROW_CACHE_TTL_MS });
     }
     const candidates = getUserCandidates(canonical);
@@ -1242,7 +1293,9 @@ const nextIntervalDate = (intervalDays, startDate, fromDate = new Date()) => {
 const formatBRDate = (d) => {
   if (!d) return "";
   try {
-    return new Date(d).toLocaleDateString("pt-BR");
+    const date = new Date(d);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleDateString("pt-BR");
   } catch (e) {
     return "";
   }
@@ -4084,6 +4137,7 @@ const isUsuarioAtivo = async (userNorm) => {
     vencOk,
     planoVal,
   });
+  if (usuarioStatusCache.size >= USUARIO_CACHE_MAX) pruneTTLCache(usuarioStatusCache, USUARIO_CACHE_MAX);
   usuarioStatusCache.set(userNorm, { value: active, expiresAt: Date.now() + USUARIO_CACHE_TTL_MS });
   return active;
 };
@@ -7798,6 +7852,18 @@ const detectIntentWithContext = async (text, userNorm = null) => {
 
 const NLU_CACHE = new Map(); // normalizedText → { result, expiresAt }
 const NLU_CACHE_TTL = 5 * 60 * 1000;
+const NLU_CACHE_MAX = 500;
+const pruneNLUCache = () => {
+  const now = Date.now();
+  for (const [key, val] of NLU_CACHE) {
+    if (val.expiresAt <= now) NLU_CACHE.delete(key);
+  }
+  if (NLU_CACHE.size > NLU_CACHE_MAX) {
+    const excess = NLU_CACHE.size - NLU_CACHE_MAX;
+    const keys = NLU_CACHE.keys();
+    for (let i = 0; i < excess; i++) NLU_CACHE.delete(keys.next().value);
+  }
+};
 
 const buildNLUPrompt = (text) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -7934,6 +8000,7 @@ const parseWithNLU = async (text, userNorm) => {
     });
     const parsed = parseNLUResponse(output);
     if (parsed) {
+      if (NLU_CACHE.size >= NLU_CACHE_MAX) pruneNLUCache();
       NLU_CACHE.set(cacheKey, { result: parsed, expiresAt: Date.now() + NLU_CACHE_TTL });
       console.log("[NLU_TRACE]", JSON.stringify({
         ts: new Date().toISOString(),
@@ -8026,7 +8093,6 @@ async function registerEntryWithNLU(fromRaw, userNorm, entry, opts = {}) {
   await finalizeRegisterEntry(fromRaw, userNorm, payload, {
     autoStatus: true,
     statusSource: "nlu",
-    skipHighValueConfirm: false,
   });
 }
 
@@ -8637,8 +8703,84 @@ async function executeLimparHistorico(fromRaw, adminNorm, targetNorm) {
   }
 }
 
+// Helper para fallback ao mês atual quando IA não extraiu período
+const defaultMonthRange = () => {
+  const now = new Date();
+  return {
+    start: startOfMonth(now.getFullYear(), now.getMonth()),
+    end: endOfMonth(now.getFullYear(), now.getMonth()),
+  };
+};
+
+// Roteia intents do NLU diferentes de "register" para os handlers corretos.
+// Usado tanto no default case quanto quando heurística diverge de NLU com alta confiança.
+// Retorna true se tratou, false se o caller deve seguir lógica própria.
+async function dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nlu) {
+  if (!nlu || !nlu.intent) return false;
+  switch (nlu.intent) {
+    case "query_balance":
+      await showReportByCategory(fromRaw, userNorm, "all", defaultMonthRange());
+      return true;
+    case "query_pending":
+      await listPendingPayments(fromRaw, userNorm);
+      await sendReceberHint(fromRaw, userNorm);
+      return true;
+    case "query_report": {
+      const range = defaultMonthRange();
+      const cats = nlu.query?.categories?.length > 0 ? nlu.query.categories : null;
+      await showReportByCategory(fromRaw, userNorm, "pag", range, cats);
+      return true;
+    }
+    case "list_entries":
+      await sendLancPeriodoButtons(fromRaw);
+      return true;
+    case "delete":
+      await sendDeleteMenu(fromRaw);
+      return true;
+    case "edit":
+      await listRowsForSelection(fromRaw, userNorm, "edit");
+      return true;
+    case "help":
+    case "menu":
+      await sendMainMenu(fromRaw);
+      return true;
+    case "cancel":
+      resetSession(userNorm);
+      await sendCancelMessage(fromRaw);
+      return true;
+    case "off_topic":
+      await generateOffTopicResponse(fromRaw, trimmed, userNorm);
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Serializa mensagens do mesmo usuário para evitar race conditions
+// (2 mensagens em <100ms podiam ler/escrever Maps de sessão concorrentemente)
+const userMessageQueue = new Map(); // userNorm → Promise da última mensagem em processamento
+
 async function handleUserText(fromRaw, text, messageId) {
   const userNorm = normalizeUser(fromRaw);
+  // Lock per-user: aguarda mensagem anterior do mesmo usuário antes de processar.
+  // .catch() garante que falha de mensagem anterior não quebra a chain (próximas seguem normalmente).
+  const previous = (userMessageQueue.get(userNorm) || Promise.resolve()).catch(() => {});
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  const chained = previous.then(() => current);
+  userMessageQueue.set(userNorm, chained);
+  try {
+    await previous;
+    return await processUserText(fromRaw, userNorm, text, messageId);
+  } finally {
+    release();
+    if (userMessageQueue.get(userNorm) === chained) {
+      userMessageQueue.delete(userNorm);
+    }
+  }
+}
+
+async function processUserText(fromRaw, userNorm, text, messageId) {
   const trimmed = (text || "").trim();
   const normalizedMessage = normalizeDiacritics(trimmed).toLowerCase();
 
@@ -9262,14 +9404,6 @@ async function handleUserText(fromRaw, text, messageId) {
 
   // Aguardar resultado do detectIntentWithContext que foi iniciado em paralelo no início da função
   const { intent, period: intentPeriod } = await intentPromise;
-  // Helper para fallback ao mês atual quando IA não extraiu período
-  const defaultMonthRange = () => {
-    const now = new Date();
-    return {
-      start: startOfMonth(now.getFullYear(), now.getMonth()),
-      end: endOfMonth(now.getFullYear(), now.getMonth()),
-    };
-  };
   // Atalho: mensagem é só nome de mês ("Fevereiro", "fev", "Janeiro 2025", "02/2025", "2025")
   // → relatório completo do período. Roda antes do switch para não depender de intent IA.
   const monthOnlyRange = parseMonthNameInput(trimmed);
@@ -9355,6 +9489,9 @@ async function handleUserText(fromRaw, text, messageId) {
       break;
     case "registrar_recebimento": {
       const nluRec = await nluPromise;
+      if (nluRec && (nluRec.confidence || 0) >= 0.8 && nluRec.intent && nluRec.intent !== "register") {
+        if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluRec)) break;
+      }
       if (nluRec?.intent === "register" && nluRec.entries?.length > 0 && (nluRec.confidence || 0) >= 0.7) {
         for (const e of nluRec.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
       } else {
@@ -9364,6 +9501,9 @@ async function handleUserText(fromRaw, text, messageId) {
     }
     case "registrar_pagamento": {
       const nluPag = await nluPromise;
+      if (nluPag && (nluPag.confidence || 0) >= 0.8 && nluPag.intent && nluPag.intent !== "register") {
+        if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluPag)) break;
+      }
       if (nluPag?.intent === "register" && nluPag.entries?.length > 0 && (nluPag.confidence || 0) >= 0.7) {
         for (const e of nluPag.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
       } else {
@@ -9395,33 +9535,7 @@ async function handleUserText(fromRaw, text, messageId) {
           for (const e of nluDef.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
           break;
         }
-        if (nluDef.intent === "query_balance") {
-          await showReportByCategory(fromRaw, userNorm, "all", defaultMonthRange());
-          break;
-        }
-        if (nluDef.intent === "query_pending") {
-          await listPendingPayments(fromRaw, userNorm);
-          await sendReceberHint(fromRaw, userNorm);
-          break;
-        }
-        if (nluDef.intent === "query_report") {
-          const range = defaultMonthRange();
-          const cats = nluDef.query?.categories?.length > 0 ? nluDef.query.categories : null;
-          await showReportByCategory(fromRaw, userNorm, "pag", range, cats);
-          break;
-        }
-        if (nluDef.intent === "list_entries") {
-          await sendLancPeriodoButtons(fromRaw);
-          break;
-        }
-        if (nluDef.intent === "help" || nluDef.intent === "menu") {
-          await sendMainMenu(fromRaw);
-          break;
-        }
-        if (nluDef.intent === "off_topic") {
-          await generateOffTopicResponse(fromRaw, trimmed, userNorm);
-          break;
-        }
+        if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluDef)) break;
       }
       // Fallback: heurística legada
       if (extractAmountFromText(trimmed).amount) {
