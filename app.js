@@ -1242,7 +1242,9 @@ const nextIntervalDate = (intervalDays, startDate, fromDate = new Date()) => {
 const formatBRDate = (d) => {
   if (!d) return "";
   try {
-    return new Date(d).toLocaleDateString("pt-BR");
+    const date = new Date(d);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleDateString("pt-BR");
   } catch (e) {
     return "";
   }
@@ -7798,6 +7800,18 @@ const detectIntentWithContext = async (text, userNorm = null) => {
 
 const NLU_CACHE = new Map(); // normalizedText → { result, expiresAt }
 const NLU_CACHE_TTL = 5 * 60 * 1000;
+const NLU_CACHE_MAX = 500;
+const pruneNLUCache = () => {
+  const now = Date.now();
+  for (const [key, val] of NLU_CACHE) {
+    if (val.expiresAt <= now) NLU_CACHE.delete(key);
+  }
+  if (NLU_CACHE.size > NLU_CACHE_MAX) {
+    const excess = NLU_CACHE.size - NLU_CACHE_MAX;
+    const keys = NLU_CACHE.keys();
+    for (let i = 0; i < excess; i++) NLU_CACHE.delete(keys.next().value);
+  }
+};
 
 const buildNLUPrompt = (text) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -7934,6 +7948,7 @@ const parseWithNLU = async (text, userNorm) => {
     });
     const parsed = parseNLUResponse(output);
     if (parsed) {
+      if (NLU_CACHE.size >= NLU_CACHE_MAX) pruneNLUCache();
       NLU_CACHE.set(cacheKey, { result: parsed, expiresAt: Date.now() + NLU_CACHE_TTL });
       console.log("[NLU_TRACE]", JSON.stringify({
         ts: new Date().toISOString(),
