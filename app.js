@@ -8065,6 +8065,13 @@ async function registerEntryWithNLU(fromRaw, userNorm, entry, opts = {}) {
       }
     } catch {}
   }
+  if (!vencimentoIso) {
+    const today = new Date();
+    vencimentoIso = today.toISOString().slice(0, 10);
+    const dd = String(today.getDate()).padStart(2, "0");
+    const mm = String(today.getMonth() + 1).padStart(2, "0");
+    vencimentoBr = `${dd}/${mm}/${today.getFullYear()}`;
+  }
 
   const payload = {
     row_id: generateRowId(),
