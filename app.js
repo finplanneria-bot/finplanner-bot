@@ -1293,12 +1293,31 @@ const nextIntervalDate = (intervalDays, startDate, fromDate = new Date()) => {
 const formatBRDate = (d) => {
   if (!d) return "";
   try {
-    const date = new Date(d);
-    if (isNaN(date.getTime())) return "";
-    return date.toLocaleDateString("pt-BR");
+    if (typeof d === "string") {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+      if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+      const parsed = new Date(d);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+      }
+      return "";
+    }
+    if (d instanceof Date && !isNaN(d.getTime())) {
+      return d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    }
+    return "";
   } catch (e) {
     return "";
   }
+};
+
+const getTodayBRISO = () => {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 };
 
 const numberToKeycapEmojis = (n) => {
@@ -6912,7 +6931,12 @@ async function registerEntry(fromRaw, userNorm, text, tipoPreferencial, opts = {
   }
   let data = parsed.data instanceof Date ? parsed.data : null;
   if (!data || Number.isNaN(data.getTime())) data = new Date();
-  const iso = data.toISOString();
+  const iso = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(data);
   const categoria = await resolveCategory(parsed.descricao, parsed.tipo, userNorm);
   // IA pode devolver versão limpa da descrição — preferir essa quando disponível
   const finalDescricao = (categoria && categoria.cleanDescription) ? categoria.cleanDescription : parsed.descricao;
@@ -8057,20 +8081,16 @@ async function registerEntryWithNLU(fromRaw, userNorm, entry, opts = {}) {
   let vencimentoIso = null;
   let vencimentoBr = "";
   if (entry.due_date) {
-    try {
-      const d = new Date(entry.due_date + "T12:00:00");
-      if (!isNaN(d.getTime())) {
-        vencimentoIso = entry.due_date;
-        vencimentoBr = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
-      }
-    } catch {}
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(entry.due_date);
+    if (m) {
+      vencimentoIso = entry.due_date;
+      vencimentoBr = `${m[3]}/${m[2]}/${m[1]}`;
+    }
   }
   if (!vencimentoIso) {
-    const today = new Date();
-    vencimentoIso = today.toISOString().slice(0, 10);
-    const dd = String(today.getDate()).padStart(2, "0");
-    const mm = String(today.getMonth() + 1).padStart(2, "0");
-    vencimentoBr = `${dd}/${mm}/${today.getFullYear()}`;
+    vencimentoIso = getTodayBRISO();
+    const [y, mo, dd] = vencimentoIso.split("-");
+    vencimentoBr = `${dd}/${mo}/${y}`;
   }
 
   const payload = {
