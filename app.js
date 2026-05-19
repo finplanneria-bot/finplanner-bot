@@ -8946,6 +8946,19 @@ async function handleUserText(fromRaw, text, messageId) {
   try {
     await previous;
     return await processUserText(fromRaw, userNorm, text, messageId);
+  } catch (err) {
+    // Rede de segurança final: se TUDO falhar (exception não tratada),
+    // usuário NUNCA fica sem resposta. Manda texto fallback com canais de contato.
+    console.error("[handleUserText] Falha catastrófica:", err?.message || err, err?.stack);
+    try {
+      await sendText(
+        fromRaw,
+        `Tive um problema processando sua mensagem. 😔 Tenta de novo em alguns segundos.\n\nSe persistir, fala com a gente:\n💬 ${typeof SUPPORT_WHATSAPP_URL !== "undefined" ? SUPPORT_WHATSAPP_URL : "wa.me/5579991249561"}\n📧 ${typeof SUPPORT_EMAIL !== "undefined" ? SUPPORT_EMAIL : "finplanneria@gmail.com"}`,
+        { bypassWindow: true }
+      );
+    } catch (_) {
+      // Se sendText também falhar, não há mais o que fazer
+    }
   } finally {
     release();
     if (userMessageQueue.get(userNorm) === chained) {
