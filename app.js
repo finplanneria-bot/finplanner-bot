@@ -7330,7 +7330,8 @@ Ao receber uma mensagem fora do seu escopo, siga estas regras:
 3. Se existir uma função relacionada que você oferece, sugira com um exemplo concreto e prático
 4. Se o usuário tiver nome conhecido, chame-o pelo nome de forma natural (sem forçar)
 5. Seja amigável, curto (máximo 3 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
-6. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer`.trim();
+6. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer
+7. Se o usuário pedir suporte humano, contato, atendimento, cancelar assinatura/conta, reembolso ou estorno: NÃO invente desculpas — informe o WhatsApp ${CAPABILITIES_MANIFEST.suporte.whatsapp} e o e-mail ${CAPABILITIES_MANIFEST.suporte.email} de forma direta`.trim();
 
 const buildUserContextNote = (userNorm) => {
   const firstName = userNorm ? (getStoredFirstName(userNorm) || "") : "";
@@ -7387,13 +7388,15 @@ SUA TAREFA:
 5. Tom de amigo no zap — informal, curto, 1 emoji no máximo
 6. Máximo 3 linhas, sem listas, sem markdown
 7. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
+8. Se a mensagem pedir suporte humano, contato, cancelar assinatura/conta, reembolso ou estorno: NÃO invente desculpas — informe o WhatsApp ${CAPABILITIES_MANIFEST.suporte.whatsapp} e o e-mail ${CAPABILITIES_MANIFEST.suporte.email}
 
 EXEMPLOS:
 "academia" → "Quer registrar o pagamento da academia? Tenta: 'Paguei 120 academia' 🙂"
 "mercado" → "Foi gasto no mercado? Me manda o valor: 'Mercado 350'"
 "100 reais" → "Foi gasto ou recebimento de R$100? Tenta: 'Paguei 100 X' ou 'Recebi 100 Y'"
 "tô lascado" → "Quer ver seu saldo do mês? Manda 'saldo' 😊"
-"kkk" → "Bora organizar as finanças? Me conta um gasto que teve hoje 😄"`.trim();
+"kkk" → "Bora organizar as finanças? Me conta um gasto que teve hoje 😄"
+"contato" → "Pra falar com a gente: ${CAPABILITIES_MANIFEST.suporte.whatsapp} ou ${CAPABILITIES_MANIFEST.suporte.email} 💬"`.trim();
 
 const generateUnknownIntentResponse = async (fromRaw, userMessage, userNorm = null) => {
   if (openaiClient && checkOpenAIQuota(userNorm)) {
@@ -7441,6 +7444,7 @@ const KNOWN_INTENTS = new Set([
   "registrar_pagamento",
   "contas_fixas",
   "ajuda_parcelamento",
+  "falar_suporte",
   "fora_do_escopo",
   "desconhecido",
 ]);
@@ -7481,6 +7485,14 @@ const detectIntentHeuristic = (text) => {
   // Filtro por tag livre (Sess\u00e3o 8B): mensagem s\u00f3 com #tag ou "tag #X" \u2192 relat\u00f3rio filtrado
   if (/^#\w+$/.test(trimmedNorm) || /^tag\s+#\w+$/.test(trimmedNorm)) {
     return "relatorio_completo";
+  }
+  // Suporte / contato humano — sempre antes do parcelamento
+  if (/^(suporte|contato|atendimento|ajuda)$/.test(normalized.trim()) ||
+      /\b(falar\s+com\s+(suporte|humano|atendente|alguem|gente))\b/.test(normalized) ||
+      /\b(contato\s+do\s+suporte|numero\s+do\s+suporte|email\s+do\s+suporte)\b/.test(normalized) ||
+      /\b(cancelar\s+(minha\s+)?(assinatura|conta|plano))\b/.test(normalized) ||
+      /\b(reembolso|estorno|devolu[cç][aã]o\s+do\s+(pagamento|dinheiro))\b/.test(normalized)) {
+    return "falar_suporte";
   }
   // Parcelamento — resposta educativa
   if (/\bparcela(mento|s?)?\b|\bprestac(ao|oes)\b|em\s+\d+\s+vezes?|\bparcelad/.test(normalized)) return "ajuda_parcelamento";
@@ -7602,6 +7614,7 @@ const buildIntentPrompt = (text) => {
    • excluir: "excluir lançamento", "apagar registro"
    • contas_fixas: "contas fixas", "cadastrar conta fixa"
    • ajuda_parcelamento: "como parcelar", "lançar em parcelas", "em X vezes", "como funciona parcelamento"
+   • falar_suporte: "suporte", "contato", "atendimento", "falar com humano", "cancelar assinatura", "cancelar conta", "reembolso", "estorno", "preciso de ajuda humana"
 
 🔹 COMANDOS RÁPIDOS:
    • desfazer_ultimo: "desfazer", "cancela último", "exclui o último", "apaga último"
@@ -7970,7 +7983,9 @@ Retorne JSON válido (sem markdown) com a estrutura:
 {"intent":"...","entries":[...],"query":{...},"delete_target":{...},"confidence":0-1}
 
 INTENTS VÁLIDOS:
-register | query_balance | query_pending | query_report | list_entries | delete | edit | help | menu | cancel | off_topic | unknown
+register | query_balance | query_pending | query_report | list_entries | delete | edit | help | menu | cancel | support | off_topic | unknown
+
+INTENT "support": usuário quer falar com humano/atendimento. Exemplos: "suporte", "contato", "atendimento", "falar com alguém", "preciso de ajuda humana", "cancelar minha assinatura", "cancelar minha conta", "quero reembolso", "estorno", "como entro em contato".
 
 ENTRIES (apenas para intent="register"):
 [{"type":"payment|income","amount":N,"description":"string","category":"slug","status":"paid|received|pending","due_date":"YYYY-MM-DD|null"}]
@@ -8875,6 +8890,12 @@ async function dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nlu) {
     case "off_topic":
       await generateOffTopicResponse(fromRaw, trimmed, userNorm);
       return true;
+    case "support":
+    case "falar_suporte":
+      await sendSupportButton(fromRaw, {
+        body: "Precisa falar com a gente? 💬\nNosso atendimento responde por aqui:",
+      });
+      return true;
     default:
       return false;
   }
@@ -9648,6 +9669,11 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
       break;
     case "fora_do_escopo":
       await generateOffTopicResponse(fromRaw, trimmed, userNorm);
+      break;
+    case "falar_suporte":
+      await sendSupportButton(fromRaw, {
+        body: "Precisa falar com a gente? 💬\nNosso atendimento responde por aqui:",
+      });
       break;
     default: {
       const nluDef = await nluPromise;
