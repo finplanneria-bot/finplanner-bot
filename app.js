@@ -236,11 +236,12 @@ const adaptInputForResponses = (input) => {
 
 // Rate limit de chamadas OpenAI por usuário: máx 20 chamadas por hora
 const openaiCallsPerUser = new Map(); // userNorm → { count, windowStart }
-const OPENAI_USER_LIMIT = 20;
+const OPENAI_USER_LIMIT = 60;
 const OPENAI_USER_WINDOW_MS = 60 * 60 * 1000; // 1 hora
 
 const checkOpenAIQuota = (userNorm) => {
   if (!userNorm) return true; // chamadas internas (cron, etc.) sem limite
+  if (isAdminUser(userNorm)) return true; // admin sem limite (testes contínuos)
   const now = Date.now();
   const entry = openaiCallsPerUser.get(userNorm) || { count: 0, windowStart: now };
   if (now - entry.windowStart > OPENAI_USER_WINDOW_MS) {
@@ -8781,24 +8782,30 @@ async function executeLimparHistorico(fromRaw, adminNorm, targetNorm) {
       return;
     }
 
-    await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...\n_(taxa segura: ~50/min para não estourar quota do Sheets)_`, { bypassWindow: true });
+    await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...\n_(taxa segura: ~24/min para não estourar quota do Sheets)_`, { bypassWindow: true });
     let deleted = 0;
     let failed = 0;
-    // Throttle: Google Sheets API tem limite de 60 writes/min por usuário.
-    // Mantemos 1.2s entre deletes (≤50/min) com retry para 429.
-    const DELETE_THROTTLE_MS = 1200;
+    // Throttle conservador: Sheets é 60 writes/min/user, mas withRetry consome
+    // writes nas tentativas. 2.5s entre deletes (~24/min) deixa folga real.
+    const DELETE_THROTTLE_MS = 2500;
+    const COOLDOWN_429_MS = 65 * 1000; // se withRetry esgotar, espera 65s antes do próximo
     for (const f of found) {
       for (let i = f.rows.length - 1; i >= 0; i--) {
         try {
           await withRetry(() => f.rows[i].delete(), "limpar-delete-row");
           deleted++;
-          // Progresso parcial a cada 25 deletes (sem estourar mensagens WA)
           if (deleted % 25 === 0 && deleted < totalRows) {
             await sendText(fromRaw, `⏳ Progresso: ${deleted}/${totalRows} apagados...`, { bypassWindow: true });
           }
         } catch (e) {
           console.error("[LIMPAR HISTORICO] Erro ao deletar row da aba", f.title, ":", e.message);
           failed++;
+          const status = e?.response?.status || e?.code;
+          if (status === 429 || status === 403) {
+            console.warn(`[LIMPAR HISTORICO] Cooldown ${COOLDOWN_429_MS}ms após 429 esgotar retries`);
+            await sleep(COOLDOWN_429_MS);
+            continue; // já dormiu o suficiente, pula o throttle padrão
+          }
         }
         await sleep(DELETE_THROTTLE_MS);
       }
