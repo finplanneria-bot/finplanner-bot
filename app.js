@@ -2866,6 +2866,8 @@ const TEMPLATE_REMINDER_NAME_V2 = "lembrete_finplanner_2";
 const TEMPLATE_REMINDER_BUTTON_ID = "REMINDERS_VIEW";
 const REMINDER_PENDING_BUTTON_ID = "VISUALIZAR_LEMBRETES_VENCIDAS";
 const SUPPORT_NUMBER = normalizeUser("5579991249561");
+const SUPPORT_WHATSAPP_URL = `https://wa.me/${SUPPORT_NUMBER}`;
+const SUPPORT_EMAIL = "finplanneria@gmail.com";
 const ADMIN_NUMBER_NORM = normalizeUser(ADMIN_WA_NUMBER);
 const ADMIN_NUMBERS = new Set();
 
@@ -4772,14 +4774,17 @@ const resetSession = (userNorm) => {
 
 const hasActiveSession = (userNorm) => conversationState.has(userNorm);
 
-const ESCAPE_REGEX = /^(cancelar|cancel|menu|voltar|sair|excluir|parar|pare|stop|inicio|início)$/i;
+const ESCAPE_REGEX = /^(cancelar?|cancel|menu|voltar|sair|excluir|parar?|pare|stop|inicio|início|desistir?|chega|nao\s+quero(?:\s+mais)?|n[aã]o\s+quero(?:\s+mais)?|deixa\s+pra\s+la|deixa\s+pra\s+l[aá]|n[aã]o\s+obrigad[oa])$/i;
 const NAVIGATE_REGEX = /^(menu|voltar|inicio|início)$/i;
 
-const sendCancelMessage = async (to, { reason } = {}) => {
-  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to, reason });
+const sendCancelMessage = async (to, { reason, flowName } = {}) => {
+  console.log("[sendCancelMessage] Enviando menu após cancelamento:", { to, reason, flowName });
+  const flowSuffix = flowName ? ` de ${flowName}` : "";
   const msg = reason === "timeout"
-    ? "⏰ Operação cancelada por inatividade.\n\n💡 Você pode recomeçar a qualquer momento — basta enviar sua mensagem novamente ou tocar em *Abrir menu*."
-    : "Operação cancelada.";
+    ? `⏰ Operação${flowSuffix} cancelada por inatividade.\n\n💡 Você pode recomeçar a qualquer momento — basta enviar sua mensagem novamente ou tocar em *Abrir menu*.`
+    : flowSuffix
+      ? `Operação${flowSuffix} cancelada.`
+      : "Operação cancelada.";
   await sendText(to, msg);
   await sendMainMenu(to);
 };
@@ -7248,43 +7253,105 @@ ${categoryInfo.emoji} *Categoria*: ${categoryInfo.label}
 }
 
 // ============================
+// CAPABILITIES_MANIFEST — fonte de verdade única sobre o que o bot faz
+// Atualizar este objeto quando adicionar/remover funcionalidade.
+// Ele alimenta automaticamente os prompts de IA (off-topic, clarification, etc.)
+// ============================
+const CAPABILITIES_MANIFEST = {
+  nome: "FinPlanner IA",
+  descricao: "Assistente financeiro pessoal via WhatsApp",
+  suporte: {
+    whatsapp: SUPPORT_WHATSAPP_URL,
+    email: SUPPORT_EMAIL,
+  },
+  pode_fazer: [
+    { acao: "Registrar pagamento",        exemplos: ["paguei 50 no almoço", "uber 40", "academia 120 pago hoje"] },
+    { acao: "Registrar recebimento",      exemplos: ["recebi 3000 de salário", "caiu 500 de freelance"] },
+    { acao: "Ver saldo e balanço",        exemplos: ["saldo", "to no negativo?", "como ando financeiramente?"] },
+    { acao: "Ver contas pendentes",       exemplos: ["contas a pagar", "o que to devendo", "o que vence essa semana"] },
+    { acao: "Relatório de gastos",        exemplos: ["quanto gastei esse mês", "gastos com alimentação", "relatório de outubro"] },
+    { acao: "Listar lançamentos",         exemplos: ["meus lançamentos", "histórico", "o que registrei hoje"] },
+    { acao: "Excluir lançamento",         exemplos: ["apaga o último", "excluir 3", "remover o uber"] },
+    { acao: "Editar lançamento",          exemplos: ["editar o almoço", "corrigir o valor do mercado"] },
+    { acao: "Contas fixas e recorrentes", exemplos: ["aluguel 1500 todo mês", "academia 120 semanal"] },
+    { acao: "Parcelamentos",              exemplos: ["comprei TV 1800 em 6x", "notebook 3000 em 12 parcelas"] },
+    { acao: "Cancelar operação",          exemplos: ["cancelar", "desistir", "não quero mais", "chega"] },
+  ],
+  nao_faz: [
+    "Acessa contas bancárias ou cartões",
+    "Faz pagamentos ou transferências",
+    "Agenda consultas, medicamentos ou compromissos",
+    "Responde sobre clima, notícias ou assuntos não financeiros",
+    "Integra com outros apps de finanças",
+  ],
+};
+
+const buildCapabilitiesText = () => {
+  const pode = CAPABILITIES_MANIFEST.pode_fazer
+    .map(c => `• ${c.acao}: ${c.exemplos.slice(0, 2).map(e => `"${e}"`).join(", ")}`)
+    .join("\n");
+  const nao = CAPABILITIES_MANIFEST.nao_faz.map(n => `• ${n}`).join("\n");
+  return `✅ O que eu faço:\n${pode}\n\n❌ O que eu não faço:\n${nao}\n\n💬 Suporte: ${CAPABILITIES_MANIFEST.suporte.whatsapp} | 📧 ${CAPABILITIES_MANIFEST.suporte.email}`;
+};
+
+// Mapa de fluxo técnico → nome legível em PT-BR
+const FLOW_LABELS = {
+  delete: "exclusão",
+  edit: "edição",
+  register: "registro",
+  fixed_register: "cadastro de conta fixa",
+  fixed_delete: "exclusão de conta fixa",
+  high_value: "confirmação de valor alto",
+  new_category: "criação de categoria",
+  payment_code: "informação do código de pagamento",
+  pay_confirm: "confirmação de pagamento",
+  duplicate_confirm: "confirmação de duplicata",
+  pending_amount: "confirmação de valor",
+  pending_desc: "confirmação de descrição",
+  status_confirm: "confirmação de status",
+  period: "seleção de período",
+};
+const getActiveFlowName = (userNorm) => {
+  const state = conversationState.get(userNorm);
+  return state?.flow ? (FLOW_LABELS[state.flow] || state.flow) : null;
+};
+
+// ============================
 // Off-topic response (bot consciente das próprias capacidades)
 // ============================
-const FINPLANNER_CAPABILITIES_PROMPT = `Você é o FinPlanner, um assistente financeiro pessoal via WhatsApp. Você conhece todas as suas capacidades em detalhe.
+const FINPLANNER_CAPABILITIES_PROMPT = `Você é o ${CAPABILITIES_MANIFEST.nome}, ${CAPABILITIES_MANIFEST.descricao}.
 
-✅ O QUE VOCÊ FAZ:
-• Registrar pagamentos: "Paguei 150 de mercado", "Academia 120 pago segunda-feira", "Uber 40 pago agora"
-• Registrar recebimentos: "Recebi 3000 de salário", "Vendi curso por 200", "Me pagaram 500"
-• Ver saldo e relatórios: "saldo", "relatório do mês", "quanto gastei", "balanço geral"
-• Listar lançamentos e pendentes: "meus lançamentos", "contas a pagar", "o que vence essa semana"
-• Editar e excluir lançamentos já registrados
-• Contas fixas e recorrentes: "Aluguel 1500 todo mês", "Academia 120 toda semana"
-• Parcelamentos: "Comprei TV 1800 em 6x", "Notebook 3000 em 12 parcelas"
-• Categorias personalizadas: "adicionar categoria", "ver categorias"
-• Receber lembretes automáticos de contas próximas do vencimento
-
-❌ O QUE VOCÊ NÃO FAZ:
-• Lembretes pessoais de consultas médicas, medicamentos, compromissos
-• Agendamentos de qualquer tipo
-• Listas de compras sem valores financeiros
-• Previsão do tempo, notícias, receitas culinárias
-• Qualquer coisa não relacionada a finanças pessoais
+${buildCapabilitiesText()}
 
 Ao receber uma mensagem fora do seu escopo, siga estas regras:
 1. Reconheça especificamente o que o usuário tentou fazer (nunca seja genérico)
 2. Explique em 1 frase que você é um assistente financeiro e por isso não pode ajudar com isso
 3. Se existir uma função relacionada que você oferece, sugira com um exemplo concreto e prático
-4. Seja amigável, curto (máximo 3 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
-5. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer`.trim();
+4. Se o usuário tiver nome conhecido, chame-o pelo nome de forma natural (sem forçar)
+5. Seja amigável, curto (máximo 3 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
+6. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer`.trim();
+
+const buildUserContextNote = (userNorm) => {
+  const firstName = userNorm ? (getStoredFirstName(userNorm) || "") : "";
+  const activeFlow = userNorm ? getActiveFlowName(userNorm) : null;
+  const parts = [];
+  if (firstName) parts.push(`Nome do usuário: ${firstName}.`);
+  if (activeFlow) parts.push(`Estava no meio de uma ${activeFlow} quando enviou esta mensagem.`);
+  return parts.join(" ");
+};
 
 const generateOffTopicResponse = async (fromRaw, userMessage, userNorm = null) => {
   if (openaiClient && checkOpenAIQuota(userNorm)) {
     try {
+      const ctxNote = buildUserContextNote(userNorm);
+      const userPayload = ctxNote
+        ? `${ctxNote}\nUsuário disse: "${userMessage}"`
+        : `Usuário disse: "${userMessage}"`;
       const resp = await callOpenAI({
         model: OPENAI_INTENT_MODEL,
         input: [
           { role: "system", content: [{ type: "input_text", text: FINPLANNER_CAPABILITIES_PROMPT }] },
-          { role: "user", content: [{ type: "input_text", text: `Usuário disse: "${userMessage}"` }] },
+          { role: "user", content: [{ type: "input_text", text: userPayload }] },
         ],
         temperature: 0.5,
         maxOutputTokens: 180,
@@ -7305,25 +7372,20 @@ const generateOffTopicResponse = async (fromRaw, userMessage, userNorm = null) =
   );
 };
 
-const FINPLANNER_CLARIFICATION_PROMPT = `Você é o FinPlanner, assistente financeiro pessoal via WhatsApp.
+const FINPLANNER_CLARIFICATION_PROMPT = `Você é o ${CAPABILITIES_MANIFEST.nome}, ${CAPABILITIES_MANIFEST.descricao}.
 
 A mensagem que vai receber é AMBÍGUA — pode ser financeira mas não está claro o que o usuário quer.
 
-✅ O QUE VOCÊ FAZ:
-• Registrar pagamento: "Paguei 50 almoço"
-• Registrar recebimento: "Recebi 3000 salário"
-• Ver saldo / relatórios: "saldo", "quanto gastei"
-• Listar pendências: "contas a pagar", "tô devendo"
-• Editar / excluir lançamentos
-• Ver lançamentos: "histórico", "meus lançamentos"
+${buildCapabilitiesText()}
 
 SUA TAREFA:
 1. Tente inferir o que ele quis dizer (mesmo sem certeza)
 2. Faça UMA pergunta curta pra confirmar OU sugira o comando mais provável
 3. Dê 1 exemplo concreto que ele possa copiar
-4. Tom de amigo no zap — informal, curto, 1 emoji no máximo
-5. Máximo 3 linhas, sem listas, sem markdown
-6. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
+4. Se souber o nome do usuário, use de forma natural
+5. Tom de amigo no zap — informal, curto, 1 emoji no máximo
+6. Máximo 3 linhas, sem listas, sem markdown
+7. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
 
 EXEMPLOS:
 "academia" → "Quer registrar o pagamento da academia? Tenta: 'Paguei 120 academia' 🙂"
@@ -7335,11 +7397,15 @@ EXEMPLOS:
 const generateUnknownIntentResponse = async (fromRaw, userMessage, userNorm = null) => {
   if (openaiClient && checkOpenAIQuota(userNorm)) {
     try {
+      const ctxNote = buildUserContextNote(userNorm);
+      const userPayload = ctxNote
+        ? `${ctxNote}\nUsuário disse: "${userMessage}"`
+        : `Usuário disse: "${userMessage}"`;
       const resp = await callOpenAI({
         model: OPENAI_INTENT_MODEL,
         input: [
           { role: "system", content: [{ type: "input_text", text: FINPLANNER_CLARIFICATION_PROMPT }] },
-          { role: "user", content: [{ type: "input_text", text: `Usuário disse: "${userMessage}"` }] },
+          { role: "user", content: [{ type: "input_text", text: userPayload }] },
         ],
         temperature: 0.6,
         maxOutputTokens: 150,
@@ -7656,19 +7722,19 @@ const buildInactiveUserResponse = (classification, nome) => {
   );
 };
 
-const sendSupportButton = (to) =>
+const sendSupportButton = (to, { body = "Dúvidas? Fale conosco." } = {}) =>
   sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
     interactive: {
       type: "cta_url",
-      body: { text: "Dúvidas? Fale conosco." },
+      body: { text: `${body}\n\n📧 ${SUPPORT_EMAIL}` },
       action: {
         name: "cta_url",
         parameters: {
-          display_text: "Falar com suporte",
-          url: `https://wa.me/${SUPPORT_NUMBER}`,
+          display_text: "💬 Falar pelo WhatsApp",
+          url: SUPPORT_WHATSAPP_URL,
         },
       },
     },
@@ -7931,10 +7997,26 @@ REGRAS CRÍTICAS:
 - Venda real/serviço prestado → category="vendas_receitas"
 - "to no negativo/positivo?","to bem de grana?","como ando financeiramente?" → query_balance
 - "to devendo","minhas dívidas","contas atrasadas" → query_pending
-- Verbos que indicam status paid: paguei, comprei, almocei, jantei, lanchei, gastei, botei, usei, abasteci, assinei, fiz, comi, tomei
+- Verbos que indicam status paid: paguei, comprei, almocei, jantei, lanchei, gastei, botei, usei, abasteci, assinei, fiz, comi, tomei, tirei, saquei, puxei, debitou, saiu
 - Verbos que indicam status received: recebi, caiu, entrou, depositaram, creditaram
 - Sem verbo ou "vence dia X" → status=pending
-- Description sem: verbos de ação, gírias monetárias, preposições iniciais, artigos
+- DESCRIÇÃO: ≤25 chars; SEMPRE primeira letra maiúscula; APENAS substantivo + complemento essencial; NUNCA inclua verbos, valores, gírias monetárias, artigos iniciais. Ex: "Mercado", "Uber", "Conta de luz", "Pix do João".
+
+CATEGORIAS AMBÍGUAS (resolver assim):
+- academia, gym → saude
+- spotify, netflix, prime, disney, hbo, cinema → lazer
+- farmácia, drogaria, médico, dentista, consulta → saude
+- gasolina, combustível, ipva, mecânico → transporte
+- uber, 99, taxi, ônibus, metrô → transporte
+- mercado, supermercado, padaria, açougue → mercado
+- restaurante, lanche, almoço, jantar, ifood → alimentacao
+- luz, água, gás, aluguel, condomínio, internet residencial → moradia
+- celular, internet móvel, telefone → internet_telefonia
+- curso, faculdade, escola, livro → educacao
+- ração, veterinário, pet shop → pets
+- presente, aniversário → presentes
+- salário, pagamento de cliente, freelance pago → salario_trabalho
+- pix recebido de pessoa, transferência entre contas → outros
 
 EXEMPLOS:
 "recebi um pix do joao de 80 pila"
@@ -8837,28 +8919,24 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
   checkAndSendBroadcast(fromRaw, userNorm).catch(() => {});
 
   if (trackMessageAndDetectLoop(userNorm, normalizedMessage)) {
-    await sendText(
-      fromRaw,
-      `Parece que estamos em círculo. 😅 Posso ajudar de outra forma:\n\n` +
-      `• Digite *menu* — opções principais\n` +
-      `• Digite *ajuda* — dicas de uso\n` +
-      `• Ex: _"Paguei R$50 de mercado"_ — registrar gasto\n\n` +
-      `Se preferir falar com alguém, mande um e-mail: suporte@finplanner.app`
-    );
+    await sendSupportButton(fromRaw, {
+      body: `Parece que estamos em círculo. 😅 Posso ajudar de outra forma:\n\n` +
+        `• Digite *menu* — opções principais\n` +
+        `• Digite *ajuda* — dicas de uso\n` +
+        `• Ex: _"Paguei R$50 de mercado"_ — registrar gasto`,
+    });
     lastMessagesHistory.delete(userNorm);
     return;
   }
 
   if (trackMessageFlood(userNorm)) {
     resetSession(userNorm);
-    await sendText(
-      fromRaw,
-      `Notei que estamos com dificuldade. 🙏\n\n` +
-      `Vou pausar aqui para te ajudar melhor:\n\n` +
-      `• Digite *menu* — opções com botões\n` +
-      `• Digite *ajuda* — exemplos de uso\n` +
-      `• Suporte: suporte@finplanner.app`
-    );
+    await sendSupportButton(fromRaw, {
+      body: `Notei que estamos com dificuldade. 🙏\n\n` +
+        `Vou pausar aqui para te ajudar melhor:\n\n` +
+        `• Digite *menu* — opções com botões\n` +
+        `• Digite *ajuda* — exemplos de uso`,
+    });
     return;
   }
 
@@ -9314,13 +9392,15 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
     }
   }
 
-  // 🚪 Interceptor global: palavras de escape cancelam o fluxo ativo e abrem o menu
-  if (hasActiveSession(userNorm) && ESCAPE_REGEX.test(trimmed)) {
+  // 🚪 Interceptor global: palavras de escape cancelam o fluxo ativo (se houver) e abrem o menu
+  // Funciona com OU sem sessão ativa — se não há nada para cancelar, ainda mostra menu/confirmação
+  if (ESCAPE_REGEX.test(trimmed)) {
+    const flowName = getActiveFlowName(userNorm);
     resetSession(userNorm);
     if (NAVIGATE_REGEX.test(trimmed)) {
       await sendMainMenu(fromRaw);
     } else {
-      await sendCancelMessage(fromRaw);
+      await sendCancelMessage(fromRaw, { flowName });
     }
     return;
   }
