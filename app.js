@@ -8781,18 +8781,26 @@ async function executeLimparHistorico(fromRaw, adminNorm, targetNorm) {
       return;
     }
 
-    await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...`, { bypassWindow: true });
+    await sendText(fromRaw, `🗑️ Apagando ${totalRows} lançamento(s) em ${found.length} aba(s)...\n_(taxa segura: ~50/min para não estourar quota do Sheets)_`, { bypassWindow: true });
     let deleted = 0;
     let failed = 0;
+    // Throttle: Google Sheets API tem limite de 60 writes/min por usuário.
+    // Mantemos 1.2s entre deletes (≤50/min) com retry para 429.
+    const DELETE_THROTTLE_MS = 1200;
     for (const f of found) {
       for (let i = f.rows.length - 1; i >= 0; i--) {
         try {
-          await f.rows[i].delete();
+          await withRetry(() => f.rows[i].delete(), "limpar-delete-row");
           deleted++;
+          // Progresso parcial a cada 25 deletes (sem estourar mensagens WA)
+          if (deleted % 25 === 0 && deleted < totalRows) {
+            await sendText(fromRaw, `⏳ Progresso: ${deleted}/${totalRows} apagados...`, { bypassWindow: true });
+          }
         } catch (e) {
           console.error("[LIMPAR HISTORICO] Erro ao deletar row da aba", f.title, ":", e.message);
           failed++;
         }
+        await sleep(DELETE_THROTTLE_MS);
       }
     }
     candidates.forEach((c) => {
