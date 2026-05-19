@@ -7736,8 +7736,8 @@ const buildInactiveUserResponse = (classification, nome) => {
   );
 };
 
-const sendSupportButton = (to, { body = "Dúvidas? Fale conosco." } = {}) =>
-  sendWA({
+const sendSupportButton = async (to, { body = "Dúvidas? Fale conosco." } = {}) => {
+  const ok = await sendWA({
     messaging_product: "whatsapp",
     to,
     type: "interactive",
@@ -7747,12 +7747,23 @@ const sendSupportButton = (to, { body = "Dúvidas? Fale conosco." } = {}) =>
       action: {
         name: "cta_url",
         parameters: {
-          display_text: "💬 Falar pelo WhatsApp",
+          display_text: "Abrir WhatsApp",
           url: SUPPORT_WHATSAPP_URL,
         },
       },
     },
   });
+  if (!ok) {
+    // Fallback: se o CTA URL falhar (ex: fora da janela de 24h, payload rejeitado),
+    // manda texto simples com os dois canais — usuário NUNCA fica sem resposta.
+    await sendText(
+      to,
+      `${body}\n\n💬 WhatsApp: ${SUPPORT_WHATSAPP_URL}\n📧 E-mail: ${SUPPORT_EMAIL}`,
+      { bypassWindow: true }
+    );
+  }
+  return ok;
+};
 
 // ============================
 
@@ -8892,6 +8903,7 @@ async function dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nlu) {
       return true;
     case "support":
     case "falar_suporte":
+      console.log("[SUPPORT] Enviando suporte para", maskPhone(userNorm), "via NLU");
       await sendSupportButton(fromRaw, {
         body: "Precisa falar com a gente? 💬\nNosso atendimento responde por aqui:",
       });
@@ -9671,6 +9683,7 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
       await generateOffTopicResponse(fromRaw, trimmed, userNorm);
       break;
     case "falar_suporte":
+      console.log("[SUPPORT] Enviando suporte para", maskPhone(userNorm), "via heurística/intent");
       await sendSupportButton(fromRaw, {
         body: "Precisa falar com a gente? 💬\nNosso atendimento responde por aqui:",
       });
