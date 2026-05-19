@@ -511,6 +511,23 @@ app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
 });
 
+// /version — confirma qual commit está rodando. Útil pra validar deploy
+// sem precisar testar via WhatsApp.
+app.get("/version", (_req, res) => {
+  const features = {
+    falar_suporte_intent: typeof KNOWN_INTENTS !== "undefined" && KNOWN_INTENTS.has("falar_suporte"),
+    sendSupportButton_fallback: typeof sendSupportButton === "function",
+    capabilities_manifest: typeof CAPABILITIES_MANIFEST !== "undefined",
+    support_whatsapp: typeof SUPPORT_WHATSAPP_URL !== "undefined" ? SUPPORT_WHATSAPP_URL : null,
+    support_email: typeof SUPPORT_EMAIL !== "undefined" ? SUPPORT_EMAIL : null,
+  };
+  res.json({
+    timestamp: new Date().toISOString(),
+    uptime_seconds: Math.floor(process.uptime()),
+    features,
+  });
+});
+
 // ============================
 // HEALTH CHECK COMPLETO
 // ============================
