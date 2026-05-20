@@ -511,6 +511,23 @@ app.get("/", (_req, res) => {
   res.send("FinPlanner IA ativo! 🚀");
 });
 
+// /version — confirma qual commit está rodando. Útil pra validar deploy
+// sem precisar testar via WhatsApp.
+app.get("/version", (_req, res) => {
+  const features = {
+    falar_suporte_intent: typeof KNOWN_INTENTS !== "undefined" && KNOWN_INTENTS.has("falar_suporte"),
+    sendSupportButton_fallback: typeof sendSupportButton === "function",
+    capabilities_manifest: typeof CAPABILITIES_MANIFEST !== "undefined",
+    support_whatsapp: typeof SUPPORT_WHATSAPP_URL !== "undefined" ? SUPPORT_WHATSAPP_URL : null,
+    support_email: typeof SUPPORT_EMAIL !== "undefined" ? SUPPORT_EMAIL : null,
+  };
+  res.json({
+    timestamp: new Date().toISOString(),
+    uptime_seconds: Math.floor(process.uptime()),
+    features,
+  });
+});
+
 // ============================
 // HEALTH CHECK COMPLETO
 // ============================
@@ -1578,6 +1595,59 @@ const CATEGORY_DEFINITIONS = [
       "pao de acucar",
       "big bompreço",
       "big bompeco",
+      "fruta",
+      "frutas",
+      "legume",
+      "legumes",
+      "verdura",
+      "verduras",
+      "hortalica",
+      "hortalicas",
+      "hortaliça",
+      "hortaliças",
+      "morango",
+      "banana",
+      "tomate",
+      "cebola",
+      "alho",
+      "cenoura",
+      "batata",
+      "maca",
+      "maçã",
+      "melancia",
+      "abacate",
+      "manga",
+      "uva",
+      "laranja",
+      "limao",
+      "limão",
+      "abacaxi",
+      "mamao",
+      "mamão",
+      "pera",
+      "melao",
+      "melão",
+      "abobrinha",
+      "couve",
+      "alface",
+      "brocolis",
+      "brócolis",
+      "arroz",
+      "feijao",
+      "feijão",
+      "macarrao",
+      "macarrão",
+      "carne",
+      "frango",
+      "peixe",
+      "ovo",
+      "ovos",
+      "leite",
+      "queijo",
+      "manteiga",
+      "iogurte",
+      "pao",
+      "pão",
     ],
     aliases: ["supermercado", "mercado_supermercado"],
   },
@@ -2751,11 +2821,13 @@ const buildCategoryPrompt = async (description, tipo, userNorm = null) => {
 TAREFA: Analisar o lançamento e (1) escolher/criar a categoria mais adequada, (2) gerar uma descrição limpa e organizada do lançamento.
 
 REGRAS DE CATEGORIA:
-1. Prefira categorias existentes quando forem realmente adequadas
-2. Crie nova categoria SOMENTE se nenhuma existente for específica o suficiente
-3. A categoria "outros" deve ser usada APENAS como último recurso absoluto
-4. Slugs em snake_case minúsculo (ex: "pets", "streaming", "delivery_app")
+1. Prefira categorias existentes (mercado, transporte, saude, moradia, alimentacao, etc.) quando o lançamento se encaixa nelas — relatórios ficam consistentes
+2. Se NÃO se encaixa em nenhuma existente, CRIE uma categoria nova e específica (isNew: true)
+   Exemplos de quando criar: hobby específico ("Aulas de violão"), serviço único do usuário ("Mensalidade firma X"), gym específica que ele frequenta, assinatura específica não coberta por "lazer"
+3. NUNCA use "outros" — sempre prefira criar categoria nova específica do que cair em "outros". "outros" só vale para coisas genuinamente sem categoria possível (ex: pix sem contexto)
+4. Slugs em snake_case minúsculo (ex: "aulas_violao", "streaming_premium", "delivery_app")
 5. Labels curtos e descritivos (máximo 40 caracteres)
+6. Ao criar nova categoria, escolha emoji que represente bem (🎸 música, 🏋️ academia específica, 📺 streaming, etc.)
 
 REGRAS DE cleanDescription:
 - Versão limpa, organizada, com ortografia correta da descrição original
@@ -2791,6 +2863,12 @@ Se criar categoria nova:
 const resolveCategory = async (description, tipo, userNorm) => {
   const fallback = await detectCategoryWithCustom(description, tipo, userNorm);
   if (!description || !description.toString().trim() || !openaiClient) return fallback;
+
+  // Híbrido: se heurístico já achou uma categoria universal confiável (não "outros"),
+  // preservamos o slug do heurístico e usamos a IA apenas para gerar cleanDescription.
+  // Evita que a IA sobrescreva "oferta"→presentes ou "cheque especial"→banco_financeiro com "outros".
+  const heuristicIsConfident = fallback?.slug && fallback.slug !== "outros";
+
   try {
     const prompt = await buildCategoryPrompt(description, tipo, userNorm);
     const output = await callOpenAI({
@@ -2813,6 +2891,11 @@ const resolveCategory = async (description, tipo, userNorm) => {
       const cleanDesc = (typeof parsed.cleanDescription === "string" && parsed.cleanDescription.trim())
         ? parsed.cleanDescription.trim().slice(0, 80)
         : null;
+
+      // Heurístico confiante: preserva slug, aproveita só cleanDescription
+      if (heuristicIsConfident) {
+        return { slug: fallback.slug, emoji: fallback.emoji, cleanDescription: cleanDesc };
+      }
 
       if (parsed.isNew && parsed.label) {
         saveCustomCategory({
@@ -7824,6 +7907,8 @@ REGRAS:
 - Ao mencionar mês sem ano (ex: "janeiro", "abril"), use o ano corrente da data de hoje. Se o mês ainda não chegou neste ano, use o ano anterior.
 - "meus gastos mês passado" → {"intent":"relatorio_pagamentos_mes","period":"mes_passado"}
 - "saldo do ano passado" → {"intent":"relatorio_completo","period":"ano_passado"}
+- "relatório desse mês", "relatório do mês", "relatório" → {"intent":"relatorio_completo","period":"mes_atual"}
+- REGRA: a palavra "relatório" SOZINHA (sem "de gastos"/"de pagamentos"/"de despesas") significa relatório COMPLETO (entradas + saídas + saldo)
 - "paguei 50 mercado" → {"intent":"registrar_pagamento"}
 - Para registrar valor financeiro com descrição, use registrar_pagamento ou registrar_recebimento
 - "desconhecido" SOMENTE se realmente não souber
@@ -7953,6 +8038,17 @@ const detectIntentWithContext = async (text, userNorm = null) => {
     }
     if (parsed && parsed.intent && KNOWN_INTENTS.has(parsed.intent)) {
       const period = parsed.period ? parsePeriodCode(parsed.period) : null;
+      // Proteção: se heurística disse "relatorio_completo" porque texto contém "relatório"
+      // explícito, não deixar a IA degradar para apenas pagamentos/recebimentos.
+      // "Relatório desse mês" deve trazer entradas + saídas, não só uma das duas.
+      const isExplicitRelatorio = /\brelat[óo]rio\b/i.test(text);
+      if (
+        fallbackIntent === "relatorio_completo" &&
+        isExplicitRelatorio &&
+        (parsed.intent === "relatorio_pagamentos_mes" || parsed.intent === "relatorio_recebimentos_mes")
+      ) {
+        return { intent: "relatorio_completo", period };
+      }
       return { intent: parsed.intent, period };
     }
   } catch (error) {
@@ -8036,12 +8132,14 @@ CATEGORIAS AMBÍGUAS (resolver assim):
 - gasolina, combustível, ipva, mecânico → transporte
 - uber, 99, taxi, ônibus, metrô → transporte
 - mercado, supermercado, padaria, açougue → mercado
+- fruta, frutas, legume, verdura, hortifruti, morango, banana, tomate, cebola, alho, batata, maçã, melancia, abacate, arroz, feijão, carne, frango, ovos, leite, queijo, pão → mercado
 - restaurante, lanche, almoço, jantar, ifood → alimentacao
 - luz, água, gás, aluguel, condomínio, internet residencial → moradia
 - celular, internet móvel, telefone → internet_telefonia
 - curso, faculdade, escola, livro → educacao
 - ração, veterinário, pet shop → pets
-- presente, aniversário → presentes
+- presente, aniversário, oferta, oferta religiosa, dízimo, doação, contribuição → presentes
+- cheque especial, anuidade do banco, juros, IOF, tarifa bancária, empréstimo, fatura cartão → banco_financeiro
 - salário, pagamento de cliente, freelance pago → salario_trabalho
 - pix recebido de pessoa, transferência entre contas → outros
 
@@ -8929,6 +9027,19 @@ async function handleUserText(fromRaw, text, messageId) {
   try {
     await previous;
     return await processUserText(fromRaw, userNorm, text, messageId);
+  } catch (err) {
+    // Rede de segurança final: se TUDO falhar (exception não tratada),
+    // usuário NUNCA fica sem resposta. Manda texto fallback com canais de contato.
+    console.error("[handleUserText] Falha catastrófica:", err?.message || err, err?.stack);
+    try {
+      await sendText(
+        fromRaw,
+        `Tive um problema processando sua mensagem. 😔 Tenta de novo em alguns segundos.\n\nSe persistir, fala com a gente:\n💬 ${typeof SUPPORT_WHATSAPP_URL !== "undefined" ? SUPPORT_WHATSAPP_URL : "wa.me/5579991249561"}\n📧 ${typeof SUPPORT_EMAIL !== "undefined" ? SUPPORT_EMAIL : "finplanneria@gmail.com"}`,
+        { bypassWindow: true }
+      );
+    } catch (_) {
+      // Se sendText também falhar, não há mais o que fazer
+    }
   } finally {
     release();
     if (userMessageQueue.get(userNorm) === chained) {
