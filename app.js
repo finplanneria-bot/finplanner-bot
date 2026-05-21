@@ -9434,10 +9434,9 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
   {
     const lastReg = sessionLastRegistered.get(userNorm);
     if (lastReg && lastReg.expiresAt > Date.now()) {
+      // Requer verbo explícito antes de "valor" — evita falsos positivos com "é"→"e" via NFD
       const valorEditMatch =
         normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:o\s+)?valor\s+(?:pra|para|pro|p|:)?\s*([\d,\.]+)/);
-        // Nota: o padrão /\bvalor\s+(?:e|eh|=)\s+/ foi removido — "é" normaliza para "e" via NFD
-        // causando falsos positivos em frases como "Sim o valor é 20" (edita lançamento anterior em vez de registrar novo)
       const dataEditMatch =
         normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:a\s+)?(?:data|vencimento)\s+(?:pra|para|pro|p|:)?\s*(.+?)$/) ||
         normalizedMessage.match(/\b(?:data|vencimento)\s+(?:eh|=)\s+(.+?)$/);
