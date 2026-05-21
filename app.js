@@ -7410,11 +7410,12 @@ ${buildCapabilitiesText()}
 Ao receber uma mensagem fora do seu escopo, siga estas regras:
 1. Reconheça especificamente o que o usuário tentou fazer (nunca seja genérico)
 2. Explique em 1 frase que você é um assistente financeiro e por isso não pode ajudar com isso
-3. Se existir uma função relacionada que você oferece, sugira com um exemplo concreto e prático
-4. Se o usuário tiver nome conhecido, chame-o pelo nome de forma natural (sem forçar)
-5. Seja amigável, curto (máximo 3 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
-6. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer
-7. Se o usuário pedir suporte humano, contato, atendimento, cancelar assinatura/conta, reembolso ou estorno: NÃO invente desculpas — informe o WhatsApp ${CAPABILITIES_MANIFEST.suporte.whatsapp} e o e-mail ${CAPABILITIES_MANIFEST.suporte.email} de forma direta`.trim();
+3. Se existir uma função relacionada que você oferece, sugira com um exemplo CONCRETO PRA COPIAR
+4. NUNCA pergunte "quer X?" / "gostaria de Y?" / "posso fazer Z?" — isso cria beco sem saída pois não há estado salvo. SEMPRE sugira o comando concreto que o usuário pode copiar diretamente
+5. Se o usuário tiver nome conhecido, chame-o pelo nome de forma natural (sem forçar)
+6. Seja amigável, curto (máximo 2 linhas no total), no máximo 1-2 emojis, sem listas nem markdown
+7. Nunca diga apenas "não posso fazer isso" — sempre ofereça o que você pode fazer
+8. Se o usuário pedir suporte humano, contato, atendimento, cancelar assinatura/conta, reembolso ou estorno: NÃO invente desculpas — informe o WhatsApp ${CAPABILITIES_MANIFEST.suporte.whatsapp} e o e-mail ${CAPABILITIES_MANIFEST.suporte.email} de forma direta`.trim();
 
 const buildUserContextNote = (userNorm) => {
   const firstName = userNorm ? (getStoredFirstName(userNorm) || "") : "";
@@ -8125,6 +8126,7 @@ REGRAS CRÍTICAS:
 - Verbos que indicam status received: recebi, caiu, entrou, depositaram, creditaram
 - Sem verbo ou "vence dia X" → status=pending
 - DESCRIÇÃO: ≤25 chars; SEMPRE primeira letra maiúscula; APENAS substantivo + complemento essencial; NUNCA inclua verbos, valores, gírias monetárias, artigos iniciais. Ex: "Mercado", "Uber", "Conta de luz", "Pix do João".
+- BIAS PRO REGISTER: se a mensagem tem AMOUNT NUMÉRICO (R$X, X reais, ou número >= 5) E inclui pelo menos UM substantivo que represente bem, serviço, lugar, pessoa ou ação financeira (oferta, cobrança, transferência, mercado, conta, salário, médico, igreja, escola, dízimo, doação, etc.) → SEMPRE classifique como register. NUNCA como off_topic ou unknown — mesmo se a categoria exata não for óbvia, use category="outros" e siga. O usuário pode editar depois. Exemplos: "transferi 50 pro joao" → register/outros; "cobranca avon 250 vence 15" → register; "oferta da igreja pastor raposo 20" → register/presentes. Frases SEM substantivo financeiro (ex: "50 mil pessoas no estádio", "tá dando erro de 100 milhões no relatório") permanecem off_topic.
 
 CATEGORIAS AMBÍGUAS (resolver assim):
 - academia, gym → saude
@@ -9814,10 +9816,22 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
       break;
     default: {
       const nluDef = await nluPromise;
+      console.log("[NLU-DECISION]", { user: maskPhone(userNorm), text: trimmed.slice(0, 60),
+        intent: nluDef?.intent, confidence: nluDef?.confidence, hasEntries: !!nluDef?.entries?.length });
       // NLU com alta confiança redireciona intents que heurística perdeu
       if (nluDef && (nluDef.confidence || 0) >= 0.7) {
         if (nluDef.intent === "register" && nluDef.entries?.length > 0) {
           for (const e of nluDef.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
+          break;
+        }
+        // SAFETY NET: NLU classificou off_topic/unknown SEM entries mas mensagem tem
+        // amount claro + descrição (≥ 8 chars). Quase sempre é registro misclassificado —
+        // override e roteia para registerEntry, evitando loop "gostaria de registrar?".
+        const safetyAmt = extractAmountFromText(trimmed).amount;
+        if ((nluDef.intent === "off_topic" || nluDef.intent === "unknown") &&
+            !nluDef.entries?.length && safetyAmt > 0 && trimmed.length >= 8) {
+          console.log("[SAFETY-NET] NLU=", nluDef.intent, "tem amount=", safetyAmt, "— override → registerEntry");
+          await registerEntry(fromRaw, userNorm, text);
           break;
         }
         if (await dispatchNonRegisterNLU(fromRaw, userNorm, trimmed, nluDef)) break;

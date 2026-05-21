@@ -132,6 +132,67 @@ if (presMatch) {
   console.log("❌ Não encontrou CATEGORY_DEFINITIONS presentes");
 }
 
+// ─── SESSÃO 19 — 3 camadas defensivas contra "gostaria de registrar?" loops ───
+console.log("\n─── SESSÃO 19: 3 camadas defensivas ───");
+
+// Camada 1 — Safety net no switch default
+const switchDefault = appJs.slice(
+  appJs.lastIndexOf("    default: {"),
+  appJs.indexOf("\n}", appJs.lastIndexOf("    default: {")) + 2
+);
+check(
+  "Camada 1: switch default tem [SAFETY-NET] log",
+  /\[SAFETY-NET\]/.test(switchDefault)
+);
+check(
+  "Camada 1: safety net testa off_topic/unknown + amount + length >= 8",
+  /off_topic.*unknown[\s\S]*safetyAmt > 0[\s\S]*trimmed\.length >= 8/.test(switchDefault) ||
+  /off_topic.*unknown[\s\S]*safetyAmt/.test(switchDefault)
+);
+check(
+  "Camada 1: safety net chama registerEntry no override",
+  /SAFETY-NET[\s\S]*?registerEntry/.test(switchDefault)
+);
+check(
+  "Camada 1: tem log [NLU-DECISION] para diagnóstico",
+  /\[NLU-DECISION\]/.test(switchDefault)
+);
+check(
+  "Camada 1: safety net exige !nluDef.entries?.length (guard extra)",
+  /!nluDef\.entries\?\.length/.test(switchDefault)
+);
+
+// Camada 2 — FINPLANNER_CAPABILITIES_PROMPT proíbe sim/não
+const capStart = appJs.indexOf("const FINPLANNER_CAPABILITIES_PROMPT");
+const capEnd = appJs.indexOf("`.trim();", capStart) + 9;
+const capSection = appJs.slice(capStart, capEnd);
+check(
+  'Camada 2: CAPABILITIES_PROMPT proíbe "quer X?" / "gostaria de Y?"',
+  /NUNCA pergunte[\s\S]*quer X[\s\S]*gostaria de Y/.test(capSection)
+);
+check(
+  'Camada 2: CAPABILITIES_PROMPT exige exemplo concreto pra copiar',
+  /CONCRETO PRA COPIAR|concreto.*copiar/i.test(capSection)
+);
+check(
+  "Camada 2: CAPABILITIES_PROMPT reduzido para máx 2 linhas",
+  /máximo 2 linhas/i.test(capSection)
+);
+
+// Camada 3 — NLU bias para register
+check(
+  "Camada 3: NLU tem regra BIAS PRO REGISTER",
+  /BIAS PRO REGISTER/.test(nluSection)
+);
+check(
+  "Camada 3: NLU lista substantivos financeiros (oferta, cobrança, dízimo)",
+  /oferta.*cobrança.*dízimo|oferta, cobrança/i.test(nluSection)
+);
+check(
+  "Camada 3: NLU explicita exclusão de 'pessoas no estádio'",
+  /50 mil pessoas no est[áa]dio/i.test(nluSection)
+);
+
 // ─── Resultado ─────────────────────────────────────────────────────────────────
 const total = pass + fail;
 console.log(`\n${fail === 0 ? "✅ PASSED" : "❌ FAILED"}: ${pass}/${total} verificações`);
