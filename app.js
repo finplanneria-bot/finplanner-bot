@@ -7465,20 +7465,21 @@ ${buildCapabilitiesText()}
 
 SUA TAREFA:
 1. Tente inferir o que ele quis dizer (mesmo sem certeza)
-2. Faça UMA pergunta curta pra confirmar OU sugira o comando mais provável
-3. Dê 1 exemplo concreto que ele possa copiar
-4. Se souber o nome do usuário, use de forma natural
-5. Tom de amigo no zap — informal, curto, 1 emoji no máximo
-6. Máximo 3 linhas, sem listas, sem markdown
-7. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
+2. Sugira o comando mais provável — sempre dê o exemplo concreto pra copiar, NUNCA faça pergunta de sim/não
+3. Se souber o nome do usuário, use de forma natural
+4. Tom de amigo no zap — informal, curto, 1 emoji no máximo
+5. Máximo 2 linhas, sem listas, sem markdown
+6. NUNCA comece com "Desculpe", "Não entendi" ou "Não compreendi"
+7. NUNCA pergunte "quer X?" ou "gostaria de Y?" — isso cria beco sem saída; sempre sugira o comando direto
 8. Se a mensagem pedir suporte humano, contato, cancelar assinatura/conta, reembolso ou estorno: NÃO invente desculpas — informe o WhatsApp ${CAPABILITIES_MANIFEST.suporte.whatsapp} e o e-mail ${CAPABILITIES_MANIFEST.suporte.email}
 
 EXEMPLOS:
-"academia" → "Quer registrar o pagamento da academia? Tenta: 'Paguei 120 academia' 🙂"
-"mercado" → "Foi gasto no mercado? Me manda o valor: 'Mercado 350'"
-"100 reais" → "Foi gasto ou recebimento de R$100? Tenta: 'Paguei 100 X' ou 'Recebi 100 Y'"
-"tô lascado" → "Quer ver seu saldo do mês? Manda 'saldo' 😊"
-"kkk" → "Bora organizar as finanças? Me conta um gasto que teve hoje 😄"
+"academia" → "Acho que quer registrar a academia 🙂 Me manda: 'Paguei 120 academia'"
+"mercado" → "Me manda o valor do mercado: 'Mercado 350'"
+"100 reais" → "Foi gasto ou recebido? Manda: 'Paguei 100 X' ou 'Recebi 100 Y'"
+"tô lascado" → "Quer ver seu saldo? Manda 'saldo' 😊"
+"kkk" → "Bora organizar! Me conta um gasto de hoje 😄"
+"oferta" → "Me manda o valor da oferta: 'Oferta 20'"
 "contato" → "Pra falar com a gente: ${CAPABILITIES_MANIFEST.suporte.whatsapp} ou ${CAPABILITIES_MANIFEST.suporte.email} 💬"`.trim();
 
 const generateUnknownIntentResponse = async (fromRaw, userMessage, userNorm = null) => {
@@ -8190,7 +8191,19 @@ EXEMPLOS:
 →{"intent":"query_balance","confidence":0.9}
 
 "kuanto gastei mes pasado"
-→{"intent":"query_report","query":{"categories":[],"period":"last_month","tag":null},"confidence":0.85}`,
+→{"intent":"query_report","query":{"categories":[],"period":"last_month","tag":null},"confidence":0.85}
+
+"oferta da igreja 20"
+→{"intent":"register","entries":[{"type":"payment","amount":20,"description":"Oferta da Igreja","category":"presentes","status":"paid","due_date":null}],"confidence":0.9}
+
+"oferta da igreja pastor raposo 20"
+→{"intent":"register","entries":[{"type":"payment","amount":20,"description":"Oferta da Igreja","category":"presentes","status":"paid","due_date":null}],"confidence":0.9}
+
+"dízimo 200"
+→{"intent":"register","entries":[{"type":"payment","amount":200,"description":"Dízimo","category":"presentes","status":"paid","due_date":null}],"confidence":0.9}
+
+"doação para a comunidade 50"
+→{"intent":"register","entries":[{"type":"payment","amount":50,"description":"Doação","category":"presentes","status":"paid","due_date":null}],"confidence":0.9}`,
       }],
     },
     {
@@ -9421,15 +9434,15 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
   {
     const lastReg = sessionLastRegistered.get(userNorm);
     if (lastReg && lastReg.expiresAt > Date.now()) {
+      // Requer verbo explícito antes de "valor" — evita falsos positivos com "é"→"e" via NFD
       const valorEditMatch =
-        normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:o\s+)?valor\s+(?:pra|para|pro|p|:)?\s*([\d,\.]+)/) ||
-        normalizedMessage.match(/\bvalor\s+(?:e|eh|=)\s+([\d,\.]+)/);
+        normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:o\s+)?valor\s+(?:pra|para|pro|p|:)?\s*([\d,\.]+)/);
       const dataEditMatch =
         normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:a\s+)?(?:data|vencimento)\s+(?:pra|para|pro|p|:)?\s*(.+?)$/) ||
-        normalizedMessage.match(/\b(?:data|vencimento)\s+(?:e|eh|=)\s+(.+?)$/);
+        normalizedMessage.match(/\b(?:data|vencimento)\s+(?:eh|=)\s+(.+?)$/);
       const categoriaEditMatch =
         normalizedMessage.match(/\b(?:muda|altera|atualiza|corrige|corrigi|coloca|poe|p[oõ]e)r?\s+(?:a\s+)?categoria\s+(?:pra|para|pro|p|:)?\s*(.+?)$/) ||
-        normalizedMessage.match(/\bcategoria\s+(?:e|eh|=)\s+(.+?)$/);
+        normalizedMessage.match(/\bcategoria\s+(?:eh|=)\s+(.+?)$/);
       if (valorEditMatch || dataEditMatch || categoriaEditMatch) {
         const row = await findRowById(userNorm, lastReg.rowId);
         if (row) {
