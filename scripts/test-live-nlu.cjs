@@ -179,6 +179,45 @@ const callAnthropic = (systemPrompt, userMessage, maxTokens = 500) =>
     }
   }
 
+  // ── SESSÃO 19 — Camada 3: NLU bias para register quando há amount + substantivo ─
+  console.log("\n─── SESSÃO 19 / Camada 3: NLU bias para register ───");
+  const positiveCases = [
+    { input: "transferi 50 pro joao",          expectIntent: "register" },
+    { input: "cobranca avon 250 vencimento 15", expectIntent: "register" },
+    { input: "investimento na agroterra 800",   expectIntent: "register" },
+  ];
+  for (const tc of positiveCases) {
+    const raw = await callAnthropic(nluPrompt, tc.input);
+    console.log(`   "${tc.input}" → ${raw.slice(0, 150)}`);
+    let parsed;
+    try { parsed = JSON.parse(raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()); }
+    catch { parsed = {}; }
+    check(
+      `"${tc.input}" → intent=${tc.expectIntent} (não off_topic/unknown)`,
+      parsed.intent === tc.expectIntent,
+      raw
+    );
+  }
+
+  // ── SESSÃO 19 — Regressão Camada 3: frases SEM substantivo financeiro continuam off_topic ──
+  console.log("\n─── SESSÃO 19 / Regressão: frases sem substantivo permanecem off_topic ───");
+  const negativeCases = [
+    { input: "ai meu deus 50 mil pessoas no estádio" },
+    { input: "ta dando erro de 100 milhões no relatório" },
+  ];
+  for (const tc of negativeCases) {
+    const raw = await callAnthropic(nluPrompt, tc.input);
+    console.log(`   "${tc.input}" → ${raw.slice(0, 150)}`);
+    let parsed;
+    try { parsed = JSON.parse(raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()); }
+    catch { parsed = {}; }
+    check(
+      `"${tc.input}" → NÃO é register (continua off_topic/unknown/query)`,
+      parsed.intent !== "register",
+      raw
+    );
+  }
+
   // ── BUG 2: Clarification prompt NÃO gera perguntas sim/não ──────────────────
   console.log("\n─── BUG 2: Clarificação AI — sem dead-end sim/não ───");
   {
