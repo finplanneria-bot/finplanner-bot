@@ -7913,6 +7913,7 @@ REGRAS:
 - REGRA: a palavra "relatório" SOZINHA (sem "de gastos"/"de pagamentos"/"de despesas") significa relatório COMPLETO (entradas + saídas + saldo)
 - "paguei 50 mercado" → {"intent":"registrar_pagamento"}
 - Para registrar valor financeiro com descrição, use registrar_pagamento ou registrar_recebimento
+- REGRA FORTE: se a mensagem tem AMOUNT NUMÉRICO (R$X, X reais, ou número >= 5) E inclui um substantivo de bem/serviço/lugar/ação financeira (oferta, dízimo, doação, cobrança, transferência, mercado, conta, salário, médico, igreja, escola, etc.), classifique como registrar_pagamento (ou registrar_recebimento se for receita) — NUNCA como fora_do_escopo ou desconhecido, MESMO sem o verbo "paguei/gastei/recebi". Ex: "oferta da igreja 20" → registrar_pagamento. Ex: "dízimo 200" → registrar_pagamento. Ex: "cobrança avon 250" → registrar_pagamento.
 - "desconhecido" SOMENTE se realmente não souber
 
 🚫 HORÁRIOS NÃO SÃO VALORES: "às 11", "11h", "14h30" = horário, não dinheiro`,
@@ -9805,9 +9806,31 @@ async function processUserText(fromRaw, userNorm, text, messageId) {
         `Digite *menu* para ver todas as opções.`
       );
       break;
-    case "fora_do_escopo":
+    case "fora_do_escopo": {
+      // SAFETY NET PRE-DEFAULT: AI classificou como fora_do_escopo, mas se a mensagem
+      // tem amount claro + descrição (≥ 8 chars), provavelmente é registro misclassificado
+      // (ex: "Oferta da igreja pastor raposo 20" — sem verbo "paguei", mas claramente registro).
+      // Sem esta rede, mensagens caem em generateOffTopicResponse e o usuário recebe
+      // "Você pode copiar...", quebrando o fluxo. Espera NLU resolver primeiro.
+      const offtopicAmt = extractAmountFromText(trimmed).amount;
+      if (offtopicAmt > 0 && trimmed.length >= 8) {
+        const nluDef = await nluPromise;
+        console.log("[NLU-DECISION-OFFTOPIC]", { user: maskPhone(userNorm), text: trimmed.slice(0, 60),
+          intent: nluDef?.intent, confidence: nluDef?.confidence, hasEntries: !!nluDef?.entries?.length });
+        if (nluDef && (nluDef.confidence || 0) >= 0.7 && nluDef.intent === "register" && nluDef.entries?.length > 0) {
+          console.log("[SAFETY-NET-OFFTOPIC] AI=fora_do_escopo mas NLU=register — override → registerEntryWithNLU");
+          for (const e of nluDef.entries) await registerEntryWithNLU(fromRaw, userNorm, e);
+          break;
+        }
+        // NLU também não viu como register — mas o texto tem amount + ≥ 8 chars,
+        // então registra via caminho legado (categoria default "outros", usuário edita depois)
+        console.log("[SAFETY-NET-OFFTOPIC] AI=fora_do_escopo, NLU não confirmou register, mas amount=", offtopicAmt, "— override → registerEntry");
+        await registerEntry(fromRaw, userNorm, text);
+        break;
+      }
       await generateOffTopicResponse(fromRaw, trimmed, userNorm);
       break;
+    }
     case "falar_suporte":
       console.log("[SUPPORT] Enviando suporte para", maskPhone(userNorm), "via heurística/intent");
       await sendSupportButton(fromRaw, {
